@@ -3,15 +3,23 @@ import { LoreEventDetail } from './LoreEventDetail';
 import { loreStoryData } from './story-data';
 
 const meta: Meta<typeof LoreEventDetail> = {
-  title: 'Components/Lore/LoreEventDetail',
+  title: 'Components/Lore/LoreEventDetail/ProcessTemplate',
   component: LoreEventDetail,
   tags: ['autodocs'],
+  parameters: {
+    docs: {
+      description: {
+        component: 'Legacy/community-oriented process detail template. Official /lore/events/[slug] pages now use OfficialLoreEventDetail instead.',
+      },
+    },
+  },
 };
 
 export default meta;
 type Story = StoryObj<typeof LoreEventDetail>;
 
-export const OfficialCanonEvent: Story = {
+export const LegacyOfficialProcessReference: Story = {
+  name: 'Legacy official fixture (process template)',
   args: {
     event: loreStoryData.officialEvent,
     season: loreStoryData.seasons.find((season) => season.id === loreStoryData.officialEvent.seasonId),
@@ -26,7 +34,8 @@ export const OfficialCanonEvent: Story = {
   },
 };
 
-export const CommunityCanonizingEvent: Story = {
+export const CommunityCanonizingProcess: Story = {
+  name: 'Community canonizing process',
   args: {
     event: loreStoryData.communityCanonizingEvent,
     season: loreStoryData.seasons.find((season) => season.id === loreStoryData.communityCanonizingEvent.seasonId),

@@ -1,5 +1,6 @@
 import Image from 'next/image';
 import Link from 'next/link';
+import { getLoreEventCover } from './lore-event-cover';
 import type {
   LoreCharacter,
   LoreEvent,
@@ -15,15 +16,6 @@ interface LoreEventCardProps {
 const eventKindLabels: Record<LoreEvent['kind'], string> = {
   official: 'Official',
   community: 'Community',
-};
-
-const eventCoverImages: Record<string, string> = {
-  'genesis-mint': '/images/lore/archive/genesis-mint.jpg',
-  'first-citadel-march': '/images/lore/archive/first-citadel-march.jpg',
-  'searing-rite': '/images/lore/archive/searing-rite.jpg',
-  'pilgrims-of-the-ashen-road': '/images/lore/archive/ashen-road-pilgrims.jpg',
-  'ash-cartographer-chart': '/images/lore/archive/ash-cartographer-chart.jpg',
-  'rumor-beneath-the-citadel': '/images/lore/archive/rumor-beneath-citadel.jpg',
 };
 
 const formatDate = (dateString?: string) => {
@@ -48,26 +40,22 @@ const eventHref = (event: LoreEvent) => {
 export function LoreEventCard({ event, season, characters }: LoreEventCardProps) {
   const href = eventHref(event);
   const displayDate = formatDate(event.occurredAt ?? event.publishedAt);
-  const imageCharacter = characters.find((character) => character.imageUrl);
-  const coverImage = eventCoverImages[event.slug] ?? imageCharacter?.imageUrl;
-  const coverAlt = eventCoverImages[event.slug]
-    ? `${event.title} lore cover`
-    : `${imageCharacter?.name}, featured in ${event.title}`;
+  const cover = getLoreEventCover(event, characters);
 
   return (
     <article className="group overflow-hidden border border-midnight-light/35 bg-black/20 transition-colors hover:border-soul-accent/50">
       <div className="relative aspect-[16/9] overflow-hidden bg-soul-900/60">
-        {coverImage ? (
+        {cover.src ? (
           <Image
-            src={coverImage}
-            alt={coverAlt}
+            src={cover.src}
+            alt={cover.alt}
             fill
             sizes="(min-width: 1280px) 33vw, (min-width: 640px) 50vw, 100vw"
             className="object-cover opacity-85 transition duration-500 group-hover:scale-105 group-hover:opacity-100"
           />
         ) : (
           <div className="flex h-full items-center justify-center bg-gradient-to-br from-soul-900 via-soul-950 to-black px-8 text-center" aria-hidden="true">
-            <span className="font-serif text-5xl text-bone/20">{event.title.charAt(0)}</span>
+            <span className="font-serif text-5xl text-bone/20">{cover.fallbackInitial}</span>
           </div>
         )}
         <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/80 to-transparent" aria-hidden="true" />

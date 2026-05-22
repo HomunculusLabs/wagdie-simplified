@@ -3,6 +3,7 @@ import type { SourceRecord } from '@/lib/lore/types';
 interface SourceListProps {
   sources: SourceRecord[];
   title?: string;
+  variant?: 'default' | 'compact';
 }
 
 const formatDate = (dateString?: string) => {
@@ -47,30 +48,32 @@ function SourceLink({ href, label }: { href?: string; label: string }) {
   );
 }
 
-export function SourceList({ sources, title = 'Sources and preservation' }: SourceListProps) {
+export function SourceList({ sources, title = 'Sources and preservation', variant = 'default' }: SourceListProps) {
+  const compact = variant === 'compact';
+
   return (
-    <section className="space-y-4">
+    <section className={compact ? 'space-y-3' : 'space-y-4'}>
       <div>
-        <p className="text-sm font-serif uppercase tracking-[0.06em] text-soul-accent">
+        <p className={compact ? 'font-serif text-xs uppercase tracking-[0.12em] text-neutral-500' : 'text-sm font-serif uppercase tracking-[0.06em] text-soul-accent'}>
           {title}
         </p>
-        <h2 className="mt-2 font-display text-2xl lowercase tracking-widest text-neutral-50">
+        <h2 className={compact ? 'mt-1 font-serif text-xl text-bone' : 'mt-2 font-display text-2xl lowercase tracking-widest text-neutral-50'}>
           Attribution ledger
         </h2>
       </div>
 
       {sources.length > 0 ? (
-        <div className="space-y-3">
+        <div className={compact ? 'grid gap-3 lg:grid-cols-2' : 'space-y-3'}>
           {sources.map((source) => {
             const publishedAt = formatDate(source.publishedAt);
             const capturedAt = formatDate(source.capturedAt);
             const offlineOnly = !source.url && !source.archivedUrl;
 
             return (
-              <article key={source.id} className="space-y-4 border border-midnight-light/50 bg-black/30 p-5">
+              <article key={source.id} className={compact ? 'space-y-3 border border-midnight-light/45 bg-black/20 p-4' : 'space-y-4 border border-midnight-light/50 bg-black/30 p-5'}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="space-y-1">
-                    <h3 className="font-display text-2xl lowercase tracking-wide text-neutral-50">
+                    <h3 className={compact ? 'font-serif text-lg leading-tight text-bone' : 'font-display text-2xl lowercase tracking-wide text-neutral-50'}>
                       {source.title}
                     </h3>
                     <p className="text-sm font-serif uppercase tracking-[0.06em] text-neutral-200">
@@ -99,7 +102,7 @@ export function SourceList({ sources, title = 'Sources and preservation' }: Sour
                   </dl>
                 )}
 
-                <p className="font-serif text-lg leading-8 text-neutral-100">
+                <p className={compact ? 'font-serif text-sm leading-6 text-neutral-300' : 'font-serif text-lg leading-8 text-neutral-100'}>
                   {source.attribution}
                 </p>
 

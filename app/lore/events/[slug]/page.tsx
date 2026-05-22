@@ -1,7 +1,9 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { BannerHeader } from '@/components/shared/BannerHeader';
-import { LoreEventDetail } from '@/components/lore/LoreEventDetail';
+import {
+  OfficialLoreEventDetail,
+  type OfficialLoreRelatedContext,
+} from '@/components/lore/OfficialLoreEventDetail';
 import {
   getAllEffectiveLoreCharacters,
   getAllEffectiveLoreEvents,
@@ -20,14 +22,57 @@ interface LoreEventPageProps {
   params: Promise<{ slug: string }>;
 }
 
-const getRelatedEvents = (event: LoreEvent, allEvents: LoreEvent[]) => {
-  return allEvents
+const sortByTimeline = (events: LoreEvent[]) => {
+  return [...events].sort((a, b) => a.timelineOrder - b.timelineOrder || a.title.localeCompare(b.title));
+};
+
+const getSharedCount = (left: string[], right: string[]) => {
+  const rightSet = new Set(right);
+  return left.filter((item) => rightSet.has(item)).length;
+};
+
+const getRelatedContext = (event: LoreEvent, allEvents: LoreEvent[]): OfficialLoreRelatedContext => {
+  const officialTimeline = sortByTimeline(allEvents.filter((candidate) => candidate.kind === 'official'));
+  const currentTimelineIndex = officialTimeline.findIndex((candidate) => candidate.id === event.id);
+  const timelineNeighbors = {
+    previous: currentTimelineIndex > 0 ? officialTimeline[currentTimelineIndex - 1] : undefined,
+    next: currentTimelineIndex >= 0 && currentTimelineIndex < officialTimeline.length - 1
+      ? officialTimeline[currentTimelineIndex + 1]
+      : undefined,
+  };
+
+  const connectedEvents = allEvents
     .filter((candidate) => candidate.id !== event.id)
-    .filter((candidate) => (
-      candidate.characterIds.some((characterId) => event.characterIds.includes(characterId)) ||
-      candidate.locationIds.some((locationId) => event.locationIds.includes(locationId))
+    .map((candidate) => {
+      const sharedCharacters = getSharedCount(candidate.characterIds, event.characterIds);
+      const sharedLocations = getSharedCount(candidate.locationIds, event.locationIds);
+      const sameSeason = Boolean(candidate.seasonId && candidate.seasonId === event.seasonId);
+      const timelineDistance = Math.abs(candidate.timelineOrder - event.timelineOrder);
+      const score = (sharedCharacters * 8) + (sharedLocations * 5) + (sameSeason ? 2 : 0) - (Math.min(timelineDistance, 100) / 100);
+
+      return {
+        event: candidate,
+        score,
+        sharedCharacters,
+        sharedLocations,
+        timelineDistance,
+      };
+    })
+    .filter((candidate) => candidate.sharedCharacters > 0 || candidate.sharedLocations > 0)
+    .sort((a, b) => (
+      b.score - a.score ||
+      a.timelineDistance - b.timelineDistance ||
+      a.event.title.localeCompare(b.event.title)
     ))
-    .slice(0, 4);
+    // Keep a small buffer so the presentation layer can de-dupe timeline neighbors
+    // while still rendering up to four connected cards.
+    .slice(0, 6)
+    .map((candidate) => candidate.event);
+
+  return {
+    timelineNeighbors,
+    connectedEvents,
+  };
 };
 
 const resolveEventPageData = async (slug: string) => {
@@ -48,7 +93,6 @@ const resolveEventPageData = async (slug: string) => {
 
   return {
     event,
-    allLocations,
     locations: event.locationIds.flatMap((locationId) => {
       const location = locationById.get(locationId);
       return location ? [location] : [];
@@ -61,8 +105,9 @@ const resolveEventPageData = async (slug: string) => {
     relatedEntities: await getEffectiveRelatedEntitiesForEvent(event),
     sources: await getEffectiveSourcesForEvent(event),
     media: await getEffectiveMediaForEvent(event),
-    relatedEvents: getRelatedEvents(event, allEvents),
+    relatedContext: getRelatedContext(event, allEvents),
     seasons,
+    allCharacters,
   };
 };
 
@@ -92,11 +137,7 @@ export default async function OfficialLoreEventPage({ params }: LoreEventPagePro
 
   return (
     <div className="min-h-screen bg-soul-950">
-      <BannerHeader
-        title="Official Lore Record"
-        subtitle="A canonical event drawn from the official WAGDIE lore archive."
-      />
-      <LoreEventDetail
+      <OfficialLoreEventDetail
         event={data.event}
         season={data.season}
         locations={data.locations}
@@ -104,9 +145,9 @@ export default async function OfficialLoreEventPage({ params }: LoreEventPagePro
         relatedEntities={data.relatedEntities}
         sources={data.sources}
         media={data.media}
-        relatedEvents={data.relatedEvents}
+        relatedContext={data.relatedContext}
         seasons={data.seasons}
-        allLocations={data.allLocations}
+        allCharacters={data.allCharacters}
       />
     </div>
   );
