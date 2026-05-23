@@ -31,6 +31,26 @@ function formatTranscript(messages: LocationRoomMessage[]): string {
     .join('\n')
 }
 
+function formatNarrativeContext(input: GenerateOfficialLocationRoomTurnInput): string[] {
+  const context = input.narrativeContext
+  if (!context) return []
+
+  return [
+    '',
+    'Private game-master narrative context:',
+    `Continuity summary: ${context.stateSummary || 'No established continuity yet.'}`,
+    `Current objective: ${context.currentObjective || 'None.'}`,
+    'Open threads:',
+    context.openThreads.length > 0
+      ? context.openThreads.map((thread) => `- ${thread}`).join('\n')
+      : 'None.',
+    `Private instruction for this utterance: ${context.speakerInstruction}`,
+    context.publicNarration
+      ? `Public game-master narration just posted: ${context.publicNarration}`
+      : 'No public game-master narration was posted for this beat.',
+  ]
+}
+
 export function buildOfficialLocationRoomPrompt(input: GenerateOfficialLocationRoomTurnInput): string {
   return [
     'You are participating in a public WAGDIE location room.',
@@ -42,6 +62,7 @@ export function buildOfficialLocationRoomPrompt(input: GenerateOfficialLocationR
     '',
     'Recent public transcript:',
     formatTranscript(input.recentMessages),
+    ...formatNarrativeContext(input),
     '',
     'Write exactly one short in-world utterance as your character.',
     'Keep it under two sentences. Do not use markdown, speaker labels, JSON, stage directions, or out-of-world explanations.',

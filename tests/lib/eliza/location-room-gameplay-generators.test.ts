@@ -1,0 +1,235 @@
+/**
+ * @jest-environment node
+ */
+
+jest.mock('@/lib/eliza/official/messaging', () => ({
+  normalizeOfficialResponseText: (text: string) => text.trim(),
+  createOfficialElizaMessagingClient: jest.fn(() => ({
+    startAgent: jest.fn(),
+    createSession: jest.fn(),
+    sendSessionMessage: jest.fn(),
+    collectStreamedResponseText: jest.fn(),
+    deleteSession: jest.fn(),
+  })),
+}))
+
+import {
+  buildGameplayActionPrompt,
+  normalizeGameplayActionResponse,
+} from '@/lib/eliza/locationRooms/gameplay/actionGenerator'
+import {
+  buildGameplayOutcomeNarrationPrompt,
+  normalizeGameplayEncounterProposalResponse,
+  normalizeGameplayOutcomeNarrationResponse,
+} from '@/lib/eliza/locationRooms/gameplay/gameMasterGameplayGenerator'
+import type { LocationRoomNarrativeState } from '@/lib/eliza/locationRooms/narrativeTypes'
+
+const narrativeState: LocationRoomNarrativeState = {
+  id: 'narrative-1',
+  roomId: 'room-1',
+  locationId: 'loc-1',
+  stateSummary: 'The bell is awake.',
+  currentObjective: null,
+  openThreads: [],
+  metadata: {},
+  createdAt: '2026-05-22T00:00:00.000Z',
+  updatedAt: '2026-05-22T00:00:00.000Z',
+}
+
+describe('location room gameplay generators', () => {
+  it('builds gameplay action prompts with HP bands and safe stat flavor only', () => {
+    const prompt = buildGameplayActionPrompt({
+      room: { id: 'room-1', locationId: 'loc-1', officialUserId: 'official-user-1' },
+      tick: { id: 'tick-1' },
+      speaker: { tokenId: 7, name: 'Ash' },
+      participants: [{ tokenId: 7, name: 'Ash' }, { tokenId: 8, name: 'Bone' }],
+      recentMessages: [],
+      encounter: {
+        id: 'encounter-1',
+        publicTitle: 'Bell Maw',
+        publicSummary: 'A maw unfolds.',
+        monsterState: [{ id: 'monster-1', name: 'Maw', archetype: 'bell horror', hp: 4, maxHp: 12, ac: 12, attackBonus: 2, damageFormula: '1d6', status: 'alive' }],
+      },
+      gameplayState: {
+        characters: {
+          '7': {
+            tokenId: 7,
+            name: 'Ash',
+            hp: 3,
+            maxHp: 10,
+            status: 'alive',
+            xp: 0,
+            temporaryBoons: [],
+            wounds: [],
+            effectiveStats: { str: 17, dex: 12, con: 10, int: 10, wis: 16, cha: 8, maxHp: 10, ac: 16, speed: 45, level: 1, experience: 0 },
+            performance: { roundsActed: 9, roundsSurvived: 9, damageDealt: 99, damageTaken: 1, successfulAttacks: 5, successfulDefends: 0, successfulHelps: 0, successfulNoncombatActions: 0, objectiveContributions: 0, criticalSuccesses: 0, criticalFailures: 0, fledCount: 0 },
+          },
+          '8': {
+            tokenId: 8,
+            name: 'Bone',
+            hp: 10,
+            maxHp: 10,
+            status: 'alive',
+            xp: 0,
+            temporaryBoons: [],
+            wounds: [],
+          },
+        },
+      },
+      characterState: {
+        tokenId: 7,
+        name: 'Ash',
+        hp: 3,
+        maxHp: 10,
+        status: 'alive',
+        xp: 0,
+        temporaryBoons: [],
+        wounds: [],
+        effectiveStats: { str: 17, dex: 12, con: 10, int: 10, wis: 16, cha: 8, maxHp: 10, ac: 16, speed: 45, level: 1, experience: 0 },
+      },
+      validation: { legalMonsterIds: ['monster-1'], legalCharacterTokenIds: [7, 8] },
+    } as never)
+
+    expect(prompt).toContain('injured HP band, status alive')
+    expect(prompt).toContain('Safe stat flavor: physically formidable')
+    expect(prompt).toContain('sharp-eyed')
+    expect(prompt).toContain('well-guarded')
+    expect(prompt).toContain('swift-footed')
+    expect(prompt).not.toContain('3/10 HP')
+    expect(prompt).not.toContain('4/12 HP')
+    expect(prompt).not.toContain('damageDealt')
+    expect(prompt).not.toContain('roundsActed')
+    expect(prompt).not.toContain('performanceScore')
+  })
+
+  it('builds outcome prompts with backend-computed stat-aware summaries', () => {
+    const prompt = buildGameplayOutcomeNarrationPrompt({
+      gameMasterAgentId: 'gm-1',
+      room: { id: 'room-1', locationId: 'loc-1' },
+      tick: { id: 'tick-1' },
+      participants: [],
+      recentMessages: [],
+      narrativeState,
+      gameplayStateBefore: {},
+      gameplayStateAfter: {},
+      encounterBefore: { id: 'encounter-1', publicTitle: 'Bell Maw', status: 'active' },
+      encounterAfter: { id: 'encounter-1', publicTitle: 'Bell Maw', status: 'active' },
+      turn: { id: 'turn-1' },
+      action: { actionType: 'attack', publicSpeech: 'I strike.', metadata: {} },
+      mechanicalSummary: {
+        diceResults: [],
+        encounterStatusAfter: 'active',
+        deaths: [],
+        mechanicalDeltas: {
+          actionRoll: {
+            modifierBreakdown: {
+              mode: 'stat_aware',
+              actionType: 'attack',
+              primaryStats: ['str', 'dex'],
+              totalModifier: 5,
+            },
+          },
+          actionDamage: { statContribution: { stat: 'str' } },
+          monsterRetaliation: { hit: false },
+          performanceUpdates: [{ tokenId: 7, after: { roundsActed: 9, damageDealt: 99 } }],
+        },
+      },
+    } as never)
+
+    expect(prompt).toContain('Backend-computed stat-aware summary:')
+    expect(prompt).toContain('Action roll used backend stat-aware attack context (str/dex); total modifier 5.')
+    expect(prompt).toContain('Backend applied a stat contribution to damage from str.')
+    expect(prompt).toContain('Monster retaliation missed against the backend-computed defense context.')
+    expect(prompt).toContain('private performance counters')
+    expect(prompt).not.toContain('performanceUpdates')
+    expect(prompt).not.toContain('roundsActed')
+    expect(prompt).not.toContain('damageDealt')
+    expect(prompt).toContain('Do not assign HP, death, XP, rewards, dice, or mechanics')
+  })
+
+  it('normalizes untrusted GM encounter proposals without accepting mechanics as authoritative', () => {
+    const output = normalizeGameplayEncounterProposalResponse(JSON.stringify({
+      title: ' Bell Maw ',
+      summary: 'A maw unfolds.',
+      publicSetupNarration: 'The bell splits open.',
+      difficulty: 'deadly',
+      monsterCount: 99,
+      monsterName: 'Maw',
+      monsterArchetype: 'bell horror',
+      totalMonsterHp: 9999,
+      rewardXpPerCharacter: 9999,
+      temporaryBoons: ['ash-lit'],
+    }), { gameMasterAgentId: 'gm-1' })
+
+    expect(output).toMatchObject({
+      gameMasterAgentId: 'gm-1',
+      publicSetupNarration: 'The bell splits open.',
+      proposal: {
+        title: 'Bell Maw',
+        difficulty: 'deadly',
+        monsterCount: 99,
+        rewardXpPerCharacter: 9999,
+      },
+    })
+  })
+
+  it('rejects malformed autonomous action JSON before mechanics resolve', () => {
+    expect(() => normalizeGameplayActionResponse('{ bad', {
+      legalMonsterIds: ['monster-1'],
+      legalCharacterTokenIds: [1, 2],
+    })).toThrow('Gameplay action response did not contain a JSON object')
+  })
+
+  it('validates generated actions with legal targets and required public speech', () => {
+    expect(() => normalizeGameplayActionResponse(JSON.stringify({
+      actionType: 'attack',
+      target: { kind: 'monster', id: 'monster-404' },
+      publicSpeech: 'I strike.',
+    }), {
+      legalMonsterIds: ['monster-1'],
+      legalCharacterTokenIds: [1, 2],
+    })).toThrow('Gameplay action target is not legal for this turn')
+
+    expect(normalizeGameplayActionResponse(JSON.stringify({
+      actionType: 'attack',
+      target: { kind: 'monster', id: 'monster-1' },
+      publicSpeech: 'I strike the maw.',
+      intentSummary: 'Draw its attention.',
+    }), {
+      legalMonsterIds: ['monster-1'],
+      legalCharacterTokenIds: [1, 2],
+    })).toMatchObject({
+      action: {
+        actionType: 'attack',
+        target: { kind: 'monster', id: 'monster-1' },
+        publicSpeech: 'I strike the maw.',
+      },
+    })
+  })
+
+  it('outcome narration accepts continuity updates but ignores attempted mechanical fields', () => {
+    const output = normalizeGameplayOutcomeNarrationResponse(JSON.stringify({
+      publicNarration: 'Steel rings; the maw reels from the backend result.',
+      stateSummary: 'The maw has been wounded.',
+      openThreads: ['The bell still hums'],
+      hp: 999,
+      xp: 999,
+      death: false,
+    }), {
+      gameMasterAgentId: 'gm-1',
+      narrativeState,
+    })
+
+    expect(output).toEqual({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Steel rings; the maw reels from the backend result.',
+      stateAfter: {
+        stateSummary: 'The maw has been wounded.',
+        currentObjective: null,
+        openThreads: ['The bell still hums'],
+      },
+      metadata: { rawResponseLength: expect.any(Number) },
+    })
+    expect(output).not.toHaveProperty('hp')
+  })
+})

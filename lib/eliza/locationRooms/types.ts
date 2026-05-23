@@ -1,7 +1,7 @@
 export type LocationRoomTriggerType = 'scheduled' | 'owner' | 'admin'
 export type LocationRoomTickStatus = 'pending' | 'processing' | 'completed' | 'skipped' | 'failed' | 'dead'
 export type LocationRoomMessageVisibility = 'public' | 'internal'
-export type LocationRoomAuthorKind = 'agent' | 'system' | 'wallet' | 'admin' | 'scheduler'
+export type LocationRoomAuthorKind = 'agent' | 'system' | 'wallet' | 'admin' | 'scheduler' | 'game_master'
 
 export type LocationRoom = {
   id: string
@@ -60,6 +60,20 @@ export type LocationRoomLocation = {
   name: string
 }
 
+export type LocationRoomLocationDetails = LocationRoomLocation & {
+  chainLocationId: string | null
+  active: boolean | null
+  metadata: Record<string, unknown>
+  createdAt: string
+  updatedAt: string
+}
+
+export type LocationRoomPublicMessageStats = {
+  messageCount: number
+  latestSequence: number | null
+  latestCreatedAt: string | null
+}
+
 export type LocationRoomParticipant = {
   tokenId: number
   name: string
@@ -76,6 +90,8 @@ export type PublicLocationRoomParticipant = {
   imageUrl: string | null
 }
 
+export type PublicLocationRoomGameplayMessageKind = 'gm_setup' | 'character_action' | 'gm_outcome'
+
 export type PublicLocationRoomMessage = {
   id: string
   sequence: number
@@ -84,6 +100,38 @@ export type PublicLocationRoomMessage = {
   authorName: string
   content: string
   createdAt: string
+  gameplayMessageKind?: PublicLocationRoomGameplayMessageKind
+}
+
+export type PublicGameplayStatusBand = 'healthy' | 'injured' | 'critical' | 'down' | 'dead' | 'fled' | 'unknown'
+
+export type PublicLocationRoomGameplaySummary = {
+  mode: 'enabled' | 'disabled'
+  status: 'idle' | 'active_encounter' | 'aftermath'
+  encounter: {
+    publicTitle: string | null
+    publicSummary: string | null
+    status: 'active' | 'victory' | 'defeat' | 'fled' | 'abandoned'
+    round: number
+  } | null
+  characters: Array<{
+    tokenId: number
+    name: string | null
+    status: 'alive' | 'downed' | 'dead' | 'fled'
+    hpBand: PublicGameplayStatusBand
+  }>
+  monsters: Array<{
+    id: string
+    name: string
+    archetype: string
+    status: 'alive' | 'dead'
+    hpBand: PublicGameplayStatusBand
+  }>
+  pendingRewardSummary: {
+    victoryText: string | null
+    temporaryBoons: string[]
+    narrativeRewards: string[]
+  } | null
 }
 
 export type PublicLocationRoomSummary = {
@@ -102,6 +150,7 @@ export type PublicLocationRoomRead = {
   room: PublicLocationRoomSummary
   participants: PublicLocationRoomParticipant[]
   messages: PublicLocationRoomMessage[]
+  gameplay?: PublicLocationRoomGameplaySummary
   pagination: {
     page: number
     pageSize: number
@@ -162,11 +211,40 @@ export type RequestLocationRoomTickResult = {
   participantCount: number
 }
 
+export type RequestLocationRoomTickProcessingStatus =
+  | 'completed'
+  | 'skipped'
+  | 'failed'
+  | 'dead'
+  | 'already_processing'
+  | 'not_claimable'
+
+export type RequestLocationRoomTickProcessingSummary = {
+  attempted: boolean
+  status: RequestLocationRoomTickProcessingStatus
+  tickId: string | null
+  result?: ProcessLocationRoomTickResult
+  reason?: string
+}
+
+export type RequestLocationRoomTickAndProcessResult = RequestLocationRoomTickResult & {
+  processing: RequestLocationRoomTickProcessingSummary
+}
+
+export type LocationRoomNarrativeTurnContext = {
+  stateSummary: string
+  currentObjective: string | null
+  openThreads: string[]
+  speakerInstruction: string
+  publicNarration?: string | null
+}
+
 export type GenerateOfficialLocationRoomTurnInput = {
   room: LocationRoom
   speaker: LocationRoomParticipant
   participants: LocationRoomParticipant[]
   recentMessages: LocationRoomMessage[]
+  narrativeContext?: LocationRoomNarrativeTurnContext
 }
 
 export type GenerateOfficialLocationRoomTurnResult = {

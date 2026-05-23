@@ -37,7 +37,8 @@ export const MARKER_CONFIG: MarkerConfigMap = {
   location: {
     icon: 'icon_location',
     scale: 0.6,
-    depth: 50,
+    // Keep location markers above staked character stacks so locations remain clickable.
+    depth: 150,
     visibilityKey: 'locations',
   },
   character: {

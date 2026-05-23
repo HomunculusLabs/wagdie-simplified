@@ -4,6 +4,10 @@
     {
       "path": "/api/sync/ownership?secret=${SYNC_SECRET_KEY}",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/sync/eliza-location-rooms?secret=${SYNC_SECRET_KEY}",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

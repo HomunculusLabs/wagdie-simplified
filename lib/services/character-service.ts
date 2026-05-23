@@ -23,6 +23,13 @@ export class CharacterService {
   }
 
   /**
+   * Get characters by token IDs for backend batch hydration.
+   */
+  async getCharactersByTokenIds(tokenIds: number[]): Promise<Character[]> {
+    return this.repository.findByTokenIds(tokenIds)
+  }
+
+  /**
    * Get a single character by token ID
    */
   async getCharacter(tokenId: number): Promise<Character | null> {
@@ -69,6 +76,7 @@ export const characterService = new CharacterService(serverCharacterRepository)
 
 // Export individual functions for backward compatibility
 export const getCharacters = (filters: CharacterFilters) => characterService.getCharacters(filters)
+export const getCharactersByTokenIds = (tokenIds: number[]) => characterService.getCharactersByTokenIds(tokenIds)
 export const getCharacter = (tokenId: number) => characterService.getCharacter(tokenId)
 export const updateCharacter = (tokenId: number, updates: Partial<Pick<Character, EditableCharacterFields>>) =>
   characterService.updateCharacter(tokenId, updates)

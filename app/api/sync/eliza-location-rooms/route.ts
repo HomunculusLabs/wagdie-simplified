@@ -2,9 +2,13 @@ import { NextRequest } from 'next/server'
 import { jsonRaw, jsonRawError } from '@/lib/api/responses'
 import {
   LocationRoomFeatureDisabledError,
+  LocationRoomGameplayConfigError,
+  LocationRoomNarrativeConfigError,
   LocationRoomOfficialServiceDisabledError,
   locationRoomService,
 } from '@/lib/eliza/locationRooms/service'
+
+export const runtime = 'nodejs'
 
 function verifyAuthorization(request: NextRequest): boolean {
   const syncSecret = process.env.SYNC_SECRET_KEY
@@ -52,6 +56,20 @@ async function handleSync(request: NextRequest) {
     if (error instanceof LocationRoomOfficialServiceDisabledError) {
       return jsonRaw(
         { success: false, error: 'Official ElizaOS service is not configured' },
+        { status: 503 }
+      )
+    }
+
+    if (error instanceof LocationRoomNarrativeConfigError) {
+      return jsonRaw(
+        { success: false, error: 'Location room narrative game-master agent is not configured' },
+        { status: 503 }
+      )
+    }
+
+    if (error instanceof LocationRoomGameplayConfigError) {
+      return jsonRaw(
+        { success: false, error: error.message },
         { status: 503 }
       )
     }

@@ -18,6 +18,14 @@ const adminNavItems = [
     label: 'Map Locations',
   },
   {
+    href: '/admin/game-master-agent',
+    label: 'GM Agent',
+  },
+  {
+    href: '/admin/location-rooms',
+    label: 'Location Rooms',
+  },
+  {
     href: '/admin/lore-canonization',
     label: 'Lore Canonization',
   },

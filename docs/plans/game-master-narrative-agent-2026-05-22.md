@@ -54,6 +54,13 @@ V1 output should remain public but ephemeral room activity. The game master may 
 
 ## Work Items
 
+## Implementation Progress
+
+- [x] Foundation slice: Items 1–3 plus disabled-by-default admin-managed GM config. Implemented by session `7219674B-5E8B-46ED-B96C-BF5503A73C4B`; tests passed for location-room service, routes, and narrative repository. Full `tsc --noEmit` is blocked by pre-existing unrelated TypeScript errors outside this slice.
+- [x] Integration slice: Items 4–6. Implemented by session `4612558C-4A81-4EC0-9CD3-6FAF95CA40FC`; focused service/generator/coordinator tests passed. Full `tsc --noEmit` remains blocked by pre-existing unrelated errors.
+- [x] UI/admin slice: Items 7–8. Implemented by session `5019C539-C04C-47CF-BF2C-26A16E21F4B0`; scoped component/API/coordinator tests passed.
+- [x] Verification slice: Item 9. Focused route/service/component/hook/narrative tests passed; production build completed; full lint/typecheck remain blocked by pre-existing unrelated errors outside the GM narrative slice.
+
 ### Item 1 — Add narrative schema and `game_master` author kind
 
 **Goal:** Add durable room-level narrative state and per-tick beat records without changing the public room API contract.

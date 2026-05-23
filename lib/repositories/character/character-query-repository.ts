@@ -400,6 +400,35 @@ export class CharacterQueryRepository {
   }
 
   /**
+   * Find characters by token IDs without changing location-room membership semantics.
+   */
+  async findByTokenIds(tokenIds: number[]): Promise<Character[]> {
+    const uniqueTokenIds = Array.from(new Set(
+      tokenIds.filter((tokenId) => Number.isInteger(tokenId) && tokenId >= 0)
+    ))
+    if (uniqueTokenIds.length === 0) {
+      return []
+    }
+
+    const rows: Character[] = []
+    for (const tokenIdChunk of chunkTokenIds(uniqueTokenIds)) {
+      const { data, error } = await supabase!
+        .from(CHARACTERS_TABLE)
+        .select('*')
+        .in('token_id', tokenIdChunk)
+
+      if (error) {
+        console.error('Error fetching gameplay character sheets:', error)
+        throw new Error(`Failed to fetch gameplay character sheets: ${error.message}`)
+      }
+
+      rows.push(...((data || []) as unknown as Character[]))
+    }
+
+    return this.runtimeAssets.hydrateCharacters(normalizeCharacters(rows))
+  }
+
+  /**
    * Find a single character by token ID
    */
   async findById(tokenId: number): Promise<Character | null> {

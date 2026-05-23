@@ -84,10 +84,32 @@ Purpose: run the scheduled worker that maintains Eliza location-room state.
 
 Characteristics:
 
-- Accepts `GET` and `POST`.
-- Requires `SYNC_SECRET_KEY` via bearer token or `?secret=<secret>`. Prefer bearer auth because query-string secrets can be captured in logs, browser history, scheduler dashboards, and proxy traces.
-- Returns `503` when location rooms are disabled or the official ElizaOS service is not configured.
+- Accepts `GET` and `POST` and declares the Node.js runtime for server-side ElizaOS dependencies.
+- Vercel runs `/api/sync/eliza-location-rooms?secret=${SYNC_SECRET_KEY}` every 15 minutes (`*/15 * * * *`).
+- Requires `SYNC_SECRET_KEY` via bearer token or `?secret=<secret>`. Prefer bearer auth because query-string secrets can be captured in logs, browser history, scheduler dashboards, and proxy traces; the query-string form exists for the current Vercel cron pattern.
+- Manual/operator invocation shape: `curl -X POST -H "Authorization: Bearer $SYNC_SECRET_KEY" "$NEXT_PUBLIC_APP_URL/api/sync/eliza-location-rooms"`.
+- Returns counters including `enqueued`, `deduped`, `processed`, `completed`, `skipped`, `failed`, `dead`, and per-tick `results`, plus a `timestamp`.
+- Returns `503` when location rooms are disabled, the official ElizaOS service is not configured, or narrative mode is enabled without a resolvable Game Master.
 - Delegates to `locationRoomService.runScheduledWorker()`.
+
+Dev narrative mode:
+
+- Code defaults keep `ELIZA_LOCATION_ROOMS_ENABLED=false` and `ELIZA_LOCATION_ROOM_NARRATIVE_ENABLED=false` unless explicitly configured.
+- Docker Compose dev passes `ELIZA_LOCATION_ROOMS_ENABLED=true` and `ELIZA_LOCATION_ROOM_NARRATIVE_ENABLED=true` to the app service, with optional passthrough for `ELIZA_LOCATION_ROOM_GAME_MASTER_AGENT_ID`.
+- Non-Compose local development remains explicit: set the location-room vars in `.env.local` before `bun run dev`.
+- Narrative mode still requires reachable `ELIZAOS_BASE_URL`, valid `ELIZAOS_API_KEY`, and either an active admin Game Master setting or the `ELIZA_LOCATION_ROOM_GAME_MASTER_AGENT_ID` env fallback.
+
+Crows Den location-room smoke checklist:
+
+1. Confirm canonical Crows Den is `locations.id='11'` and `chain_location_id='11'`.
+2. Confirm at least two eligible participants are staked/synced at `location_id='11'`.
+3. Confirm Game Master state is available in `/admin/game-master-agent` or via the `ELIZA_LOCATION_ROOM_GAME_MASTER_AGENT_ID` fallback.
+4. Open `/admin/location-rooms` for location `11` and confirm diagnostics do not recommend `use_canonical_location_11`.
+5. Trigger manual room activity as an admin or eligible owner.
+6. Confirm the active tick leaves `pending` and is not stuck behind a non-stale `processing` lock.
+7. Confirm a public location-room message appears.
+8. Confirm a narrative beat exists when narrative mode is enabled.
+9. Confirm the scheduled cron processes later due ticks through `/api/sync/eliza-location-rooms`.
 
 See `docs/operations/elizaos-validation.md` before promoting this flow beyond dev validation.
 

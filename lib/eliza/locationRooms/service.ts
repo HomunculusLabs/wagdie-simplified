@@ -1,15 +1,21 @@
 import { randomUUID } from 'crypto'
 import { elizaConfig } from '@/lib/eliza/config'
+import { gameMasterAgentService } from '@/lib/eliza/gameMasterAgent/service'
 import type {
   EnqueueScheduledTicksResult,
+  LocationRoom,
   LocationRoomMessage,
   LocationRoomParticipant,
   LocationRoomTick,
   LocationRoomWorkerResult,
   ProcessLocationRoomTickResult,
+  PublicGameplayStatusBand,
+  PublicLocationRoomGameplayMessageKind,
+  PublicLocationRoomGameplaySummary,
   PublicLocationRoomMessage,
   PublicLocationRoomParticipant,
   PublicLocationRoomRead,
+  RequestLocationRoomTickAndProcessResult,
   RequestLocationRoomTickInput,
   RequestLocationRoomTickResult,
 } from './types'
@@ -27,11 +33,34 @@ import {
   normalizeLocationRoomGeneratedContent,
   type OfficialLocationRoomTurnGenerator,
 } from './officialTurnGenerator'
+import {
+  locationRoomNarrativeCoordinator,
+  type GameMasterAgentResolver,
+  type LocationRoomNarrativeCoordinator,
+} from './narrativeCoordinator'
+import {
+  locationRoomGameplayCoordinator,
+  type LocationRoomGameplayCoordinator,
+} from './gameplay/coordinator'
+import {
+  locationRoomGameplayRepository,
+  type LocationRoomGameplayRepository,
+} from './gameplay/repository'
+import { parseGameplayMonsters, parseGameplayRewardPlan } from './gameplay/rules'
+import type { GameplayCharacterState, GameplayEncounter, GameplayRoomState } from './gameplay/types'
+import { selectLocationRoomSpeaker as selectLocationRoomSpeakerInternal } from './speakerSelection'
 
 const MIN_ELIGIBLE_PARTICIPANTS = 2
 const MAX_TICK_ATTEMPTS = 3
 const MAX_STORED_ERROR_LENGTH = 1000
 const OWNER_MANUAL_TICK_COOLDOWN_MS = 5 * 60_000
+const LEGACY_LOCATION_ALIASES = new Map<string, string>([
+  ['crows_den', '11'],
+])
+
+function resolveCanonicalLocationRoomId(locationId: string): string {
+  return LEGACY_LOCATION_ALIASES.get(locationId.trim().toLowerCase()) ?? locationId
+}
 
 export class LocationRoomNotFoundError extends Error {
   constructor(locationId: string) {
@@ -51,6 +80,20 @@ export class LocationRoomOfficialServiceDisabledError extends Error {
   constructor() {
     super('Official ElizaOS service is not configured')
     this.name = 'LocationRoomOfficialServiceDisabledError'
+  }
+}
+
+export class LocationRoomNarrativeConfigError extends Error {
+  constructor() {
+    super('Location room narrative mode requires an admin-managed game-master agent or ELIZA_LOCATION_ROOM_GAME_MASTER_AGENT_ID')
+    this.name = 'LocationRoomNarrativeConfigError'
+  }
+}
+
+export class LocationRoomGameplayConfigError extends Error {
+  constructor(message = 'Location room gameplay mode requires official ElizaOS, narrative mode, and a resolvable game-master agent') {
+    super(message)
+    this.name = 'LocationRoomGameplayConfigError'
   }
 }
 
@@ -113,7 +156,22 @@ function toPublicParticipant(participant: LocationRoomParticipant): PublicLocati
   }
 }
 
+const PUBLIC_GAMEPLAY_MESSAGE_KINDS: readonly PublicLocationRoomGameplayMessageKind[] = [
+  'gm_setup',
+  'character_action',
+  'gm_outcome',
+]
+
+function toPublicGameplayMessageKind(metadata: Record<string, unknown>): PublicLocationRoomGameplayMessageKind | undefined {
+  const value = metadata.gameplayMessageKind
+  return typeof value === 'string' && PUBLIC_GAMEPLAY_MESSAGE_KINDS.includes(value as PublicLocationRoomGameplayMessageKind)
+    ? value as PublicLocationRoomGameplayMessageKind
+    : undefined
+}
+
 function toPublicMessage(message: LocationRoomMessage): PublicLocationRoomMessage {
+  const gameplayMessageKind = toPublicGameplayMessageKind(message.metadata)
+
   return {
     id: message.id,
     sequence: message.sequence,
@@ -122,45 +180,92 @@ function toPublicMessage(message: LocationRoomMessage): PublicLocationRoomMessag
     authorName: message.authorName,
     content: message.content,
     createdAt: message.createdAt,
+    ...(gameplayMessageKind ? { gameplayMessageKind } : {}),
   }
 }
 
-export function selectLocationRoomSpeaker(
-  participants: LocationRoomParticipant[],
-  recentMessages: LocationRoomMessage[]
-): LocationRoomParticipant {
-  if (participants.length === 0) {
-    throw new Error('Cannot select a room speaker without participants')
-  }
+function toStatusBand(hp: number | null | undefined, maxHp: number | null | undefined, status?: string | null): PublicGameplayStatusBand {
+  if (status === 'dead') return 'dead'
+  if (status === 'fled') return 'fled'
+  if (status === 'downed') return 'down'
+  if (!Number.isFinite(hp) || !Number.isFinite(maxHp) || !maxHp) return 'unknown'
+  if ((hp ?? 0) <= 0) return 'down'
 
-  const stats = new Map<number, { count: number; lastSequence: number }>()
-  for (const participant of participants) {
-    stats.set(participant.tokenId, { count: 0, lastSequence: -1 })
-  }
-
-  for (const message of recentMessages) {
-    if (message.authorKind !== 'agent' || message.tokenId == null) continue
-    const participantStats = stats.get(message.tokenId)
-    if (!participantStats) continue
-    participantStats.count += 1
-    participantStats.lastSequence = Math.max(participantStats.lastSequence, message.sequence)
-  }
-
-  return [...participants].sort((a, b) => {
-    const aStats = stats.get(a.tokenId) ?? { count: 0, lastSequence: -1 }
-    const bStats = stats.get(b.tokenId) ?? { count: 0, lastSequence: -1 }
-
-    if (aStats.count !== bStats.count) return aStats.count - bStats.count
-    if (aStats.lastSequence !== bStats.lastSequence) return aStats.lastSequence - bStats.lastSequence
-    return a.tokenId - b.tokenId
-  })[0]
+  const ratio = (hp ?? 0) / Math.max(1, maxHp ?? 1)
+  if (ratio <= 0.25) return 'critical'
+  if (ratio <= 0.65) return 'injured'
+  return 'healthy'
 }
+
+async function toPublicGameplaySummary(params: {
+  locationId: string
+  participants: LocationRoomParticipant[]
+  state: GameplayRoomState | null
+  encounter: GameplayEncounter | null
+}): Promise<PublicLocationRoomGameplaySummary | undefined> {
+  const enabled = isLocationRoomGameplayEnabledForLocation(params.locationId)
+  if (!enabled) return undefined
+
+  const state = params.state
+  const encounter = params.encounter
+  const monsters = encounter ? parseGameplayMonsters(encounter.monsterState) : []
+  const rewardPlan = encounter ? parseGameplayRewardPlan(encounter.rewardPlan) : null
+  const characters = params.participants.map((participant) => {
+    const character = state?.characters[String(participant.tokenId)] as GameplayCharacterState | undefined
+    const status = character?.status ?? 'alive'
+
+    return {
+      tokenId: participant.tokenId,
+      name: character?.name ?? participant.name ?? null,
+      status,
+      hpBand: toStatusBand(character?.hp, character?.maxHp, character?.status),
+    }
+  })
+
+  return {
+    mode: enabled ? 'enabled' : 'disabled',
+    status: state?.status ?? 'idle',
+    encounter: encounter ? {
+      publicTitle: encounter.publicTitle,
+      publicSummary: encounter.publicSummary,
+      status: encounter.status,
+      round: encounter.roundNumber,
+    } : null,
+    characters,
+    monsters: monsters.map((monster) => ({
+      id: monster.id,
+      name: monster.name,
+      archetype: monster.archetype,
+      status: monster.status,
+      hpBand: toStatusBand(monster.hp, monster.maxHp, monster.status),
+    })),
+    pendingRewardSummary: rewardPlan ? {
+      victoryText: rewardPlan.victoryText,
+      temporaryBoons: rewardPlan.temporaryBoons,
+      narrativeRewards: rewardPlan.narrativeRewards,
+    } : null,
+  }
+}
+
+export const selectLocationRoomSpeaker = selectLocationRoomSpeakerInternal
 
 function normalizeWallet(value: string): string {
   return value.trim().toLowerCase()
 }
 
-function ensureLocationRoomFeatureEnabled(): void {
+export function isLocationRoomGameplayEnabledForLocation(locationId: string): boolean {
+  const gameplay = elizaConfig.locationRooms.gameplay
+  if (!gameplay.enabled) return false
+
+  const normalizedLocationId = locationId.trim().toLowerCase()
+  return gameplay.locationAllowlist.some((allowedLocationId) =>
+    allowedLocationId.trim().toLowerCase() === normalizedLocationId
+  )
+}
+
+async function ensureLocationRoomFeatureEnabled(
+  gameMasterAgentResolver: GameMasterAgentResolver = gameMasterAgentService
+): Promise<void> {
   if (!elizaConfig.locationRooms.enabled) {
     throw new LocationRoomFeatureDisabledError()
   }
@@ -168,26 +273,81 @@ function ensureLocationRoomFeatureEnabled(): void {
   if (!elizaConfig.official.baseUrl) {
     throw new LocationRoomOfficialServiceDisabledError()
   }
+
+  if (elizaConfig.locationRooms.narrative.enabled) {
+    try {
+      await gameMasterAgentResolver.resolveRuntimeGameMasterAgentId()
+    } catch {
+      throw new LocationRoomNarrativeConfigError()
+    }
+  }
+}
+
+async function ensureLocationRoomGameplayConfigReady(
+  locationId: string,
+  gameMasterAgentResolver: GameMasterAgentResolver = gameMasterAgentService
+): Promise<void> {
+  if (!isLocationRoomGameplayEnabledForLocation(locationId)) {
+    return
+  }
+
+  if (!elizaConfig.locationRooms.enabled) {
+    throw new LocationRoomFeatureDisabledError()
+  }
+
+  if (elizaConfig.mode !== 'official' || !elizaConfig.official.baseUrl) {
+    throw new LocationRoomGameplayConfigError('Location room gameplay mode requires ELIZA_INTEGRATION_MODE=official and ELIZAOS_BASE_URL')
+  }
+
+  if (!elizaConfig.locationRooms.narrative.enabled) {
+    throw new LocationRoomGameplayConfigError('Location room gameplay mode requires narrative mode to be enabled')
+  }
+
+  try {
+    await gameMasterAgentResolver.resolveRuntimeGameMasterAgentId()
+  } catch {
+    throw new LocationRoomGameplayConfigError()
+  }
 }
 
 export class LocationRoomService {
   constructor(
     private readonly repository: LocationRoomRepository = locationRoomRepository,
     private readonly membership: LocationRoomMembershipRepository = locationRoomMembershipRepository,
-    private readonly turnGenerator: OfficialLocationRoomTurnGenerator = officialLocationRoomTurnGenerator
+    private readonly turnGenerator: OfficialLocationRoomTurnGenerator = officialLocationRoomTurnGenerator,
+    private readonly narrativeCoordinator: LocationRoomNarrativeCoordinator = locationRoomNarrativeCoordinator,
+    private readonly gameMasterAgentResolver: GameMasterAgentResolver = gameMasterAgentService,
+    private readonly gameplayCoordinator: LocationRoomGameplayCoordinator = locationRoomGameplayCoordinator,
+    private readonly gameplayRepository: LocationRoomGameplayRepository = locationRoomGameplayRepository
   ) {}
 
   async getPublicRoom(locationId: string, params: { page?: string | null; pageSize?: string | null } = {}): Promise<PublicLocationRoomRead> {
-    const location = await this.repository.getLocation(locationId)
+    const canonicalLocationId = resolveCanonicalLocationRoomId(locationId)
+    const location = await this.repository.getLocation(canonicalLocationId)
     if (!location) {
-      throw new LocationRoomNotFoundError(locationId)
+      throw new LocationRoomNotFoundError(canonicalLocationId)
     }
 
-    const room = await this.repository.ensureRoomForLocation(locationId)
-    const participants = await this.membership.listEligibleParticipantsByLocation(locationId)
+    const room = await this.repository.ensureRoomForLocation(canonicalLocationId)
+    const participants = await this.membership.listEligibleParticipantsByLocation(canonicalLocationId)
     const page = normalizePage(params.page ?? null)
     const pageSize = normalizePageSize(params.pageSize ?? null)
     const messages = await this.repository.listPublicMessages({ roomId: room.id, page, pageSize })
+    const gameplayEnabled = isLocationRoomGameplayEnabledForLocation(canonicalLocationId)
+    const gameplayState = gameplayEnabled
+      ? await this.gameplayRepository.findStateByRoomId(room.id)
+      : null
+    const gameplayEncounter = gameplayEnabled
+      ? gameplayState?.activeEncounterId
+        ? await this.gameplayRepository.findEncounterById(gameplayState.activeEncounterId)
+        : await this.gameplayRepository.findActiveEncounterByRoomId(room.id)
+      : null
+    const gameplay = await toPublicGameplaySummary({
+      locationId: canonicalLocationId,
+      participants,
+      state: gameplayState,
+      encounter: gameplayEncounter,
+    })
 
     return {
       room: {
@@ -203,6 +363,7 @@ export class LocationRoomService {
       },
       participants: participants.map(toPublicParticipant),
       messages: messages.messages.map(toPublicMessage),
+      ...(gameplay ? { gameplay } : {}),
       pagination: {
         page: messages.page,
         pageSize: messages.pageSize,
@@ -213,19 +374,96 @@ export class LocationRoomService {
   }
 
   async requestTick(locationId: string, input: RequestLocationRoomTickInput): Promise<RequestLocationRoomTickResult> {
-    ensureLocationRoomFeatureEnabled()
+    const prepared = await this.validateAndEnqueueManualTick(locationId, input)
+    return prepared.result
+  }
 
-    const location = await this.repository.getLocation(locationId)
-    if (!location) {
-      throw new LocationRoomNotFoundError(locationId)
+  async requestTickAndProcess(
+    locationId: string,
+    input: RequestLocationRoomTickInput
+  ): Promise<RequestLocationRoomTickAndProcessResult> {
+    const now = input.now ?? new Date()
+    const prepared = await this.validateAndEnqueueManualTick(locationId, { ...input, now })
+    const workerId = `location-room-manual-${randomUUID()}`
+    const targetTick = prepared.enqueuedTick ?? await this.repository.findOldestProcessableTickForRoom(prepared.room.id, now)
+
+    if (!targetTick) {
+      const processingTick = await this.repository.findNonStaleProcessingTickForRoom(prepared.room.id, now)
+      return {
+        ...prepared.result,
+        processing: processingTick
+          ? {
+              attempted: false,
+              status: 'already_processing',
+              tickId: processingTick.id,
+              reason: 'Tick is already owned by another worker',
+            }
+          : {
+              attempted: false,
+              status: 'not_claimable',
+              tickId: null,
+              reason: 'No due room tick is currently claimable',
+            },
+      }
     }
 
-    const room = await this.repository.ensureRoomForLocation(locationId)
+    const claimedTick = await this.repository.claimTick(targetTick.id, workerId, now)
+    if (!claimedTick) {
+      const processingTick = await this.repository.findNonStaleProcessingTickForRoom(prepared.room.id, now)
+      return {
+        ...prepared.result,
+        processing: processingTick
+          ? {
+              attempted: false,
+              status: 'already_processing',
+              tickId: processingTick.id,
+              reason: 'Tick is already owned by another worker',
+            }
+          : {
+              attempted: false,
+              status: 'not_claimable',
+              tickId: targetTick.id,
+              reason: 'Target tick was not due or was claimed by another worker',
+            },
+      }
+    }
+
+    const processed = await this.processClaimedTick(claimedTick, now)
+    return {
+      ...prepared.result,
+      processing: {
+        attempted: true,
+        status: processed.status,
+        tickId: processed.tickId,
+        result: processed,
+      },
+    }
+  }
+
+  private async validateAndEnqueueManualTick(
+    locationId: string,
+    input: RequestLocationRoomTickInput
+  ): Promise<{
+    room: LocationRoom
+    enqueuedTick: LocationRoomTick | null
+    result: RequestLocationRoomTickResult
+  }> {
+    const canonicalLocationId = resolveCanonicalLocationRoomId(locationId)
+
+    await ensureLocationRoomFeatureEnabled(this.gameMasterAgentResolver)
+    await ensureLocationRoomGameplayConfigReady(canonicalLocationId, this.gameMasterAgentResolver)
+
+    const location = await this.repository.getLocation(canonicalLocationId)
+    if (!location) {
+      throw new LocationRoomNotFoundError(canonicalLocationId)
+    }
+
+    const room = await this.repository.ensureRoomForLocation(canonicalLocationId)
     if (!room.tickEnabled) {
       throw new LocationRoomTickDisabledError()
     }
 
-    const participants = await this.membership.listEligibleParticipantsByLocation(locationId)
+    const participants = await this.membership.listEligibleParticipantsByLocation(canonicalLocationId)
     if (participants.length < MIN_ELIGIBLE_PARTICIPANTS) {
       throw new LocationRoomInsufficientParticipantsError()
     }
@@ -262,7 +500,7 @@ export class LocationRoomService {
     const requestedByTokenId = input.actor === 'owner'
       ? ownedParticipant?.tokenId ?? null
       : null
-    const result = await this.repository.enqueueTick({
+    const enqueueResult = await this.repository.enqueueTick({
       room,
       triggerType,
       requestedByWallet: normalizedWallet,
@@ -270,18 +508,22 @@ export class LocationRoomService {
     })
 
     return {
-      roomId: room.id,
-      locationId: room.locationId,
-      tickId: result.tick?.id ?? null,
-      triggerType,
-      deduped: result.deduped,
-      requestedByTokenId,
-      participantCount: participants.length,
+      room,
+      enqueuedTick: enqueueResult.tick,
+      result: {
+        roomId: room.id,
+        locationId: room.locationId,
+        tickId: enqueueResult.tick?.id ?? null,
+        triggerType,
+        deduped: enqueueResult.deduped,
+        requestedByTokenId,
+        participantCount: participants.length,
+      },
     }
   }
 
   async enqueueDueScheduledTicks(now = new Date()): Promise<EnqueueScheduledTicksResult> {
-    ensureLocationRoomFeatureEnabled()
+    await ensureLocationRoomFeatureEnabled(this.gameMasterAgentResolver)
 
     const activeLocationIds = await this.membership.listEligibleLocationIds(MIN_ELIGIBLE_PARTICIPANTS)
     for (const locationId of activeLocationIds) {
@@ -295,6 +537,10 @@ export class LocationRoomService {
       now,
       Math.max(elizaConfig.locationRooms.maxTicksPerRun, activeLocationIds.length, 1)
     )
+
+    for (const room of dueRooms) {
+      await ensureLocationRoomGameplayConfigReady(room.locationId, this.gameMasterAgentResolver)
+    }
 
     let enqueued = 0
     let deduped = 0
@@ -312,7 +558,7 @@ export class LocationRoomService {
   }
 
   async processDueTicks(limit = elizaConfig.locationRooms.maxTicksPerRun, now = new Date()): Promise<ProcessLocationRoomTickResult[]> {
-    ensureLocationRoomFeatureEnabled()
+    await ensureLocationRoomFeatureEnabled(this.gameMasterAgentResolver)
 
     const workerId = `location-room-worker-${randomUUID()}`
     const ticks = await this.repository.claimDueTicks(limit, workerId, now)
@@ -326,7 +572,7 @@ export class LocationRoomService {
   }
 
   async runScheduledWorker(now = new Date()): Promise<LocationRoomWorkerResult> {
-    ensureLocationRoomFeatureEnabled()
+    await ensureLocationRoomFeatureEnabled(this.gameMasterAgentResolver)
 
     const enqueueResult = await this.enqueueDueScheduledTicks(now)
     const results = await this.processDueTicks(elizaConfig.locationRooms.maxTicksPerRun, now)
@@ -350,8 +596,15 @@ export class LocationRoomService {
     } catch (error) {
       const storedError = routeSafeError(error)
       const selectedTokenId = tick.selectedTokenId
+      const shouldMarkGameplayTurn = isLocationRoomGameplayEnabledForLocation(tick.locationId)
+      const shouldMarkNarrativeBeat = !shouldMarkGameplayTurn && elizaConfig.locationRooms.narrative.enabled
 
       if (tick.attempts >= MAX_TICK_ATTEMPTS) {
+        if (shouldMarkGameplayTurn) {
+          await this.gameplayCoordinator.markTickFailed(tick.id, error, { dead: true }).catch(() => null)
+        } else if (shouldMarkNarrativeBeat) {
+          await this.narrativeCoordinator.markTickFailed(tick.id, error, { dead: true }).catch(() => null)
+        }
         await this.repository.markTickDead(tick.id, storedError).catch(() => null)
         return {
           tickId: tick.id,
@@ -359,6 +612,12 @@ export class LocationRoomService {
           selectedTokenId,
           reason: 'attempts_exhausted',
         }
+      }
+
+      if (shouldMarkGameplayTurn) {
+        await this.gameplayCoordinator.markTickFailed(tick.id, error).catch(() => null)
+      } else if (shouldMarkNarrativeBeat) {
+        await this.narrativeCoordinator.markTickFailed(tick.id, error).catch(() => null)
       }
 
       await this.repository.markTickFailed(tick.id, storedError, nextRetryAt(tick.attempts, now)).catch(() => null)
@@ -383,6 +642,8 @@ export class LocationRoomService {
       }
     }
 
+    await ensureLocationRoomGameplayConfigReady(room.locationId, this.gameMasterAgentResolver)
+
     const participants = await this.membership.listEligibleParticipantsByLocation(room.locationId)
     if (participants.length < MIN_ELIGIBLE_PARTICIPANTS) {
       await this.repository.markTickSkipped(tick.id, 'Fewer than two eligible participants')
@@ -402,12 +663,86 @@ export class LocationRoomService {
       room.id,
       elizaConfig.locationRooms.transcriptWindow
     )
-    const speaker = selectLocationRoomSpeaker(participants, recentMessages)
-    await this.repository.markTickSelected(tick.id, speaker.tokenId)
+
+    if (isLocationRoomGameplayEnabledForLocation(room.locationId)) {
+      const gameplayResult = await this.gameplayCoordinator.processTurn({
+        room,
+        tick,
+        participants,
+        recentMessages,
+        now,
+      })
+
+      if (gameplayResult.status === 'skipped') {
+        await this.repository.markTickSkipped(tick.id, gameplayResult.reason)
+        await this.repository.updateRoomAfterProcessedTick(room, {
+          tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
+          now,
+        })
+        return {
+          tickId: tick.id,
+          status: 'skipped',
+          selectedTokenId: null,
+          reason: gameplayResult.reason,
+        }
+      }
+
+      await this.repository.markTickCompleted(tick.id)
+      await this.repository.updateRoomAfterProcessedTick(room, {
+        tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
+        now,
+      })
+
+      return {
+        tickId: tick.id,
+        status: 'completed',
+        selectedTokenId: gameplayResult.selectedTokenId,
+        messageId: gameplayResult.messageId,
+      }
+    }
+
+    const narrativeEnabled = elizaConfig.locationRooms.narrative.enabled
+    const speaker = narrativeEnabled && tick.selectedTokenId != null
+      ? participants.find((participant) => participant.tokenId === tick.selectedTokenId)
+      : selectLocationRoomSpeaker(participants, recentMessages)
+
+    if (!speaker) {
+      throw new Error('Selected narrative speaker is no longer eligible for this location room')
+    }
+
+    if (tick.selectedTokenId !== speaker.tokenId) {
+      await this.repository.markTickSelected(tick.id, speaker.tokenId)
+    }
 
     let appendedMessageId: string | null = null
 
     try {
+      if (narrativeEnabled) {
+        const narrativeResult = await this.narrativeCoordinator.processTurn({
+          room,
+          tick,
+          speaker,
+          participants,
+          recentMessages,
+        })
+        if (!narrativeResult.messageId) {
+          throw new Error('Narrative coordinator did not append a character message')
+        }
+        appendedMessageId = narrativeResult.messageId
+        await this.repository.markTickCompleted(tick.id)
+        await this.repository.updateRoomAfterProcessedTick(room, {
+          tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
+          now,
+        })
+
+        return {
+          tickId: tick.id,
+          status: 'completed',
+          selectedTokenId: speaker.tokenId,
+          messageId: narrativeResult.messageId,
+        }
+      }
+
       const generated = await this.turnGenerator.generateTurn({
         room,
         speaker,
@@ -473,6 +808,12 @@ export class LocationRoomService {
           messageId: appendedMessageId,
           reason: 'message_appended_before_completion_error',
         }
+      }
+
+      if (narrativeEnabled) {
+        await this.narrativeCoordinator.markTickFailed(tick.id, error, {
+          dead: tick.attempts >= MAX_TICK_ATTEMPTS,
+        }).catch(() => null)
       }
 
       if (tick.attempts >= MAX_TICK_ATTEMPTS) {

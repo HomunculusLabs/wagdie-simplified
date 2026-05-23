@@ -4,7 +4,8 @@ export const WAGDIE_KNOWLEDGE_INDEX_PATH = '/wagdie-knowledge/index'
 export const WAGDIE_KNOWLEDGE_DELETE_PATH = '/wagdie-knowledge/delete'
 
 export interface OfficialKnowledgeSourcePointer extends Record<string, unknown> {
-  tokenId: string
+  tokenId?: string
+  serviceAgentKey?: string
   documentId: string
   officialAgentId: string
   path: string
@@ -13,7 +14,8 @@ export interface OfficialKnowledgeSourcePointer extends Record<string, unknown> 
 }
 
 export interface OfficialKnowledgeIndexRequest {
-  tokenId: string
+  tokenId?: string
+  serviceAgentKey?: string
   documentId: string
   officialAgentId: string
   path: string
@@ -28,7 +30,8 @@ export interface OfficialKnowledgeIndexResponse {
 }
 
 export interface OfficialKnowledgeDeleteRequest {
-  tokenId: string
+  tokenId?: string
+  serviceAgentKey?: string
   documentId: string
   officialAgentId?: string | null
   officialMemoryId?: string | null

@@ -28,6 +28,7 @@ export type { CharacterWithLocation, JoinedLocation } from './character/characte
 
 export interface ICharacterRepository {
   findMany(filters: CharacterFilters): Promise<CharactersResponse>
+  findByTokenIds(tokenIds: number[]): Promise<Character[]>
   findById(tokenId: number): Promise<Character | null>
   update(tokenId: number, updates: Partial<Pick<Character, EditableCharacterFields>>): Promise<Character | null>
   findConcords(tokenId: number): Promise<Array<CharacterConcord & { concord: Concord }>>
@@ -70,6 +71,13 @@ export class CharacterRepository implements ICharacterRepository {
    */
   async findMany(filters: CharacterFilters): Promise<CharactersResponse> {
     return this.queryRepository.findMany(filters)
+  }
+
+  /**
+   * Find characters by token IDs.
+   */
+  async findByTokenIds(tokenIds: number[]): Promise<Character[]> {
+    return this.queryRepository.findByTokenIds(tokenIds)
   }
 
   /**

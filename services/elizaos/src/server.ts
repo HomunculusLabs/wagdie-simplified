@@ -3,8 +3,10 @@ import 'dotenv/config';
 import { AgentServer, type ServerConfig } from '@elizaos/server';
 import { bootstrapPlugin } from '@elizaos/plugin-bootstrap';
 import { venicePlugin } from '@elizaos/plugin-venice';
+import { wagdieGameMasterCharacter } from './characters/wagdie-game-master-character.js';
 import { wagdieSpikeCharacter } from './characters/wagdie-spike-character.js';
 import { wagdieKnowledgePlugin } from './wagdie-knowledge-plugin.js';
+import { wagdieGameplayPlugin } from './wagdie-gameplay-plugin.js';
 import { validateStartupEnvironment } from './startup-env.js';
 
 function getPort(): number {
@@ -26,7 +28,11 @@ function buildServerConfig(): ServerConfig {
     agents: [
       {
         character: wagdieSpikeCharacter,
-        plugins: [bootstrapPlugin, venicePlugin, wagdieKnowledgePlugin],
+        plugins: [bootstrapPlugin, venicePlugin, wagdieKnowledgePlugin, wagdieGameplayPlugin],
+      },
+      {
+        character: wagdieGameMasterCharacter,
+        plugins: [bootstrapPlugin, venicePlugin, wagdieKnowledgePlugin, wagdieGameplayPlugin],
       },
     ],
   };

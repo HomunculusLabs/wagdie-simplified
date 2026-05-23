@@ -8,7 +8,9 @@ import {
 import type {
   LocationRoom,
   LocationRoomLocation,
+  LocationRoomLocationDetails,
   LocationRoomMessage,
+  LocationRoomPublicMessageStats,
   LocationRoomTick,
   LocationRoomTriggerType,
   PaginatedLocationRoomMessages,
@@ -48,6 +50,15 @@ type RoomRow = {
 type LocationRow = {
   id: string
   name: string
+}
+
+type LocationDetailsRow = {
+  id: string
+  name: string
+  chain_location_id: number | string | null
+  metadata: Record<string, unknown> | null
+  created_at: string
+  updated_at?: string | null
 }
 
 type MessageRow = {
@@ -117,6 +128,26 @@ function mapRoom(row: RoomRow): LocationRoom {
   }
 }
 
+function resolveLocationActiveState(metadata: Record<string, unknown> | null): boolean | null {
+  if (!metadata || typeof metadata !== 'object') return null
+  const value = metadata.active ?? metadata.isActive ?? metadata.is_active ?? metadata.enabled
+  if (typeof value === 'boolean') return value
+  if (metadata.hidden === true || metadata.deactivated === true || metadata.disabled === true) return false
+  return null
+}
+
+function mapLocationDetails(row: LocationDetailsRow): LocationRoomLocationDetails {
+  return {
+    id: row.id,
+    name: row.name,
+    chainLocationId: row.chain_location_id === null ? null : String(row.chain_location_id),
+    active: resolveLocationActiveState(row.metadata),
+    metadata: row.metadata ?? {},
+    createdAt: row.created_at,
+    updatedAt: row.updated_at ?? row.created_at,
+  }
+}
+
 function mapMessage(row: MessageRow): LocationRoomMessage {
   return {
     id: row.id,
@@ -162,6 +193,11 @@ function isUniqueViolation(error: SupabaseError | null): boolean {
   return error.code === '23505' || /duplicate key|unique constraint/i.test(error.message)
 }
 
+function isNoRowsReturned(error: SupabaseError | null): boolean {
+  if (!error) return false
+  return error.code === 'PGRST116' || /0 rows|no rows|multiple \(or no\) rows/i.test(error.message)
+}
+
 function addMinutes(date: Date, minutes: number): string {
   return new Date(date.getTime() + minutes * 60_000).toISOString()
 }
@@ -189,10 +225,13 @@ export type CreateLocationRoomMessageInput = {
   content: string
   visibility?: LocationRoomMessage['visibility']
   metadata?: Record<string, unknown>
+  dedupeKey?: string | null
 }
 
 export interface LocationRoomRepository {
   getLocation(locationId: string): Promise<LocationRoomLocation | null>
+  getLocationDetails(locationId: string): Promise<LocationRoomLocationDetails | null>
+  listLocationsByIds(locationIds: string[]): Promise<LocationRoomLocationDetails[]>
   findRoomById(roomId: string): Promise<LocationRoom | null>
   findRoomByLocationId(locationId: string): Promise<LocationRoom | null>
   ensureRoomForLocation(locationId: string): Promise<LocationRoom>
@@ -204,7 +243,13 @@ export interface LocationRoomRepository {
     requestedByTokenId?: number | null
   }): Promise<{ tick: LocationRoomTick | null; deduped: boolean }>
   findRecentCompletedOwnerTick(params: { roomId: string; walletAddress: string; since: Date }): Promise<LocationRoomTick | null>
+  findOldestProcessableTickForRoom(roomId: string, now: Date): Promise<LocationRoomTick | null>
+  findNonStaleProcessingTickForRoom(roomId: string, now: Date): Promise<LocationRoomTick | null>
+  claimTick(tickId: string, workerId: string, now: Date): Promise<LocationRoomTick | null>
   claimDueTicks(limit: number, workerId: string, now: Date): Promise<LocationRoomTick[]>
+  listActiveTicksForRoom(roomId: string, limit: number): Promise<LocationRoomTick[]>
+  listRecentTicksForRoom(roomId: string, limit: number): Promise<LocationRoomTick[]>
+  getPublicMessageStats(roomId: string): Promise<LocationRoomPublicMessageStats>
   markTickSelected(tickId: string, tokenId: number): Promise<LocationRoomTick>
   appendMessage(input: CreateLocationRoomMessageInput): Promise<LocationRoomMessage>
   markTickCompleted(tickId: string): Promise<LocationRoomTick>
@@ -226,6 +271,28 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
 
     if (error) throw new Error(error.message)
     return data ? { id: data.id, name: data.name } : null
+  }
+
+  async getLocationDetails(locationId: string): Promise<LocationRoomLocationDetails | null> {
+    const { data, error } = (await table('locations')
+      .select('id, name, chain_location_id, metadata, created_at')
+      .eq('id', locationId)
+      .maybeSingle()) as QueryResult<LocationDetailsRow>
+
+    if (error) throw new Error(error.message)
+    return data ? mapLocationDetails(data) : null
+  }
+
+  async listLocationsByIds(locationIds: string[]): Promise<LocationRoomLocationDetails[]> {
+    const ids = Array.from(new Set(locationIds.map((id) => id.trim()).filter(Boolean)))
+    if (ids.length === 0) return []
+
+    const { data, error } = (await table('locations')
+      .select('id, name, chain_location_id, metadata, created_at')
+      .in('id', ids)) as QueryResult<LocationDetailsRow[]>
+
+    if (error) throw new Error(error.message)
+    return (data ?? []).map(mapLocationDetails)
   }
 
   async findRoomById(roomId: string): Promise<LocationRoom | null> {
@@ -325,6 +392,97 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     return recentCompleted ? mapTick(recentCompleted) : null
   }
 
+  async findOldestProcessableTickForRoom(roomId: string, now: Date): Promise<LocationRoomTick | null> {
+    const { data, error } = (await table(TICKS_TABLE)
+      .select(TICK_COLUMNS)
+      .eq('room_id', roomId)
+      .in('status', ['pending', 'failed'])
+      .lte('next_attempt_at', now.toISOString())
+      .order('created_at', { ascending: true })
+      .limit(1)) as QueryResult<TickRow[]>
+
+    if (error) throw new Error(error.message)
+    const dueTick = data?.[0]
+    if (dueTick) return mapTick(dueTick)
+
+    const staleBefore = new Date(now.getTime() - WORKER_LOCK_TTL_MS).toISOString()
+    const { data: staleData, error: staleError } = (await table(TICKS_TABLE)
+      .select(TICK_COLUMNS)
+      .eq('room_id', roomId)
+      .eq('status', 'processing')
+      .lt('locked_at', staleBefore)
+      .order('locked_at', { ascending: true })
+      .limit(1)) as QueryResult<TickRow[]>
+
+    if (staleError) throw new Error(staleError.message)
+    const staleTick = staleData?.[0]
+    return staleTick ? mapTick(staleTick) : null
+  }
+
+  async findNonStaleProcessingTickForRoom(roomId: string, now: Date): Promise<LocationRoomTick | null> {
+    const staleBefore = new Date(now.getTime() - WORKER_LOCK_TTL_MS).toISOString()
+    const { data, error } = (await table(TICKS_TABLE)
+      .select(TICK_COLUMNS)
+      .eq('room_id', roomId)
+      .eq('status', 'processing')
+      .gte('locked_at', staleBefore)
+      .order('locked_at', { ascending: true })
+      .limit(1)) as QueryResult<TickRow[]>
+
+    if (error) throw new Error(error.message)
+    const processingTick = data?.[0]
+    return processingTick ? mapTick(processingTick) : null
+  }
+
+  async claimTick(tickId: string, workerId: string, now: Date): Promise<LocationRoomTick | null> {
+    const { data: row, error } = (await table(TICKS_TABLE)
+      .select(TICK_COLUMNS)
+      .eq('id', tickId)
+      .maybeSingle()) as QueryResult<TickRow>
+
+    if (error) throw new Error(error.message)
+    if (!row) return null
+
+    const due = new Date(row.next_attempt_at).getTime() <= now.getTime()
+    const staleBefore = new Date(now.getTime() - WORKER_LOCK_TTL_MS)
+    const staleProcessing = row.status === 'processing' &&
+      !!row.locked_at &&
+      new Date(row.locked_at).getTime() < staleBefore.getTime()
+
+    if (!((row.status === 'pending' || row.status === 'failed') && due) && !staleProcessing) {
+      return null
+    }
+
+    let claimQuery = table(TICKS_TABLE)
+      .update({
+        status: 'processing',
+        attempts: row.attempts + 1,
+        locked_at: now.toISOString(),
+        locked_by: workerId,
+        started_at: row.started_at ?? now.toISOString(),
+        last_error: null,
+      })
+      .eq('id', row.id)
+      .eq('status', row.status)
+
+    if (row.status === 'processing') {
+      claimQuery = row.locked_at
+        ? claimQuery.eq('locked_at', row.locked_at)
+        : claimQuery.is('locked_at', null)
+    }
+
+    const { data: updated, error: updateError } = (await claimQuery
+      .select(TICK_COLUMNS)
+      .single()) as QueryResult<TickRow>
+
+    if (updateError && !isNoRowsReturned(updateError)) {
+      throw new Error(updateError.message)
+    }
+
+    if (!updated) return null
+    return mapTick(updated)
+  }
+
   async claimDueTicks(limit: number, workerId: string, now: Date): Promise<LocationRoomTick[]> {
     const { data, error } = (await table(TICKS_TABLE)
       .select(TICK_COLUMNS)
@@ -353,33 +511,56 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
 
     const claimed: LocationRoomTick[] = []
     for (const row of candidates) {
-      let claimQuery = table(TICKS_TABLE)
-        .update({
-          status: 'processing',
-          attempts: row.attempts + 1,
-          locked_at: now.toISOString(),
-          locked_by: workerId,
-          started_at: row.started_at ?? now.toISOString(),
-          last_error: null,
-        })
-        .eq('id', row.id)
-        .eq('status', row.status)
-
-      if (row.status === 'processing') {
-        claimQuery = row.locked_at
-          ? claimQuery.eq('locked_at', row.locked_at)
-          : claimQuery.is('locked_at', null)
-      }
-
-      const { data: updated, error: updateError } = (await claimQuery
-        .select(TICK_COLUMNS)
-        .single()) as QueryResult<TickRow>
-
-      if (updateError || !updated) continue
-      claimed.push(mapTick(updated))
+      const claimedTick = await this.claimTick(row.id, workerId, now)
+      if (claimedTick) claimed.push(claimedTick)
     }
 
     return claimed
+  }
+
+  async listActiveTicksForRoom(roomId: string, limit: number): Promise<LocationRoomTick[]> {
+    const parsedLimit = Number.isFinite(limit) ? Math.floor(limit) : 10
+    const safeLimit = Math.max(1, Math.min(50, parsedLimit))
+    const { data, error } = (await table(TICKS_TABLE)
+      .select(TICK_COLUMNS)
+      .eq('room_id', roomId)
+      .in('status', ['pending', 'processing', 'failed'])
+      .order('created_at', { ascending: true })
+      .limit(safeLimit)) as QueryResult<TickRow[]>
+
+    if (error) throw new Error(error.message)
+    return (data ?? []).map(mapTick)
+  }
+
+  async listRecentTicksForRoom(roomId: string, limit: number): Promise<LocationRoomTick[]> {
+    const parsedLimit = Number.isFinite(limit) ? Math.floor(limit) : 10
+    const safeLimit = Math.max(1, Math.min(50, parsedLimit))
+    const { data, error } = (await table(TICKS_TABLE)
+      .select(TICK_COLUMNS)
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: false })
+      .limit(safeLimit)) as QueryResult<TickRow[]>
+
+    if (error) throw new Error(error.message)
+    return (data ?? []).map(mapTick)
+  }
+
+  async getPublicMessageStats(roomId: string): Promise<LocationRoomPublicMessageStats> {
+    const { data, error, count } = (await table(MESSAGES_TABLE)
+      .select(MESSAGE_COLUMNS, { count: 'exact' })
+      .eq('room_id', roomId)
+      .eq('visibility', 'public')
+      .order('sequence', { ascending: false })
+      .limit(1)) as QueryResult<MessageRow[]>
+
+    if (error) throw new Error(error.message)
+    const latest = data?.[0] ? mapMessage(data[0]) : null
+
+    return {
+      messageCount: count ?? data?.length ?? 0,
+      latestSequence: latest?.sequence ?? null,
+      latestCreatedAt: latest?.createdAt ?? null,
+    }
   }
 
   async markTickSelected(tickId: string, tokenId: number): Promise<LocationRoomTick> {
@@ -387,35 +568,63 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
   }
 
   async appendMessage(input: CreateLocationRoomMessageInput): Promise<LocationRoomMessage> {
-    if (input.tickId && input.visibility !== 'internal') {
-      const { data: existingRows, error: existingError } = (await table(MESSAGES_TABLE)
+    const visibility = input.visibility ?? 'public'
+    const dedupeKey = input.dedupeKey?.trim() || null
+    const metadata = dedupeKey
+      ? { ...(input.metadata ?? {}), dedupeKey }
+      : { ...(input.metadata ?? {}) }
+    if (!dedupeKey) {
+      delete metadata.dedupeKey
+    }
+
+    const findExisting = async (): Promise<LocationRoomMessage | null> => {
+      if (!input.tickId || visibility === 'internal') return null
+
+      let query = table(MESSAGES_TABLE)
         .select(MESSAGE_COLUMNS)
+        .eq('room_id', input.roomId)
         .eq('tick_id', input.tickId)
-        .eq('visibility', input.visibility ?? 'public')
+        .eq('visibility', visibility)
         .eq('author_kind', input.authorKind)
+
+      if (dedupeKey) {
+        query = query.eq('metadata->>dedupeKey', dedupeKey)
+      } else {
+        query = query.filter('metadata->>dedupeKey', 'is', null)
+      }
+
+      const { data: existingRows, error: existingError } = (await query
         .order('sequence', { ascending: true })
         .limit(1)) as QueryResult<MessageRow[]>
 
       if (existingError) throw new Error(existingError.message)
       const existing = existingRows?.[0]
-      if (existing) return mapMessage(existing)
+      return existing ? mapMessage(existing) : null
     }
+
+    const existing = await findExisting()
+    if (existing) return existing
 
     const { data, error } = (await table(MESSAGES_TABLE)
       .insert({
         room_id: input.roomId,
         location_id: input.locationId,
         tick_id: input.tickId ?? null,
-        visibility: input.visibility ?? 'public',
+        visibility,
         author_kind: input.authorKind,
         token_id: input.tokenId ?? null,
         official_agent_id: input.officialAgentId ?? null,
         author_name: input.authorName,
         content: input.content,
-        metadata: input.metadata ?? {},
+        metadata,
       })
       .select(MESSAGE_COLUMNS)
       .single()) as QueryResult<MessageRow>
+
+    if (isUniqueViolation(error) && input.tickId && visibility === 'public') {
+      const raced = await findExisting()
+      if (raced) return raced
+    }
 
     if (error) throw new Error(error.message)
     if (!data) throw new Error('Location room message insert returned no row')

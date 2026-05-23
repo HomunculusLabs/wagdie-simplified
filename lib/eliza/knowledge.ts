@@ -101,10 +101,9 @@ export async function getKnowledgeRecordByTokenId(
 
 export async function replaceKnowledgeDocuments(
   record: CharacterRecord,
-  documents: StoredKnowledgeDocument[]
+  documents: StoredKnowledgeDocument[],
+  client = getElizaClient()
 ): Promise<CharacterRecord> {
-  const client = getElizaClient()
-
   const charactersApi = client.characters as unknown as KnowledgeCharactersApi
 
   return charactersApi.replaceRecord(record.id, {

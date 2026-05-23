@@ -5,8 +5,10 @@ import { jsonNoStore, jsonNoStoreError } from '@/lib/api/responses'
 import {
   LocationRoomFeatureDisabledError,
   LocationRoomForbiddenError,
+  LocationRoomGameplayConfigError,
   LocationRoomInsufficientParticipantsError,
   LocationRoomManualCooldownError,
+  LocationRoomNarrativeConfigError,
   LocationRoomNotFoundError,
   LocationRoomOfficialServiceDisabledError,
   LocationRoomTickDisabledError,
@@ -25,16 +27,17 @@ export async function POST(_request: NextRequest, context: RouteContext) {
   const actor = isAdmin(auth.address) ? 'admin' : 'owner'
 
   try {
-    const result = await locationRoomService.requestTick(locationId, {
+    const result = await locationRoomService.requestTickAndProcess(locationId, {
       actor,
       walletAddress: auth.address,
     })
 
+    const status = result.processing.attempted ? 200 : 202
     return jsonNoStore({
       success: true,
       queued: true,
       ...result,
-    }, { status: 202 })
+    }, { status })
   } catch (error) {
     if (error instanceof LocationRoomNotFoundError) {
       return jsonNoStoreError('Location not found', 404)
@@ -62,11 +65,19 @@ export async function POST(_request: NextRequest, context: RouteContext) {
       return jsonNoStoreError('Official ElizaOS service is not configured', 503)
     }
 
+    if (error instanceof LocationRoomNarrativeConfigError) {
+      return jsonNoStoreError('Location room narrative game-master agent is not configured', 503)
+    }
+
+    if (error instanceof LocationRoomGameplayConfigError) {
+      return jsonNoStoreError(error.message, 503)
+    }
+
     if (error instanceof LocationRoomTickDisabledError) {
       return jsonNoStoreError('Location room ticks are disabled', 503)
     }
 
     console.error('[Eliza Location Rooms] manual tick request failed', error)
-    return jsonNoStoreError('Failed to queue location room tick', 500)
+    return jsonNoStoreError('Failed to queue or process location room tick', 500)
   }
 }

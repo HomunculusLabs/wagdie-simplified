@@ -1,0 +1,278 @@
+import { gameMasterAgentService } from '@/lib/eliza/gameMasterAgent/service'
+import {
+  GAME_MASTER_AUTHOR_NAME,
+  officialGameMasterBeatGenerator,
+  type GameMasterBeatGenerator,
+  type GameMasterBeatOutput,
+} from './gameMasterGenerator'
+import {
+  locationRoomNarrativeRepository,
+  type LocationRoomNarrativeRepository,
+} from './narrativeRepository'
+import {
+  toNarrativeStateSnapshot,
+  type LocationRoomNarrativeBeat,
+  type LocationRoomNarrativeStateSnapshot,
+} from './narrativeTypes'
+import {
+  locationRoomRepository,
+  type LocationRoomRepository,
+} from './repository'
+import {
+  officialLocationRoomTurnGenerator,
+  normalizeLocationRoomGeneratedContent,
+  type OfficialLocationRoomTurnGenerator,
+} from './officialTurnGenerator'
+import type {
+  LocationRoom,
+  LocationRoomMessage,
+  LocationRoomNarrativeTurnContext,
+  LocationRoomParticipant,
+  LocationRoomTick,
+} from './types'
+
+export type ProcessNarrativeLocationRoomTurnInput = {
+  room: LocationRoom
+  tick: LocationRoomTick
+  speaker: LocationRoomParticipant
+  participants: LocationRoomParticipant[]
+  recentMessages: LocationRoomMessage[]
+}
+
+export type ProcessNarrativeLocationRoomTurnResult = {
+  selectedTokenId: number
+  messageId: string
+}
+
+export interface LocationRoomNarrativeCoordinator {
+  processTurn(input: ProcessNarrativeLocationRoomTurnInput): Promise<ProcessNarrativeLocationRoomTurnResult>
+  markTickFailed(tickId: string, error: unknown, options?: { dead?: boolean }): Promise<void>
+}
+
+export interface GameMasterAgentResolver {
+  resolveRuntimeGameMasterAgentId(): Promise<string>
+}
+
+function isUsableGeneratedBeat(beat: LocationRoomNarrativeBeat): boolean {
+  return Boolean(beat.speakerInstruction && getStateAfterSnapshot(beat.stateAfter))
+}
+
+function getStateAfterSnapshot(value: unknown): LocationRoomNarrativeStateSnapshot | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const candidate = value as Record<string, unknown>
+  const stateSummary = typeof candidate.stateSummary === 'string'
+    ? candidate.stateSummary.trim()
+    : typeof candidate.state_summary === 'string'
+      ? candidate.state_summary.trim()
+      : ''
+
+  if (!stateSummary) return null
+
+  const currentObjective = typeof candidate.currentObjective === 'string'
+    ? candidate.currentObjective.trim() || null
+    : typeof candidate.current_objective === 'string'
+      ? candidate.current_objective.trim() || null
+      : null
+  const openThreads = Array.isArray(candidate.openThreads)
+    ? candidate.openThreads.filter((thread): thread is string => typeof thread === 'string' && thread.trim().length > 0)
+        .map((thread) => thread.trim())
+    : Array.isArray(candidate.open_threads)
+      ? candidate.open_threads.filter((thread): thread is string => typeof thread === 'string' && thread.trim().length > 0)
+          .map((thread) => thread.trim())
+      : []
+
+  return {
+    stateSummary,
+    currentObjective,
+    openThreads,
+  }
+}
+
+function beatToOutput(
+  beat: LocationRoomNarrativeBeat,
+  fallbackGameMasterAgentId: string
+): GameMasterBeatOutput {
+  const stateAfter = getStateAfterSnapshot(beat.stateAfter)
+  if (!beat.speakerInstruction || !stateAfter) {
+    throw new Error('Location room narrative beat is missing generated output')
+  }
+
+  return {
+    gameMasterAgentId: beat.gameMasterAgentId ?? fallbackGameMasterAgentId,
+    publicNarration: beat.publicNarration,
+    speakerInstruction: beat.speakerInstruction,
+    stateAfter,
+    metadata: beat.metadata,
+  }
+}
+
+function shouldAppendGameMasterMessage(beat: LocationRoomNarrativeBeat, output: GameMasterBeatOutput): boolean {
+  if (!output.publicNarration) return false
+  return !['game_master_message_appended', 'character_appended', 'completed'].includes(beat.status)
+}
+
+function toCharacterNarrativeContext(output: GameMasterBeatOutput): LocationRoomNarrativeTurnContext {
+  return {
+    stateSummary: output.stateAfter.stateSummary,
+    currentObjective: output.stateAfter.currentObjective,
+    openThreads: output.stateAfter.openThreads,
+    speakerInstruction: output.speakerInstruction,
+    publicNarration: output.publicNarration,
+  }
+}
+
+export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarrativeCoordinator {
+  constructor(
+    private readonly repository: LocationRoomRepository = locationRoomRepository,
+    private readonly narrativeRepository: LocationRoomNarrativeRepository = locationRoomNarrativeRepository,
+    private readonly gameMasterGenerator: GameMasterBeatGenerator = officialGameMasterBeatGenerator,
+    private readonly turnGenerator: OfficialLocationRoomTurnGenerator = officialLocationRoomTurnGenerator,
+    private readonly gameMasterAgentResolver: GameMasterAgentResolver = gameMasterAgentService
+  ) {}
+
+  async processTurn(input: ProcessNarrativeLocationRoomTurnInput): Promise<ProcessNarrativeLocationRoomTurnResult> {
+    const resolvedGameMasterAgentId = await this.gameMasterAgentResolver.resolveRuntimeGameMasterAgentId()
+    const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room: input.room })
+    const stateBefore = toNarrativeStateSnapshot(narrativeState)
+    let beat = await this.narrativeRepository.createOrReuseBeat({
+      room: input.room,
+      tick: input.tick,
+      selectedTokenId: input.speaker.tokenId,
+      gameMasterAgentId: resolvedGameMasterAgentId,
+      stateBefore,
+      metadata: {
+        source: 'location-room-narrative-coordinator',
+        roomId: input.room.id,
+        locationId: input.room.locationId,
+      },
+    })
+    const beatGameMasterAgentId = beat.gameMasterAgentId ?? resolvedGameMasterAgentId
+
+    let gameMasterOutput: GameMasterBeatOutput
+    if (isUsableGeneratedBeat(beat)) {
+      gameMasterOutput = beatToOutput(beat, beatGameMasterAgentId)
+    } else {
+      gameMasterOutput = await this.gameMasterGenerator.generateBeat({
+        gameMasterAgentId: beatGameMasterAgentId,
+        room: input.room,
+        tick: input.tick,
+        participants: input.participants,
+        speaker: input.speaker,
+        recentMessages: input.recentMessages,
+        narrativeState,
+      })
+
+      beat = await this.narrativeRepository.storeBeatGameMasterOutput(beat.id, {
+        gameMasterAgentId: gameMasterOutput.gameMasterAgentId,
+        publicNarration: gameMasterOutput.publicNarration,
+        speakerInstruction: gameMasterOutput.speakerInstruction,
+        stateAfter: gameMasterOutput.stateAfter,
+        metadata: gameMasterOutput.metadata,
+      })
+    }
+
+    if (shouldAppendGameMasterMessage(beat, gameMasterOutput)) {
+      const publicNarration = gameMasterOutput.publicNarration
+      if (!publicNarration) {
+        throw new Error('Location room narrative beat is missing public narration')
+      }
+
+      await this.repository.appendMessage({
+        roomId: input.room.id,
+        locationId: input.room.locationId,
+        tickId: input.tick.id,
+        authorKind: 'game_master',
+        tokenId: null,
+        officialAgentId: gameMasterOutput.gameMasterAgentId,
+        authorName: GAME_MASTER_AUTHOR_NAME,
+        content: publicNarration,
+        visibility: 'public',
+        metadata: {
+          source: 'location-room-game-master',
+          triggerType: input.tick.triggerType,
+          beatId: beat.id,
+        },
+      })
+
+      try {
+        beat = await this.narrativeRepository.markBeatGameMasterMessageAppended(beat.id, {
+          gameMasterAgentId: gameMasterOutput.gameMasterAgentId,
+          publicNarration: gameMasterOutput.publicNarration,
+          speakerInstruction: gameMasterOutput.speakerInstruction,
+          stateAfter: gameMasterOutput.stateAfter,
+          metadata: gameMasterOutput.metadata,
+        })
+      } catch (error) {
+        console.warn('[Location Room Narrative] Failed to mark game-master message appended after public append:', error)
+      }
+    }
+
+    const generated = await this.turnGenerator.generateTurn({
+      room: input.room,
+      speaker: input.speaker,
+      participants: input.participants,
+      recentMessages: input.recentMessages,
+      narrativeContext: toCharacterNarrativeContext(gameMasterOutput),
+    })
+    const content = normalizeLocationRoomGeneratedContent(generated.content)
+
+    if (!content) {
+      throw new Error('Official ElizaOS generated an empty location-room turn')
+    }
+
+    const message = await this.repository.appendMessage({
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      tickId: input.tick.id,
+      authorKind: 'agent',
+      tokenId: input.speaker.tokenId,
+      officialAgentId: generated.officialAgentId,
+      authorName: input.speaker.name,
+      content,
+      visibility: 'public',
+      metadata: {
+        source: 'scheduled-location-room-tick',
+        triggerType: input.tick.triggerType,
+        narrative: true,
+        beatId: beat.id,
+      },
+    })
+
+    try {
+      await this.narrativeRepository.markBeatCharacterAppended(beat.id)
+      await this.narrativeRepository.updateState(input.room, {
+        stateSummary: gameMasterOutput.stateAfter.stateSummary,
+        currentObjective: gameMasterOutput.stateAfter.currentObjective,
+        openThreads: gameMasterOutput.stateAfter.openThreads,
+        metadata: {
+          source: 'location-room-narrative-coordinator',
+          lastBeatId: beat.id,
+          lastTickId: input.tick.id,
+          lastSelectedTokenId: input.speaker.tokenId,
+        },
+      })
+      await this.narrativeRepository.markBeatCompleted(beat.id)
+    } catch (error) {
+      await this.narrativeRepository.markBeatFailed(beat.id, error).catch(() => null)
+    }
+
+    return {
+      selectedTokenId: input.speaker.tokenId,
+      messageId: message.id,
+    }
+  }
+
+  async markTickFailed(tickId: string, error: unknown, options: { dead?: boolean } = {}): Promise<void> {
+    const beat = await this.narrativeRepository.findBeatByTickId(tickId)
+    if (!beat) return
+
+    if (options.dead) {
+      await this.narrativeRepository.markBeatDead(beat.id, error)
+      return
+    }
+
+    await this.narrativeRepository.markBeatFailed(beat.id, error)
+  }
+}
+
+export const locationRoomNarrativeCoordinator = new DefaultLocationRoomNarrativeCoordinator()

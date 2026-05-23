@@ -8,6 +8,42 @@ const DEFAULT_VENICE_BASE_URL = 'https://api.venice.ai/api/v1' as const
 
 type ElizaInferenceProvider = 'venice'
 export type ElizaIntegrationMode = 'legacy' | 'dual' | 'official'
+export type ElizaLocationRoomGameplayDifficulty = 'easy' | 'normal' | 'hard' | 'deadly'
+export type ElizaLocationRoomDiceVisibility = 'private' | 'summary' | 'public'
+export type ElizaLocationRoomGameplayStatKey =
+  | 'str'
+  | 'dex'
+  | 'con'
+  | 'int'
+  | 'wis'
+  | 'cha'
+  | 'maxHp'
+  | 'ac'
+  | 'speed'
+export type ElizaLocationRoomGameplayConcordModifierTarget =
+  | ElizaLocationRoomGameplayStatKey
+  | 'attack'
+  | 'defend'
+  | 'help'
+  | 'investigate'
+  | 'negotiate'
+  | 'flee'
+  | 'rest'
+
+export type ElizaLocationRoomGameplayConcordModifierConfig = {
+  concordId: number
+  target: ElizaLocationRoomGameplayConcordModifierTarget
+  value: number
+  label?: string
+}
+
+export type ElizaLocationRoomGameplayConcordRewardTierConfig = {
+  minScore: number
+  chainId: number
+  contractAddress: string
+  concordId: number
+  amount: number
+}
 
 function getIntegrationMode(): ElizaIntegrationMode {
   const mode = process.env.ELIZA_INTEGRATION_MODE
@@ -66,6 +102,48 @@ function optionalBoolean(value: string | undefined): boolean | undefined {
   }
 
   return undefined
+}
+
+function optionalStringList(value: string | undefined): string[] | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function optionalJsonArray<T>(value: string | undefined): T[] | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed as T[] : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function getGameplayDifficulty(): ElizaLocationRoomGameplayDifficulty {
+  const value = process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DEFAULT_DIFFICULTY?.trim().toLowerCase()
+  if (value === 'easy' || value === 'hard' || value === 'deadly') {
+    return value
+  }
+
+  return 'normal'
+}
+
+function getGameplayDiceVisibility(): ElizaLocationRoomDiceVisibility {
+  const value = process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DICE_VISIBILITY?.trim().toLowerCase()
+  if (value === 'summary' || value === 'public') {
+    return value
+  }
+
+  return 'private'
 }
 
 export const elizaConfig = {
@@ -166,6 +244,172 @@ export const elizaConfig = {
         min: 1,
         integer: true,
       }) ?? 20,
+    narrative: {
+      enabled: optionalBoolean(process.env.ELIZA_LOCATION_ROOM_NARRATIVE_ENABLED) ?? false,
+      gameMasterAgentId: process.env.ELIZA_LOCATION_ROOM_GAME_MASTER_AGENT_ID?.trim() || '',
+      publicNarrationMaxLength:
+        optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_NARRATIVE_PUBLIC_NARRATION_MAX_LENGTH, {
+          min: 1,
+          integer: true,
+        }) ?? 800,
+      stateSummaryMaxLength:
+        optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_NARRATIVE_STATE_SUMMARY_MAX_LENGTH, {
+          min: 1,
+          integer: true,
+        }) ?? 2000,
+      openThreadsMaxCount:
+        optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_NARRATIVE_OPEN_THREADS_MAX_COUNT, {
+          min: 0,
+          integer: true,
+        }) ?? 5,
+      openThreadMaxLength:
+        optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_NARRATIVE_OPEN_THREAD_MAX_LENGTH, {
+          min: 1,
+          integer: true,
+        }) ?? 240,
+    },
+    gameplay: {
+      enabled: optionalBoolean(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_ENABLED) ?? false,
+      locationAllowlist: optionalStringList(
+        process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_LOCATION_ALLOWLIST ||
+          process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_LOCATION_IDS
+      ) ?? [],
+      defaultDifficulty: getGameplayDifficulty(),
+      maxEncounterRounds:
+        optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_ENCOUNTER_ROUNDS, {
+          min: 1,
+          max: 50,
+          integer: true,
+        }) ?? 12,
+      actionIntentMaxLength:
+        optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_ACTION_INTENT_MAX_LENGTH, {
+          min: 1,
+          max: 1000,
+          integer: true,
+        }) ?? 240,
+      publicSpeechMaxLength:
+        optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_PUBLIC_SPEECH_MAX_LENGTH, {
+          min: 1,
+          max: 2000,
+          integer: true,
+        }) ?? 500,
+      diceVisibility: getGameplayDiceVisibility(),
+      monsterBudget: {
+        baseBudgetByLevel: {
+          1: optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_BASE_BUDGET_LEVEL_1, {
+            min: 1,
+            integer: true,
+          }) ?? 25,
+        },
+        minMonsterCount: 1,
+        maxMonsterCount:
+          optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_MONSTER_COUNT, {
+            min: 1,
+            max: 12,
+            integer: true,
+          }) ?? 6,
+        maxTotalMonsterHp:
+          optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_TOTAL_MONSTER_HP, {
+            min: 1,
+            integer: true,
+          }) ?? 180,
+      },
+      rewardBudget: {
+        maxXpPerCharacter:
+          optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_XP_PER_CHARACTER, {
+            min: 0,
+            integer: true,
+          }) ?? 100,
+        maxTemporaryBoons:
+          optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_TEMPORARY_BOONS, {
+            min: 0,
+            max: 10,
+            integer: true,
+          }) ?? 2,
+        maxNarrativeRewards:
+          optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_NARRATIVE_REWARDS, {
+            min: 0,
+            max: 10,
+            integer: true,
+          }) ?? 3,
+      },
+      stats: {
+        enabled: optionalBoolean(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_STATS_ENABLED) ?? false,
+        refreshSheetOnReconcile:
+          optionalBoolean(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_STATS_REFRESH_ON_RECONCILE) ?? true,
+        modifiers: {
+          maxEquipmentModifierPerRoll:
+            optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_STATS_MAX_EQUIPMENT_MODIFIER_PER_ROLL, {
+              min: 0,
+              max: 5,
+              integer: true,
+            }) ?? 1,
+          maxNftTraitModifierPerRoll:
+            optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_STATS_MAX_NFT_TRAIT_MODIFIER_PER_ROLL, {
+              min: 0,
+              max: 5,
+              integer: true,
+            }) ?? 1,
+          maxSearedConcordModifierPerRoll:
+            optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_STATS_MAX_SEARED_CONCORD_MODIFIER_PER_ROLL, {
+              min: 0,
+              max: 5,
+              integer: true,
+            }) ?? 1,
+          maxTotalNonStatModifierPerRoll:
+            optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_STATS_MAX_TOTAL_NON_STAT_MODIFIER_PER_ROLL, {
+              min: 0,
+              max: 10,
+              integer: true,
+            }) ?? 2,
+          maxEffectiveAcBonus:
+            optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_STATS_MAX_EFFECTIVE_AC_BONUS, {
+              min: 0,
+              max: 10,
+              integer: true,
+            }) ?? 2,
+          concordAllowlist:
+            optionalJsonArray<ElizaLocationRoomGameplayConcordModifierConfig>(
+              process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_STATS_CONCORD_ALLOWLIST_JSON
+            ) ?? [],
+        },
+      },
+      deathRewards: {
+        enabled: optionalBoolean(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DEATH_REWARDS_ENABLED) ?? false,
+        policyVersion: process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DEATH_REWARDS_POLICY_VERSION?.trim() || 'death-rewards-v1',
+        pointsMultiplier:
+          optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DEATH_REWARDS_POINTS_MULTIPLIER, {
+            min: 0,
+          }) ?? 1,
+        pointsCap:
+          optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DEATH_REWARDS_POINTS_CAP, {
+            min: 0,
+            integer: true,
+          }) ?? 100,
+        difficultyMultipliers: {
+          easy:
+            optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DEATH_REWARDS_DIFFICULTY_EASY, {
+              min: 0,
+            }) ?? 0.75,
+          normal:
+            optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DEATH_REWARDS_DIFFICULTY_NORMAL, {
+              min: 0,
+            }) ?? 1,
+          hard:
+            optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DEATH_REWARDS_DIFFICULTY_HARD, {
+              min: 0,
+            }) ?? 1.25,
+          deadly:
+            optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DEATH_REWARDS_DIFFICULTY_DEADLY, {
+              min: 0,
+            }) ?? 1.5,
+        },
+        concordEntitlementTiers:
+          optionalJsonArray<ElizaLocationRoomGameplayConcordRewardTierConfig>(
+            process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_DEATH_REWARDS_CONCORD_TIERS_JSON
+          ) ?? [],
+      },
+    },
   },
 
   /**

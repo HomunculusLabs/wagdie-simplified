@@ -272,6 +272,7 @@ export class MapMarkerManager {
       this.markers.set(data.id, marker);
     } else {
       marker.setPosition(data.x, data.y);
+      marker.setDepth(getMarkerDepth(data.type));
     }
 
     this.markerData.set(data.id, data);
