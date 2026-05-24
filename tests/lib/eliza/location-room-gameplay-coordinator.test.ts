@@ -90,6 +90,17 @@ function participant(tokenId: number, name = `Character #${tokenId}`): LocationR
   }
 }
 
+function combatTrigger(overrides = {}) {
+  return {
+    source: 'narrative' as const,
+    triggerId: 'beat-trigger-1',
+    narrativeBeatId: 'beat-trigger-1',
+    encounterSeed: { title: 'Seeded Maw', summary: 'The bell seed opens.', stakes: 'Ash must answer.' },
+    speakerInstruction: 'Carry forward the bell threat.',
+    ...overrides,
+  }
+}
+
 function sheet(tokenId: number, overrides: Partial<GameplayCharacterSheet> = {}): GameplayCharacterSheet {
   return {
     tokenId,
@@ -474,6 +485,22 @@ function makeCoordinator(options: {
 }
 
 describe('location room gameplay coordinator', () => {
+  it('does not create an encounter without an explicit combat trigger', async () => {
+    const { coordinator, gameplayRepository, gmGenerator } = makeCoordinator()
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+    })
+
+    expect(result).toEqual({ status: 'skipped', selectedTokenId: null, reason: 'no_combat_trigger' })
+    expect(gmGenerator.generateEncounterProposal).not.toHaveBeenCalled()
+    expect(gameplayRepository.createActiveEncounter).not.toHaveBeenCalled()
+  })
+
   it('does not resolve character sheets while stats gate is disabled by default', async () => {
     const sheetResolver: jest.Mocked<GameplayCharacterSheetResolver> = {
       resolveSheets: jest.fn(async () => new Map()),
@@ -486,6 +513,7 @@ describe('location room gameplay coordinator', () => {
       participants: [participant(1, 'Ash'), participant(2, 'Bone')],
       recentMessages: [],
       now,
+      encounterTrigger: combatTrigger(),
     })
 
     expect(sheetResolver.resolveSheets).not.toHaveBeenCalled()
@@ -540,6 +568,7 @@ describe('location room gameplay coordinator', () => {
         participants: [participant(1, 'Ash'), participant(2, 'Bone')],
         recentMessages: [],
         now,
+        encounterTrigger: combatTrigger(),
       })
 
       expect(sheetResolver.resolveSheets).toHaveBeenCalledWith([1, 2], { now })
@@ -563,7 +592,7 @@ describe('location room gameplay coordinator', () => {
   })
 
   it('starts an encounter, resolves a selected actor action, persists state, and appends keyed transcript messages', async () => {
-    const { coordinator, gameplayRepository, roomRepository, narrativeRepository } = makeCoordinator()
+    const { coordinator, gameplayRepository, roomRepository, narrativeRepository, actionGenerator } = makeCoordinator()
     gameplayRepository.state.characters['99'] = {
       tokenId: 99,
       name: 'Stale Pilgrim',
@@ -581,10 +610,21 @@ describe('location room gameplay coordinator', () => {
       participants: [participant(1, 'Ash'), participant(2, 'Bone')],
       recentMessages: [],
       now,
+      encounterTrigger: combatTrigger(),
     })
 
     expect(result).toMatchObject({ status: 'completed', selectedTokenId: 1, messageIds: ['msg-1', 'msg-2', 'msg-3'] })
-    expect(gameplayRepository.encounters[0]).toMatchObject({ status: 'victory', completedAt: now.toISOString() })
+    expect(gameplayRepository.encounters[0]).toMatchObject({
+      status: 'victory',
+      completedAt: now.toISOString(),
+      metadata: expect.objectContaining({
+        triggerSource: 'narrative',
+        triggerId: 'beat-trigger-1',
+        narrativeBeatId: 'beat-trigger-1',
+        encounterSeed: expect.objectContaining({ title: 'Seeded Maw' }),
+        ttrpgPhase: 'combat',
+      }),
+    })
     expect(gameplayRepository.state.activeEncounterId).toBeNull()
     expect(gameplayRepository.state.characters['1']).toMatchObject({
       xp: 5,
@@ -599,6 +639,16 @@ describe('location room gameplay coordinator', () => {
       'gm_setup',
       'character_action',
       'gm_outcome',
+    ])
+    expect(roomRepository.messages.map((message) => message.metadata.messageDomain)).toEqual([
+      'combat',
+      'combat',
+      'combat',
+    ])
+    expect(roomRepository.messages.map((message) => message.metadata.ttrpgPhase)).toEqual([
+      'combat',
+      'combat',
+      'combat',
     ])
     const outcomeMessage = roomRepository.messages.find((message) => message.metadata.gameplayMessageKind === 'gm_outcome')
     expect(outcomeMessage?.content).toBe('The backend result echoes through the room.')
@@ -615,12 +665,27 @@ describe('location room gameplay coordinator', () => {
         encounterStatusAfter: 'victory',
       }),
     }))
+    expect(actionGenerator.generateAction).toHaveBeenCalledWith(expect.objectContaining({
+      speakerInstruction: 'Carry forward the bell threat.',
+    }))
     expect(outcomeMessage?.metadata).not.toHaveProperty('mechanicalDeltas')
     expect(outcomeMessage?.metadata).not.toHaveProperty('diceResults')
     expect(JSON.stringify(outcomeMessage?.metadata.publicRolls)).not.toContain('charactersAfter')
     expect(JSON.stringify(outcomeMessage?.metadata.publicRolls)).not.toContain('rewardAssignments')
     expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        ttrpgPhase: 'combat',
+        consumedCombatTriggerBeatId: 'beat-trigger-1',
+        requestedGameplayAction: null,
+      }),
+    }))
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
       stateSummary: 'A gameplay turn resolved.',
+      metadata: expect.objectContaining({
+        ttrpgPhase: 'aftermath',
+        combatReadiness: 'none',
+        requestedGameplayAction: null,
+      }),
     }))
   })
 
@@ -651,6 +716,7 @@ describe('location room gameplay coordinator', () => {
       participants: [participant(1, 'Ash'), participant(2, 'Bone')],
       recentMessages: [],
       now,
+      encounterTrigger: combatTrigger(),
     })
 
     expect(gmGenerator.generateEncounterProposal).not.toHaveBeenCalled()
@@ -668,6 +734,7 @@ describe('location room gameplay coordinator', () => {
       participants: [participant(1, 'Ash'), participant(2, 'Bone')],
       recentMessages: [],
       now,
+      encounterTrigger: combatTrigger(),
     }
 
     await coordinator.processTurn(input)
@@ -730,6 +797,7 @@ describe('location room gameplay coordinator', () => {
       participants: [participant(1, 'Ash'), participant(2, 'Bone')],
       recentMessages: [],
       now,
+      encounterTrigger: combatTrigger(),
     })
 
     expect(result.selectedTokenId).toBe(2)
@@ -754,6 +822,7 @@ describe('location room gameplay coordinator', () => {
       participants: [participant(1, 'Ash'), participant(2, 'Bone')],
       recentMessages: [],
       now,
+      encounterTrigger: combatTrigger(),
     })
 
     expect(gameplayRepository.state.characters['1']).toMatchObject({ hp: 0, status: 'dead' })
@@ -778,6 +847,7 @@ describe('location room gameplay coordinator', () => {
         participants: [participant(1, 'Ash'), participant(2, 'Bone')],
         recentMessages: [],
         now,
+        encounterTrigger: combatTrigger(),
       }
 
       await coordinator.processTurn(input)

@@ -113,6 +113,7 @@ export function EncounterStatusSidebar({ roomData, lastFetchedAt }: EncounterSta
   const gameplay = roomData.gameplay;
   const activity = roomData.activity;
   const rewards = gameplay?.pendingRewardSummary;
+  const ttrpg = roomData.ttrpg;
 
   return (
     <aside className="space-y-4 lg:sticky lg:top-4">
@@ -146,7 +147,25 @@ export function EncounterStatusSidebar({ roomData, lastFetchedAt }: EncounterSta
             <p className="text-neutral-600">Ticks</p>
             <p className="text-neutral-200">{activity?.tickCount ?? roomData.room.tickCount}</p>
           </div>
+          {ttrpg && (
+            <>
+              <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-2.5">
+                <p className="text-neutral-600">Phase</p>
+                <p className="text-neutral-200">{formatStatusLabel(ttrpg.phase)}</p>
+              </div>
+              <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-2.5">
+                <p className="text-neutral-600">Readiness</p>
+                <p className="text-neutral-200">{formatStatusLabel(ttrpg.combatReadiness)}</p>
+              </div>
+            </>
+          )}
         </div>
+
+        {ttrpg?.threatLevel != null && (
+          <p className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/10 p-3 font-eskapade text-xs text-amber-100">
+            Threat level {ttrpg.threatLevel} / 5
+          </p>
+        )}
 
         {gameplay?.encounter?.publicSummary && (
           <p className="mt-4 font-eskapade text-sm leading-relaxed text-neutral-400">

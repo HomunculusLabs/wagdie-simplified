@@ -5,6 +5,35 @@ export type LocationRoomTickStatus = 'pending' | 'processing' | 'completed' | 's
 export type LocationRoomMessageVisibility = 'public' | 'internal'
 export type LocationRoomAuthorKind = 'agent' | 'system' | 'wallet' | 'admin' | 'scheduler' | 'game_master'
 
+export const LOCATION_ROOM_TTRPG_PHASES = ['story', 'exploration', 'threat', 'combat', 'aftermath'] as const
+export type LocationRoomTtrpgPhase = typeof LOCATION_ROOM_TTRPG_PHASES[number]
+
+export const LOCATION_ROOM_COMBAT_READINESS_VALUES = ['none', 'foreshadow', 'ready'] as const
+export type LocationRoomCombatReadiness = typeof LOCATION_ROOM_COMBAT_READINESS_VALUES[number]
+
+export const LOCATION_ROOM_TURN_INTENTS = ['auto', 'story', 'combat'] as const
+export type LocationRoomTurnIntent = typeof LOCATION_ROOM_TURN_INTENTS[number]
+
+export const LOCATION_ROOM_MESSAGE_DOMAINS = ['narrative', 'combat'] as const
+export type LocationRoomMessageDomain = typeof LOCATION_ROOM_MESSAGE_DOMAINS[number]
+
+export const LOCATION_ROOM_MESSAGE_KINDS = [
+  'gm_beat',
+  'character_reaction',
+  'gm_setup',
+  'character_action',
+  'gm_outcome',
+] as const
+export type LocationRoomMessageKind = typeof LOCATION_ROOM_MESSAGE_KINDS[number]
+
+export type LocationRoomRequestedGameplayAction = 'start_combat'
+
+export type LocationRoomEncounterSeed = {
+  title?: string | null
+  summary?: string | null
+  stakes?: string | null
+}
+
 export type LocationRoom = {
   id: string
   locationId: string
@@ -193,6 +222,9 @@ export type PublicLocationRoomMessage = {
   authorName: string
   content: string
   createdAt: string
+  messageDomain?: LocationRoomMessageDomain
+  messageKind?: LocationRoomMessageKind
+  ttrpgPhase?: LocationRoomTtrpgPhase
   gameplayMessageKind?: PublicLocationRoomGameplayMessageKind
   gameplayRolls?: PublicLocationRoomGameplayRolls
 }
@@ -240,6 +272,12 @@ export type PublicLocationRoomSummary = {
   updatedAt: string
 }
 
+export type PublicLocationRoomTtrpgSummary = {
+  phase: LocationRoomTtrpgPhase
+  combatReadiness: LocationRoomCombatReadiness
+  threatLevel: number | null
+}
+
 export type PublicLocationRoomIdentity = {
   requestedLocationId: string
   canonicalLocationId: string
@@ -266,6 +304,7 @@ export type PublicLocationRoomRead = {
   activity?: PublicLocationRoomActivity
   participants: PublicLocationRoomParticipant[]
   messages: PublicLocationRoomMessage[]
+  ttrpg?: PublicLocationRoomTtrpgSummary
   gameplay?: PublicLocationRoomGameplaySummary
   pagination: {
     page: number
@@ -337,6 +376,7 @@ export type RequestLocationRoomTickActor = 'owner' | 'admin'
 export type RequestLocationRoomTickInput = {
   actor: RequestLocationRoomTickActor
   walletAddress: string
+  intent?: LocationRoomTurnIntent
   now?: Date
 }
 

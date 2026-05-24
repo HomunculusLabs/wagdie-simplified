@@ -390,7 +390,7 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
       .eq('id', input.tickId)
       .eq('room_id', input.roomId)
       .is('gameplay_run_id', null)
-      .in('status', ['pending', 'failed'])
+      .in('status', ['pending', 'processing', 'failed'])
       .select(TICK_COLUMNS)
       .maybeSingle()) as QueryResult<TickRow>
 

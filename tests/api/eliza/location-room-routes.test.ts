@@ -48,6 +48,7 @@ jest.mock('@/lib/eliza/locationRooms/service', () => {
       super('cooldown')
     }
   }
+  class LocationRoomManualTickIntentForbiddenError extends Error {}
   class LocationRoomTickDisabledError extends Error {}
 
   return {
@@ -59,6 +60,7 @@ jest.mock('@/lib/eliza/locationRooms/service', () => {
     LocationRoomGameplayConfigError,
     LocationRoomInsufficientParticipantsError,
     LocationRoomManualCooldownError,
+    LocationRoomManualTickIntentForbiddenError,
     LocationRoomTickDisabledError,
     locationRoomService: {
       getPublicRoom: jest.fn(),
@@ -82,6 +84,7 @@ const {
   LocationRoomGameplayConfigError,
   LocationRoomInsufficientParticipantsError,
   LocationRoomManualCooldownError,
+  LocationRoomManualTickIntentForbiddenError,
   LocationRoomNarrativeConfigError,
   LocationRoomNotFoundError,
   LocationRoomOfficialServiceDisabledError,
@@ -107,8 +110,11 @@ function publicContext(locationId = 'loc-1') {
   return { params: Promise.resolve({ locationId }) }
 }
 
-function manualRequest() {
-  return new NextRequest('http://localhost/api/eliza/location-rooms/loc-1/tick', { method: 'POST' })
+function manualRequest(body?: unknown) {
+  return new NextRequest('http://localhost/api/eliza/location-rooms/loc-1/tick', {
+    method: 'POST',
+    ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
+  })
 }
 
 function adminNarrativeRequest(query = '') {
@@ -265,6 +271,7 @@ describe('Eliza location room routes', () => {
     expect(locationRoomService.requestTickAndProcess).toHaveBeenCalledWith('loc-1', {
       actor: 'owner',
       walletAddress: '0xOwner',
+      intent: 'auto',
     })
     await expect(response.json()).resolves.toMatchObject({
       success: true,
@@ -300,12 +307,55 @@ describe('Eliza location room routes', () => {
     expect(locationRoomService.requestTickAndProcess).toHaveBeenCalledWith('loc-1', {
       actor: 'admin',
       walletAddress: '0xOwner',
+      intent: 'auto',
     })
     await expect(response.json()).resolves.toMatchObject({
       deduped: true,
       triggerType: 'admin',
       processing: { attempted: false, status: 'already_processing', tickId: 'tick-existing' },
     })
+  })
+
+  it('manual tick accepts optional story/combat intent JSON and rejects invalid intent bodies', async () => {
+    isAdminMock.mockReturnValueOnce(true)
+    locationRoomServiceMock.requestTickAndProcess.mockResolvedValueOnce({
+      roomId: 'room-1',
+      locationId: 'loc-1',
+      tickId: 'tick-1',
+      triggerType: 'admin',
+      deduped: false,
+      requestedByTokenId: null,
+      participantCount: 2,
+      processing: {
+        attempted: true,
+        status: 'completed',
+        tickId: 'tick-1',
+        result: { tickId: 'tick-1', status: 'completed', selectedTokenId: 7, messageId: 'msg-1' },
+      },
+    })
+
+    const combat = await postManualTick(manualRequest({ intent: 'combat' }), publicContext())
+    const invalid = await postManualTick(manualRequest({ intent: 'raid' }), publicContext())
+
+    expect(combat.status).toBe(200)
+    expect(locationRoomService.requestTickAndProcess).toHaveBeenCalledWith('loc-1', {
+      actor: 'admin',
+      walletAddress: '0xOwner',
+      intent: 'combat',
+    })
+    expect(invalid.status).toBe(400)
+    await expect(invalid.json()).resolves.toEqual({
+      error: 'Manual tick body must be JSON with optional intent: auto, story, or combat',
+    })
+  })
+
+  it('manual tick maps admin-only combat intent errors clearly', async () => {
+    locationRoomServiceMock.requestTickAndProcess.mockRejectedValueOnce(new LocationRoomManualTickIntentForbiddenError())
+
+    const response = await postManualTick(manualRequest({ intent: 'combat' }), publicContext())
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({ error: 'Combat tick intent is admin-only' })
   })
 
   it('manual tick returns auth errors before calling the service', async () => {

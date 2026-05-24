@@ -205,7 +205,9 @@ Extract shared read-only room fetching into a hook that both the watch page and 
 - V1 watch page is intentionally read-only: it does not expose wallet connection, staking/unstaking, or manual tick controls.
 - Management actions remain on `/map` through the existing sidebar flow, including owner/admin manual trigger behavior.
 - Public privacy boundaries remain conservative: static sheet fields and gameplay bands/status are exposed; owner/staker wallets, exact current gameplay HP, raw message metadata, raw mechanical deltas, equipment snapshots, and modifier-source internals are not exposed.
+- Rollout behavior change: gameplay-enabled rooms no longer auto-start combat. The root cause and rationale are documented in `docs/investigations/gm-agent-narrative-combat-separation-2026-05-24.md`; combat now requires an active encounter, an explicit admin combat intent, or a consumed narrative combat trigger.
 - New GM outcome messages use structured `gameplayRolls` for roll UI and narration-only content; legacy historical messages may still contain embedded `Rolls:` text and are not parsed/backfilled in V1.
+- Embedded `Rolls:` text can be removed from new public GM outcome content only after every public dice consumer that needs roll visibility, including the watch page and `/map` sidebar path, renders `gameplayRolls` reliably and compatibility checks confirm no remaining UI depends on parsing embedded roll text.
 - Deferred work: no historical structured-roll backfill, no watch-page management controls, and no broader repo-wide TypeScript cleanup beyond this feature.
 
 ## Open Questions

@@ -26,6 +26,7 @@ jest.mock('@/lib/eliza/gameMasterAgent/service', () => ({
 
 import {
   LocationRoomGameplayConfigError,
+  LocationRoomManualTickIntentForbiddenError,
   LocationRoomService,
   isLocationRoomGameplayEnabledForLocation,
   selectLocationRoomSpeaker,
@@ -36,9 +37,11 @@ import type { LocationRoomRepository } from '@/lib/eliza/locationRooms/repositor
 import type { LocationRoomMembershipRepository } from '@/lib/eliza/locationRooms/membership'
 import type { OfficialLocationRoomTurnGenerator } from '@/lib/eliza/locationRooms/officialTurnGenerator'
 import type { LocationRoomNarrativeCoordinator } from '@/lib/eliza/locationRooms/narrativeCoordinator'
+import type { LocationRoomNarrativeRepository } from '@/lib/eliza/locationRooms/narrativeRepository'
+import type { LocationRoomNarrativeState } from '@/lib/eliza/locationRooms/narrativeTypes'
 import type { LocationRoomGameplayCoordinator } from '@/lib/eliza/locationRooms/gameplay/coordinator'
 import type { LocationRoomGameplayRepository } from '@/lib/eliza/locationRooms/gameplay/repository'
-import type { GameplayRun } from '@/lib/eliza/locationRooms/gameplay/types'
+import type { GameplayEncounter, GameplayRoomState, GameplayRun } from '@/lib/eliza/locationRooms/gameplay/types'
 
 const now = '2026-05-11T12:00:00.000Z'
 
@@ -144,6 +147,47 @@ function gameplayRun(overrides: Partial<GameplayRun> = {}): GameplayRun {
   }
 }
 
+function gameplayEncounter(overrides: Partial<GameplayEncounter> = {}): GameplayEncounter {
+  return {
+    id: 'encounter-1',
+    roomId: 'room-1',
+    locationId: 'loc-1',
+    status: 'active',
+    difficulty: 'normal',
+    roundNumber: 1,
+    publicTitle: 'Bell Maw',
+    publicSummary: 'A maw unfolds.',
+    monsterState: [],
+    rewardPlan: {},
+    mechanics: {},
+    metadata: {},
+    lastError: null,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+    ...overrides,
+  }
+}
+
+function gameplayState(overrides: Partial<GameplayRoomState> = {}): GameplayRoomState {
+  return {
+    id: 'state-1',
+    roomId: 'room-1',
+    locationId: 'loc-1',
+    status: 'active_encounter',
+    activeEncounterId: 'encounter-1',
+    characters: {
+      '1': { tokenId: 1, name: 'Ash', hp: 10, maxHp: 10, status: 'alive', xp: 0, temporaryBoons: [], wounds: [] },
+      '2': { tokenId: 2, name: 'Bone', hp: 10, maxHp: 10, status: 'alive', xp: 0, temporaryBoons: [], wounds: [] },
+    },
+    rewards: {},
+    metadata: {},
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  }
+}
+
 function makeRepository(overrides: Partial<jest.Mocked<LocationRoomRepository>> = {}): jest.Mocked<LocationRoomRepository> {
   const baseRoom = room()
   const baseTick = tick()
@@ -166,7 +210,7 @@ function makeRepository(overrides: Partial<jest.Mocked<LocationRoomRepository>> 
     ensureRoomForLocation: jest.fn(async () => baseRoom),
     listDueRooms: jest.fn(async () => [baseRoom]),
     enqueueTick: jest.fn(async () => ({ tick: baseTick, deduped: false })),
-    attachTickToGameplayRun: jest.fn(async () => baseTick),
+    attachTickToGameplayRun: jest.fn(async (input) => tick({ gameplayRunId: input.gameplayRunId })),
     countCompletedGameplayTurnsForRun: jest.fn(async () => 0),
     findOpenTickForRoom: jest.fn(async () => null),
     findRecentCompletedOwnerTick: jest.fn(async () => null),
@@ -236,6 +280,46 @@ function makeGameplayRepository(
     updateRewardClaimStatusByDeathReviewId: jest.fn(async () => null),
     ...overrides,
   } as jest.Mocked<LocationRoomGameplayRepository>
+}
+
+function narrativeState(overrides: Partial<LocationRoomNarrativeState> = {}): LocationRoomNarrativeState {
+  return {
+    id: 'narrative-state-1',
+    roomId: 'room-1',
+    locationId: 'loc-1',
+    stateSummary: 'The room waits.',
+    currentObjective: null,
+    openThreads: [],
+    metadata: {},
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  }
+}
+
+function makeNarrativeRepository(
+  state = narrativeState()
+): jest.Mocked<LocationRoomNarrativeRepository> {
+  return {
+    findStateByRoomId: jest.fn(async () => state),
+    ensureStateForRoom: jest.fn(async () => state),
+    updateState: jest.fn(async (_room, input) => ({
+      ...state,
+      stateSummary: input.stateSummary ?? state.stateSummary,
+      currentObjective: input.currentObjective ?? state.currentObjective,
+      openThreads: input.openThreads ?? state.openThreads,
+      metadata: input.metadata ?? state.metadata,
+    })),
+    findBeatByTickId: jest.fn(async () => null),
+    listRecentBeatsByRoomId: jest.fn(async () => []),
+    createOrReuseBeat: jest.fn(),
+    storeBeatGameMasterOutput: jest.fn(),
+    markBeatGameMasterMessageAppended: jest.fn(),
+    markBeatCharacterAppended: jest.fn(),
+    markBeatCompleted: jest.fn(),
+    markBeatFailed: jest.fn(),
+    markBeatDead: jest.fn(),
+  }
 }
 
 describe('location room domain service', () => {
@@ -389,6 +473,145 @@ describe('location room domain service', () => {
     expect(result.participants[0]).not.toHaveProperty('ownerAddress')
     expect(result.participants[0]).not.toHaveProperty('stakerAddress')
     expect(result.participants[0]).not.toHaveProperty('backgroundStory')
+  })
+
+  it('projects public-safe TTRPG summary from narrative metadata', async () => {
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    const narrativeRepository = makeNarrativeRepository(narrativeState({
+      metadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: 'start_combat',
+        lastCombatTriggerBeatId: 'beat-secret',
+        hidden: 'do-not-expose',
+      },
+    }))
+    const service = new LocationRoomService(
+      makeRepository(),
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      narrativeRepository
+    )
+
+    const result = await service.getPublicRoom('loc-1')
+
+    expect(narrativeRepository.findStateByRoomId).toHaveBeenCalledWith('room-1')
+    expect(result.ttrpg).toEqual({
+      phase: 'threat',
+      combatReadiness: 'ready',
+      threatLevel: 4,
+    })
+    expect(JSON.stringify(result.ttrpg)).not.toContain('beat-secret')
+    expect(JSON.stringify(result.ttrpg)).not.toContain('do-not-expose')
+  })
+
+  it('projects public message domains kinds and phases with safe historical fallbacks', async () => {
+    const repository = makeRepository({
+      listPublicMessages: jest.fn(async () => ({
+        messages: [
+          message({
+            id: 'msg-narrative-gm',
+            sequence: 1,
+            authorKind: 'game_master',
+            tokenId: null,
+            metadata: {
+              messageDomain: 'narrative',
+              messageKind: 'gm_beat',
+              ttrpgPhase: 'threat',
+              privateNarrativeState: 'hidden',
+            },
+          }),
+          message({
+            id: 'msg-combat-action',
+            sequence: 2,
+            authorKind: 'agent',
+            tokenId: 1,
+            metadata: {
+              messageDomain: 'combat',
+              messageKind: 'character_action',
+              ttrpgPhase: 'combat',
+              privateMechanics: { dc: 99 },
+            },
+          }),
+          message({
+            id: 'msg-legacy-outcome',
+            sequence: 3,
+            authorKind: 'game_master',
+            tokenId: null,
+            metadata: {
+              gameplayMessageKind: 'gm_outcome',
+              messageDomain: 'mechanics',
+              messageKind: 'debug',
+              ttrpgPhase: 'private_phase',
+              rawDc: 99,
+            },
+          }),
+          message({
+            id: 'msg-legacy-agent',
+            sequence: 4,
+            authorKind: 'agent',
+            tokenId: 2,
+            metadata: {},
+          }),
+          message({
+            id: 'msg-wallet',
+            sequence: 5,
+            authorKind: 'wallet',
+            tokenId: null,
+            metadata: { messageDomain: 'system', messageKind: 'mechanics', ttrpgPhase: 'secret' },
+          }),
+        ],
+        total: 5,
+        page: 1,
+        pageSize: 20,
+        hasMore: false,
+      })),
+    })
+    const service = new LocationRoomService(repository, makeMembership())
+
+    const result = await service.getPublicRoom('loc-1')
+
+    expect(result.messages).toEqual([
+      expect.objectContaining({
+        id: 'msg-narrative-gm',
+        messageDomain: 'narrative',
+        messageKind: 'gm_beat',
+        ttrpgPhase: 'threat',
+      }),
+      expect.objectContaining({
+        id: 'msg-combat-action',
+        messageDomain: 'combat',
+        messageKind: 'character_action',
+        ttrpgPhase: 'combat',
+      }),
+      expect.objectContaining({
+        id: 'msg-legacy-outcome',
+        gameplayMessageKind: 'gm_outcome',
+        messageDomain: 'combat',
+        messageKind: 'gm_outcome',
+        ttrpgPhase: 'combat',
+      }),
+      expect.objectContaining({
+        id: 'msg-legacy-agent',
+        messageDomain: 'narrative',
+        messageKind: 'character_reaction',
+        ttrpgPhase: 'story',
+      }),
+      expect.objectContaining({ id: 'msg-wallet' }),
+    ])
+    expect(result.messages[4]).not.toHaveProperty('messageDomain')
+    expect(result.messages[4]).not.toHaveProperty('messageKind')
+    expect(result.messages[4]).not.toHaveProperty('ttrpgPhase')
+    expect(JSON.stringify(result.messages)).not.toContain('privateNarrativeState')
+    expect(JSON.stringify(result.messages)).not.toContain('privateMechanics')
+    expect(JSON.stringify(result.messages)).not.toContain('rawDc')
+    expect(JSON.stringify(result.messages)).not.toContain('private_phase')
   })
 
   it('adds safe public gameplay summaries and message classification without raw mechanics metadata', async () => {
@@ -746,6 +969,76 @@ describe('location room domain service', () => {
     }))
   })
 
+  it('rejects owner combat tick intent but lets admin combat intent create a metadata-backed trigger', async () => {
+    const ownerRepository = makeRepository()
+    const ownerService = new LocationRoomService(
+      ownerRepository,
+      makeMembership([{ ...participant(1), ownerAddress: '0xabc' }, participant(2)]),
+      { generateTurn: jest.fn() }
+    )
+
+    await expect(ownerService.requestTick('loc-1', {
+      actor: 'owner',
+      walletAddress: '0xabc',
+      intent: 'combat',
+      now: new Date(now),
+    })).rejects.toBeInstanceOf(LocationRoomManualTickIntentForbiddenError)
+    expect(ownerRepository.enqueueTick).not.toHaveBeenCalled()
+
+    await expect(ownerService.requestTick('loc-1', {
+      actor: 'admin',
+      walletAddress: '0xAdmin',
+      intent: 'combat',
+      now: new Date(now),
+    })).rejects.toMatchObject({
+      name: 'LocationRoomGameplayConfigError',
+      message: 'Combat tick intent requires gameplay to be enabled for this location',
+    })
+
+    mutableElizaConfig.mode = 'official'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    const adminRepository = makeRepository()
+    const narrativeRepository = makeNarrativeRepository(narrativeState({ metadata: { existing: 'kept' } }))
+    const gameplayRepository = makeGameplayRepository()
+    const adminService = new LocationRoomService(
+      adminRepository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      undefined,
+      gameplayRepository,
+      narrativeRepository
+    )
+
+    const result = await adminService.requestTick('loc-1', {
+      actor: 'admin',
+      walletAddress: '0xAdmin',
+      intent: 'combat',
+      now: new Date(now),
+    })
+
+    expect(result).toMatchObject({ triggerType: 'admin', requestedByTokenId: null })
+    expect(narrativeRepository.ensureStateForRoom).toHaveBeenCalledWith({ room: expect.objectContaining({ id: 'room-1' }) })
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        existing: 'kept',
+        source: 'location-room-manual-tick-intent',
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 5,
+        requestedGameplayAction: 'start_combat',
+        lastCombatTriggerBeatId: expect.stringMatching(/^manual:/),
+        lastManualIntent: 'combat',
+        lastManualIntentActor: 'admin',
+      }),
+    }))
+    expect(adminRepository.enqueueTick).toHaveBeenCalledWith(expect.objectContaining({ triggerType: 'admin' }))
+  })
+
   it('manual enqueue-and-process claims the newly enqueued room tick and returns terminal processing', async () => {
     const claimedTick = tick({ id: 'tick-new', status: 'processing', attempts: 1 })
     const repository = makeRepository({
@@ -794,6 +1087,7 @@ describe('location room domain service', () => {
     })
     const gameplayRepository = makeGameplayRepository({
       findRunById: jest.fn(async () => activeRun),
+      findActiveEncounterByRoomId: jest.fn(async () => gameplayEncounter()),
       updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...activeRun, completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
       findTurnByTickId: jest.fn(async () => null),
     })
@@ -1002,7 +1296,7 @@ describe('location room domain service', () => {
     expect(repository.getLocation).not.toHaveBeenCalled()
   })
 
-  it('accepts an allowlisted gameplay room when official mode, narrative mode, and GM are configured', async () => {
+  it('accepts an allowlisted gameplay room without creating a combat run for auto intent', async () => {
     mutableElizaConfig.mode = 'official'
     mutableGameplayConfig.enabled = true
     mutableGameplayConfig.locationAllowlist = ['loc-1']
@@ -1021,28 +1315,15 @@ describe('location room domain service', () => {
     expect(result).toMatchObject({
       triggerType: 'admin',
       deduped: false,
-      gameplayRun: {
-        id: 'run-1',
-        status: 'active',
-        targetCompletedTurns: 100,
-        completedTurns: 0,
-        remainingTurns: 100,
-        reused: false,
-      },
     })
-    expect(gameplayRepository.createOrReuseActiveRun).toHaveBeenCalledWith(expect.objectContaining({
-      room: expect.objectContaining({ id: 'room-1' }),
-      targetCompletedTurns: 100,
-      startedByActor: 'admin',
-      startedByWallet: '0xadmin',
-      startedByTokenId: null,
-    }))
+    expect(result.gameplayRun).toBeUndefined()
+    expect(gameplayRepository.createOrReuseActiveRun).not.toHaveBeenCalled()
     expect(repository.enqueueTick).toHaveBeenCalledWith(expect.objectContaining({
-      gameplayRunId: 'run-1',
+      gameplayRunId: null,
     }))
   })
 
-  it('reuses the active run on repeated manual gameplay initiation', async () => {
+  it('does not create or reuse combat runs for repeated auto manual ticks', async () => {
     mutableElizaConfig.mode = 'official'
     mutableGameplayConfig.enabled = true
     mutableGameplayConfig.locationAllowlist = ['loc-1']
@@ -1067,12 +1348,13 @@ describe('location room domain service', () => {
       now: new Date(now),
     })
 
-    expect(gameplayRepository.createOrReuseActiveRun).toHaveBeenCalledTimes(2)
-    expect(first.gameplayRun).toMatchObject({ id: 'run-1', reused: false, completedTurns: 0 })
-    expect(second.gameplayRun).toMatchObject({ id: 'run-1', reused: true, completedTurns: 1, remainingTurns: 99 })
+    expect(gameplayRepository.createOrReuseActiveRun).not.toHaveBeenCalled()
+    expect(first.gameplayRun).toBeUndefined()
+    expect(second.gameplayRun).toBeUndefined()
+    expect(repository.enqueueTick).toHaveBeenCalledWith(expect.objectContaining({ gameplayRunId: null }))
   })
 
-  it('associates due scheduled gameplay ticks with an active run', async () => {
+  it('enqueues scheduled gameplay ticks without pre-attaching an active run', async () => {
     mutableElizaConfig.mode = 'official'
     mutableGameplayConfig.enabled = true
     mutableGameplayConfig.locationAllowlist = ['loc-1']
@@ -1088,11 +1370,12 @@ describe('location room domain service', () => {
 
     expect(repository.enqueueTick).toHaveBeenCalledWith(expect.objectContaining({
       triggerType: 'scheduled',
-      gameplayRunId: 'run-active',
+      gameplayRunId: null,
     }))
+    expect(gameplayRepository.findActiveRunByRoomId).not.toHaveBeenCalled()
   })
 
-  it('attaches a deduped manual gameplay initiation to a safe existing tick', async () => {
+  it('does not attach a deduped auto manual tick to a combat run before routing', async () => {
     mutableElizaConfig.mode = 'official'
     mutableGameplayConfig.enabled = true
     mutableGameplayConfig.locationAllowlist = ['loc-1']
@@ -1116,19 +1399,16 @@ describe('location room domain service', () => {
       now: new Date(now),
     })
 
-    expect(repository.attachTickToGameplayRun).toHaveBeenCalledWith({
-      tickId: 'tick-existing',
-      roomId: 'room-1',
-      gameplayRunId: 'run-1',
-    })
+    expect(gameplayRepository.createOrReuseActiveRun).not.toHaveBeenCalled()
+    expect(repository.attachTickToGameplayRun).not.toHaveBeenCalled()
     expect(result).toMatchObject({
       deduped: true,
-      tickId: 'tick-existing',
-      gameplayRun: { id: 'run-1', reused: true, completedTurns: 3, remainingTurns: 97 },
+      tickId: null,
     })
+    expect(result.gameplayRun).toBeUndefined()
   })
 
-  it('does not fast-forward retry backoff when attaching a deduped failed tick to a run', async () => {
+  it('does not attach or fast-forward a deduped failed auto tick before routing', async () => {
     mutableElizaConfig.mode = 'official'
     mutableGameplayConfig.enabled = true
     mutableGameplayConfig.locationAllowlist = ['loc-1']
@@ -1160,15 +1440,16 @@ describe('location room domain service', () => {
       now: new Date(now),
     })
 
+    expect(repository.attachTickToGameplayRun).not.toHaveBeenCalled()
     expect(repository.claimTick).toHaveBeenCalledWith(
-      'tick-failed',
+      'tick-1',
       expect.stringMatching(/^location-room-manual-/),
       new Date(now)
     )
     expect(result.processing).toMatchObject({
       attempted: false,
       status: 'not_claimable',
-      tickId: 'tick-failed',
+      tickId: 'tick-1',
     })
   })
 
@@ -1230,7 +1511,7 @@ describe('location room domain service', () => {
     expect(repository.updateRoomAfterProcessedTick).toHaveBeenCalled()
   })
 
-  it('runs an allowlisted gameplay tick through the gameplay coordinator before narrative mode', async () => {
+  it('routes an allowlisted gameplay room through narrative when no encounter or trigger exists', async () => {
     mutableElizaConfig.mode = 'official'
     mutableNarrativeConfig.enabled = true
     mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
@@ -1238,7 +1519,7 @@ describe('location room domain service', () => {
     mutableGameplayConfig.locationAllowlist = ['loc-1']
     const repository = makeRepository()
     const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
-      processTurn: jest.fn(),
+      processTurn: jest.fn(async () => ({ selectedTokenId: 1, messageId: 'msg-character' })),
       markTickFailed: jest.fn(async () => undefined),
     }
     const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
@@ -1257,21 +1538,136 @@ describe('location room domain service', () => {
       narrativeCoordinator,
       undefined,
       gameplayCoordinator,
-      makeGameplayRepository()
+      makeGameplayRepository(),
+      makeNarrativeRepository()
     )
 
     const result = await service.runScheduledWorker(new Date(now))
 
     expect(result).toMatchObject({ processed: 1, completed: 1, skipped: 0, failed: 0 })
-    expect(gameplayCoordinator.processTurn).toHaveBeenCalledWith(expect.objectContaining({
+    expect(gameplayCoordinator.processTurn).not.toHaveBeenCalled()
+    expect(narrativeCoordinator.processTurn).toHaveBeenCalledWith(expect.objectContaining({
       room: expect.objectContaining({ id: 'room-1' }),
       tick: expect.objectContaining({ id: 'tick-1' }),
+      speaker: expect.objectContaining({ tokenId: 1 }),
       participants: expect.arrayContaining([expect.objectContaining({ tokenId: 1 })]),
       recentMessages: [],
-      now: new Date(now),
+    }))
+    expect(repository.markTickCompleted).toHaveBeenCalledWith('tick-1')
+  })
+
+  it('routes an unconsumed narrative combat trigger into gameplay with seed and speaker instruction', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const repository = makeRepository({
+      attachTickToGameplayRun: jest.fn(async () => tick({ gameplayRunId: 'run-1' })),
+      countCompletedGameplayTurnsForRun: jest.fn(async () => 1),
+    })
+    const narrativeRepository = makeNarrativeRepository(narrativeState({
+      metadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        requestedGameplayAction: 'start_combat',
+        lastCombatTriggerBeatId: 'beat-1',
+        consumedCombatTriggerBeatId: null,
+        lastEncounterSeed: { title: 'Bell Ambush', summary: 'The bell opens.', stakes: 'The room must answer.' },
+      },
+    }))
+    narrativeRepository.listRecentBeatsByRoomId.mockResolvedValueOnce([{ id: 'beat-1', speakerInstruction: 'Strike from the bell fiction.' } as any])
+    const gameplayRepository = makeGameplayRepository({
+      createOrReuseActiveRun: jest.fn(async () => ({ run: gameplayRun({ id: 'run-1' }), reused: false })),
+      findActiveEncounterByRoomId: jest.fn(async () => null),
+      findRunById: jest.fn(async () => gameplayRun({ id: 'run-1' })),
+      findTurnByTickId: jest.fn(async () => null),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        status: 'completed',
+        selectedTokenId: 2,
+        messageId: 'msg-gameplay-action',
+        messageIds: ['msg-gameplay-action'],
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository,
+      narrativeRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, completed: 1, gameplayRuns: { updated: 1 } })
+    expect(gameplayRepository.createOrReuseActiveRun).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ routeSource: 'combat_trigger', encounterTriggerId: 'beat-1' }),
+    }))
+    expect(repository.attachTickToGameplayRun).toHaveBeenCalledWith({ tickId: 'tick-1', roomId: 'room-1', gameplayRunId: 'run-1' })
+    expect(gameplayCoordinator.processTurn).toHaveBeenCalledWith(expect.objectContaining({
+      gameplayRun: { id: 'run-1', targetCompletedTurns: 100 },
+      encounterTrigger: expect.objectContaining({
+        source: 'narrative',
+        triggerId: 'beat-1',
+        narrativeBeatId: 'beat-1',
+        encounterSeed: expect.objectContaining({ title: 'Bell Ambush' }),
+        speakerInstruction: 'Strike from the bell fiction.',
+      }),
     }))
     expect(narrativeCoordinator.processTurn).not.toHaveBeenCalled()
-    expect(repository.markTickCompleted).toHaveBeenCalledWith('tick-1')
+  })
+
+  it('does not consume an already-consumed narrative combat trigger twice', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const narrativeRepository = makeNarrativeRepository(narrativeState({
+      metadata: {
+        requestedGameplayAction: 'start_combat',
+        lastCombatTriggerBeatId: 'beat-1',
+        consumedCombatTriggerBeatId: 'beat-1',
+      },
+    }))
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(async () => ({ selectedTokenId: 1, messageId: 'msg-character' })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayRepository = makeGameplayRepository({
+      findActiveEncounterByRoomId: jest.fn(async () => null),
+    })
+    const service = new LocationRoomService(
+      makeRepository(),
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository,
+      narrativeRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, completed: 1 })
+    expect(gameplayCoordinator.processTurn).not.toHaveBeenCalled()
+    expect(gameplayRepository.createOrReuseActiveRun).not.toHaveBeenCalled()
+    expect(narrativeCoordinator.processTurn).toHaveBeenCalled()
   })
 
   it('passes active run context into gameplay turn processing', async () => {
@@ -1287,6 +1683,7 @@ describe('location room domain service', () => {
     })
     const gameplayRepository = makeGameplayRepository({
       findRunById: jest.fn(async () => gameplayRun({ id: 'run-1', targetCompletedTurns: 100, completedTurns: 0 })),
+      findActiveEncounterByRoomId: jest.fn(async () => gameplayEncounter()),
       findTurnByTickId: jest.fn(async () => null),
     })
     const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
@@ -1345,6 +1742,9 @@ describe('location room domain service', () => {
         .mockResolvedValueOnce([run])
         .mockResolvedValueOnce([]),
       findRunById: jest.fn(async () => run),
+      findStateByRoomId: jest.fn(async () => gameplayState()),
+      findActiveEncounterByRoomId: jest.fn(async () => gameplayEncounter()),
+      findEncounterById: jest.fn(async () => gameplayEncounter()),
       updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...run, completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
       findTurnByTickId: jest.fn(async () => null),
     })
@@ -1400,6 +1800,7 @@ describe('location room domain service', () => {
     const activeRun = gameplayRun({ id: 'run-1', targetCompletedTurns: 100, completedTurns: 1 })
     const gameplayRepository = makeGameplayRepository({
       findRunById: jest.fn(async () => activeRun),
+      findActiveEncounterByRoomId: jest.fn(async () => gameplayEncounter()),
       updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...activeRun, completedTurns: input.completedTurns })),
       findTurnByTickId: jest.fn(async () => ({
         id: 'turn-1',
@@ -1478,6 +1879,9 @@ describe('location room domain service', () => {
     const gameplayRepository = makeGameplayRepository({
       listActiveRunsForWorker: jest.fn(async () => [run]),
       findRunById: jest.fn(async () => run),
+      findStateByRoomId: jest.fn(async () => gameplayState()),
+      findActiveEncounterByRoomId: jest.fn(async () => gameplayEncounter()),
+      findEncounterById: jest.fn(async () => gameplayEncounter()),
       updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...run, completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
       findTurnByTickId: jest.fn(async () => null),
     })
@@ -1512,7 +1916,7 @@ describe('location room domain service', () => {
     expect(repository.claimDueTicks).toHaveBeenLastCalledWith(1, expect.stringMatching(/^location-room-worker-/), new Date(now))
   })
 
-  it('keeps a run active when a gameplay encounter ends before the 100-turn target', async () => {
+  it('stops a run when a gameplay encounter ends before the 100-turn target', async () => {
     mutableElizaConfig.mode = 'official'
     mutableLocationRoomsConfig.maxTicksPerRun = 1
     mutableNarrativeConfig.enabled = true
@@ -1527,6 +1931,7 @@ describe('location room domain service', () => {
     })
     const gameplayRepository = makeGameplayRepository({
       findRunById: jest.fn(async () => activeRun),
+      findActiveEncounterByRoomId: jest.fn(async () => gameplayEncounter()),
       updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...activeRun, completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
       findTurnByTickId: jest.fn(async () => ({ encounterId: 'encounter-1' } as any)),
       findEncounterById: jest.fn(async () => ({ status: 'abandoned' } as any)),
@@ -1552,9 +1957,13 @@ describe('location room domain service', () => {
 
     const result = await service.runScheduledWorker(new Date(now))
 
-    expect(result).toMatchObject({ processed: 1, gameplayRuns: { updated: 1, stopped: 0 } })
-    expect(result.results[0].gameplayRun).toMatchObject({ id: 'run-1', status: 'active', completedTurns: 1 })
-    expect(gameplayRepository.markRunStopped).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ processed: 1, gameplayRuns: { updated: 0, stopped: 1 } })
+    expect(result.results[0].gameplayRun).toMatchObject({ id: 'run-1', status: 'stopped', stopReason: 'encounter_abandoned' })
+    expect(gameplayRepository.markRunStopped).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      stopReason: 'encounter_abandoned',
+      completedTurns: 1,
+      lastTickId: 'tick-run',
+    }))
   })
 
   it('keeps a run active when its tick fails with retry remaining', async () => {
@@ -1569,6 +1978,7 @@ describe('location room domain service', () => {
     })
     const gameplayRepository = makeGameplayRepository({
       findRunById: jest.fn(async () => gameplayRun({ id: 'run-1', completedTurns: 0 })),
+      findActiveEncounterByRoomId: jest.fn(async () => gameplayEncounter()),
     })
     const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
       processTurn: jest.fn(async () => {
@@ -1609,6 +2019,7 @@ describe('location room domain service', () => {
     })
     const gameplayRepository = makeGameplayRepository({
       findRunById: jest.fn(async () => gameplayRun({ id: 'run-1', completedTurns: 4 })),
+      findActiveEncounterByRoomId: jest.fn(async () => gameplayEncounter()),
     })
     const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
       processTurn: jest.fn(async () => {
@@ -1700,7 +2111,7 @@ describe('location room domain service', () => {
       narrativeCoordinator,
       undefined,
       gameplayCoordinator,
-      makeGameplayRepository()
+      makeGameplayRepository({ findActiveEncounterByRoomId: jest.fn(async () => gameplayEncounter()) })
     )
 
     const result = await service.runScheduledWorker(new Date(now))

@@ -48,6 +48,9 @@ import {
   locationRoomNarrativeRepository,
   type LocationRoomNarrativeRepository,
 } from '../narrativeRepository'
+import {
+  mergeNarrativeTtrpgMetadata,
+} from '../narrativeTypes'
 import type { GameMasterAgentResolver } from '../narrativeCoordinator'
 import {
   locationRoomRepository,
@@ -56,6 +59,7 @@ import {
 import { selectLocationRoomSpeaker } from '../speakerSelection'
 import type {
   LocationRoom,
+  LocationRoomEncounterSeed,
   LocationRoomMessage,
   LocationRoomParticipant,
   LocationRoomTick,
@@ -71,6 +75,14 @@ const defaultGameMasterAgentResolver: GameMasterAgentResolver = {
   },
 }
 
+export type LocationRoomGameplayEncounterTrigger = {
+  source: 'narrative' | 'admin'
+  triggerId: string
+  narrativeBeatId?: string | null
+  encounterSeed?: LocationRoomEncounterSeed | null
+  speakerInstruction?: string | null
+}
+
 export type ProcessGameplayLocationRoomTurnInput = {
   room: LocationRoom
   tick: LocationRoomTick
@@ -81,6 +93,7 @@ export type ProcessGameplayLocationRoomTurnInput = {
     id: string
     targetCompletedTurns: number
   }
+  encounterTrigger?: LocationRoomGameplayEncounterTrigger
 }
 
 export type ProcessGameplayLocationRoomTurnResult =
@@ -292,6 +305,28 @@ function terminalCompletedAt(status: string, now: Date): string | null | undefin
   return status === 'active' ? null : nowIso(now)
 }
 
+function isValidEncounterTrigger(
+  trigger: LocationRoomGameplayEncounterTrigger | null | undefined
+): trigger is LocationRoomGameplayEncounterTrigger {
+  return Boolean(
+    trigger &&
+    (trigger.source === 'narrative' || trigger.source === 'admin') &&
+    typeof trigger.triggerId === 'string' &&
+    trigger.triggerId.trim().length > 0
+  )
+}
+
+function triggerSpeakerInstruction(
+  trigger: LocationRoomGameplayEncounterTrigger | null | undefined,
+  encounter: GameplayEncounter
+): string | null {
+  if (typeof trigger?.speakerInstruction === 'string' && trigger.speakerInstruction.trim()) {
+    return trigger.speakerInstruction.trim()
+  }
+  const stored = encounter.metadata.triggerSpeakerInstruction
+  return typeof stored === 'string' && stored.trim() ? stored.trim() : null
+}
+
 function rewardClaimSummaryForContext(claim: {
   id: string
   status: string
@@ -323,7 +358,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
 
   async processTurn(input: ProcessGameplayLocationRoomTurnInput): Promise<ProcessGameplayLocationRoomTurnResult> {
     const gameMasterAgentId = await this.gameMasterAgentResolver.resolveRuntimeGameMasterAgentId()
-    const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room: input.room })
+    let narrativeState = await this.narrativeRepository.ensureStateForRoom({ room: input.room })
     const effectiveMaxEncounterRounds = input.gameplayRun
       ? Math.max(elizaConfig.locationRooms.gameplay.maxEncounterRounds, input.gameplayRun.targetCompletedTurns)
       : elizaConfig.locationRooms.gameplay.maxEncounterRounds
@@ -360,6 +395,14 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
     }
 
     if (!encounter) {
+      if (!isValidEncounterTrigger(input.encounterTrigger)) {
+        return {
+          status: 'skipped',
+          selectedTokenId: null,
+          reason: 'no_combat_trigger',
+        }
+      }
+
       const playableParticipants = livingParticipants(input.participants, gameplayState)
       if (playableParticipants.length < 2) {
         return {
@@ -377,6 +420,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         recentMessages: input.recentMessages,
         narrativeState,
         gameplayState,
+        encounterSeed: input.encounterTrigger.encounterSeed ?? null,
         requestedDifficulty: elizaConfig.locationRooms.gameplay.defaultDifficulty,
         budget: {
           partySize: playableParticipants.length,
@@ -413,16 +457,37 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
           gameMasterAgentId: proposalOutput.gameMasterAgentId,
           proposalMetadata: proposalOutput.metadata,
           publicSetupNarration: proposalOutput.publicSetupNarration,
+          triggerSource: input.encounterTrigger.source,
+          triggerId: input.encounterTrigger.triggerId,
+          narrativeBeatId: input.encounterTrigger.narrativeBeatId ?? null,
+          encounterSeed: input.encounterTrigger.encounterSeed ?? null,
+          ttrpgPhase: 'combat',
+          triggerSpeakerInstruction: input.encounterTrigger.speakerInstruction ?? null,
         },
       })
       setupNarration = proposalOutput.publicSetupNarration ?? normalized.publicSummary
       createdEncounterThisTick = encounter.metadata.createdByTickId === input.tick.id
+      narrativeState = await this.narrativeRepository.updateState(input.room, {
+        metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+          ttrpgPhase: 'combat',
+          combatReadiness: 'ready',
+          requestedGameplayAction: null,
+          consumedCombatTriggerBeatId: input.encounterTrigger.triggerId,
+          lastEncounterSeed: input.encounterTrigger.encounterSeed ?? undefined,
+        }, {
+          source: GAMEPLAY_SOURCE,
+          lastGameplayEncounterId: encounter.id,
+          lastGameplayTriggerSource: input.encounterTrigger.source,
+          lastGameplayTriggerTickId: input.tick.id,
+        }),
+      })
       gameplayState = await this.gameplayRepository.updateState(input.room, {
         status: 'active_encounter',
         activeEncounterId: encounter.id,
         metadata: {
           ...gameplayState.metadata,
           lastEncounterStartedTickId: input.tick.id,
+          lastEncounterTriggerId: input.encounterTrigger.triggerId,
         },
       })
     }
@@ -468,6 +533,9 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
           source: GAMEPLAY_SOURCE,
           gameplay: true,
           gameplayMessageKind: 'gm_setup',
+          messageDomain: 'combat',
+          messageKind: 'gm_setup',
+          ttrpgPhase: 'combat',
           gameplayTurnId: turn.id,
           encounterId: encounter.id,
         },
@@ -487,6 +555,19 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       await this.gameplayRepository.updateState(input.room, {
         status: 'aftermath',
         activeEncounterId: null,
+      })
+      await this.narrativeRepository.updateState(input.room, {
+        metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+          ttrpgPhase: 'aftermath',
+          combatReadiness: 'none',
+          threatLevel: null,
+          requestedGameplayAction: null,
+        }, {
+          source: GAMEPLAY_SOURCE,
+          lastGameplayEncounterId: encounter.id,
+          lastGameplayTerminalStatus: encounter.status,
+          lastTickId: input.tick.id,
+        }),
       })
       return {
         status: 'skipped',
@@ -545,6 +626,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
           publicSpeechMaxLength: elizaConfig.locationRooms.gameplay.publicSpeechMaxLength,
           intentSummaryMaxLength: elizaConfig.locationRooms.gameplay.actionIntentMaxLength,
         },
+        speakerInstruction: triggerSpeakerInstruction(input.encounterTrigger, encounter),
       })
       action = generated.action
       actionOfficialAgentId = generated.officialAgentId
@@ -719,6 +801,9 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         source: GAMEPLAY_SOURCE,
         gameplay: true,
         gameplayMessageKind: 'character_action',
+        messageDomain: 'combat',
+        messageKind: 'character_action',
+        ttrpgPhase: 'combat',
         gameplayTurnId: turn.id,
         encounterId: encounter.id,
         actionType: action.actionType,
@@ -741,8 +826,12 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         source: GAMEPLAY_SOURCE,
         gameplay: true,
         gameplayMessageKind: 'gm_outcome',
+        messageDomain: 'combat',
+        messageKind: 'gm_outcome',
+        ttrpgPhase: 'combat',
         gameplayTurnId: turn.id,
         encounterId: encounter.id,
+        // Compatibility: keep legacy embedded roll summary metadata until every public surface renders structured publicRolls.
         rollSummary: formatPublicGameplayRollSummary(mechanicalSummary),
         ...(publicRolls ? { publicRolls } : {}),
       },
@@ -753,12 +842,18 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       stateSummary: outcome.stateAfter.stateSummary,
       currentObjective: outcome.stateAfter.currentObjective,
       openThreads: outcome.stateAfter.openThreads,
-      metadata: {
-        ...narrativeState.metadata,
+      metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+        ttrpgPhase: encounter.status === 'active' ? 'combat' : 'aftermath',
+        combatReadiness: encounter.status === 'active' ? 'ready' : 'none',
+        threatLevel: encounter.status === 'active' ? undefined : null,
+        requestedGameplayAction: null,
+      }, {
         source: GAMEPLAY_SOURCE,
         lastGameplayTurnId: turn.id,
+        lastGameplayEncounterId: encounter.id,
+        lastGameplayEncounterStatus: encounter.status,
         lastTickId: input.tick.id,
-      },
+      }),
     })
 
     turn = await this.gameplayRepository.storeTurnOutcome(turn.id, {

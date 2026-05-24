@@ -6,13 +6,22 @@ import {
 } from '@/lib/eliza/official/messaging'
 import type {
   LocationRoom,
+  LocationRoomCombatReadiness,
+  LocationRoomEncounterSeed,
   LocationRoomMessage,
   LocationRoomParticipant,
+  LocationRoomRequestedGameplayAction,
   LocationRoomTick,
+  LocationRoomTtrpgPhase,
 } from './types'
-import type {
-  LocationRoomNarrativeState,
-  LocationRoomNarrativeStateSnapshot,
+import {
+  normalizeCombatReadiness,
+  normalizeEncounterSeed,
+  normalizeRequestedGameplayAction,
+  normalizeThreatLevel,
+  normalizeTtrpgPhase,
+  type LocationRoomNarrativeState,
+  type LocationRoomNarrativeStateSnapshot,
 } from './narrativeTypes'
 
 export type GameMasterBeatLimits = {
@@ -27,11 +36,21 @@ export type GameMasterBeatOutput = {
   publicNarration: string | null
   speakerInstruction: string
   stateAfter: LocationRoomNarrativeStateSnapshot
+  ttrpgPhase: LocationRoomTtrpgPhase
+  combatReadiness: LocationRoomCombatReadiness
+  threatLevel: number | null
+  requestedGameplayAction: LocationRoomRequestedGameplayAction | null
+  encounterSeed: LocationRoomEncounterSeed | null
   metadata: {
     currentObjective?: string | null
     featuredTokenIds?: number[]
     selectedSpeakerTokenId?: number
     rawResponseLength?: number
+    ttrpgPhase?: LocationRoomTtrpgPhase
+    combatReadiness?: LocationRoomCombatReadiness
+    threatLevel?: number | null
+    requestedGameplayAction?: LocationRoomRequestedGameplayAction | null
+    encounterSeed?: LocationRoomEncounterSeed | null
   }
 }
 
@@ -182,6 +201,13 @@ export function normalizeGameMasterBeatResponse(
     limits.stateSummaryMaxLength,
     'speakerInstruction'
   )
+  const ttrpgPhase = normalizeTtrpgPhase(parsed.ttrpgPhase ?? parsed.ttrpg_phase)
+  const combatReadiness = normalizeCombatReadiness(parsed.combatReadiness ?? parsed.combat_readiness)
+  const threatLevel = normalizeThreatLevel(parsed.threatLevel ?? parsed.threat_level)
+  const requestedGameplayAction = normalizeRequestedGameplayAction(
+    parsed.requestedGameplayAction ?? parsed.requested_gameplay_action
+  )
+  const encounterSeed = normalizeEncounterSeed(parsed.encounterSeed ?? parsed.encounter_seed)
 
   return {
     gameMasterAgentId: options.gameMasterAgentId,
@@ -195,11 +221,21 @@ export function normalizeGameMasterBeatResponse(
       currentObjective,
       openThreads,
     },
+    ttrpgPhase,
+    combatReadiness,
+    threatLevel,
+    requestedGameplayAction,
+    encounterSeed,
     metadata: {
       currentObjective,
       featuredTokenIds,
       selectedSpeakerTokenId,
       rawResponseLength: raw.length,
+      ttrpgPhase,
+      combatReadiness,
+      threatLevel,
+      requestedGameplayAction,
+      encounterSeed,
     },
   }
 }
@@ -257,6 +293,11 @@ export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): s
     '  "stateSummary": "updated private continuity summary after this beat",',
     '  "currentObjective": "current objective, or null",',
     '  "openThreads": ["short unresolved thread"],',
+    '  "ttrpgPhase": "story | exploration | threat | aftermath",',
+    '  "combatReadiness": "none | foreshadow | ready",',
+    '  "threatLevel": 0,',
+    '  "requestedGameplayAction": null,',
+    '  "encounterSeed": null,',
     '  "featuredTokenIds": [123],',
     `  "selectedSpeakerTokenId": ${input.speaker.tokenId}`,
     '}',
@@ -266,6 +307,10 @@ export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): s
     '- Reference only eligible current participant token ids.',
     '- Keep public narration suitable for public display and avoid markdown.',
     '- The selected speaker must remain the selected speaker above.',
+    '- Do not spawn combat by default. Most beats should keep requestedGameplayAction null.',
+    '- Use ttrpgPhase "threat" and combatReadiness "foreshadow" to hint at danger without starting combat.',
+    '- Use combatReadiness "ready" and requestedGameplayAction "start_combat" only when the fiction clearly escalates to a fight.',
+    '- encounterSeed may be a public-safe object with title, summary, and stakes; never include mechanics, DCs, HP, rewards, or private chain data.',
   ].join('\n')
 }
 

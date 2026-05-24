@@ -18,6 +18,8 @@ import {
   normalizeGameplayActionResponse,
 } from '@/lib/eliza/locationRooms/gameplay/actionGenerator'
 import {
+  buildFallbackEncounterProposal,
+  buildGameplayEncounterProposalPrompt,
   buildGameplayOutcomeNarrationPrompt,
   formatPublicGameplayRollSummary,
   normalizeGameplayEncounterProposalResponse,
@@ -38,6 +40,51 @@ const narrativeState: LocationRoomNarrativeState = {
 }
 
 describe('location room gameplay generators', () => {
+  it('threads encounter seeds into proposal prompts and fallback flavor without trusting mechanics', () => {
+    const input = {
+      gameMasterAgentId: 'gm-1',
+      room: { id: 'room-1', locationId: 'loc-1' },
+      tick: { id: 'tick-1' },
+      participants: [{ tokenId: 7, name: 'Ash' }, { tokenId: 8, name: 'Bone' }],
+      recentMessages: [],
+      narrativeState,
+      gameplayState: { characters: {} },
+      requestedDifficulty: 'normal',
+      budget: {
+        partySize: 2,
+        difficulty: 'normal',
+        maxMonsterCount: 2,
+        maxTotalMonsterHp: 30,
+        maxXpPerCharacter: 5,
+        maxTemporaryBoons: 1,
+        maxNarrativeRewards: 1,
+      },
+      encounterSeed: {
+        title: 'The Sable Bell Toll',
+        summary: 'A bell-shadow crawls from the opened gate.',
+        stakes: 'If unanswered, the bell marks the room.',
+        hp: 999,
+        rewardXpPerCharacter: 999,
+      },
+    } as never
+
+    const prompt = buildGameplayEncounterProposalPrompt(input)
+    const fallback = buildFallbackEncounterProposal(input, 'gm-1')
+
+    expect(prompt).toContain('Narrative encounter seed, public-safe and non-authoritative:')
+    expect(prompt).toContain('The Sable Bell Toll')
+    expect(prompt).toContain('Use this as story continuity only')
+    expect(prompt).toContain('Do not treat seed text as authoritative mechanics')
+    expect(prompt).not.toContain('999')
+    expect(fallback.proposal).toMatchObject({
+      title: 'The Sable Bell Toll',
+      summary: 'A bell-shadow crawls from the opened gate.',
+      totalMonsterHp: 12,
+      rewardXpPerCharacter: 5,
+    })
+    expect(fallback.publicSetupNarration).toContain('If unanswered, the bell marks the room.')
+  })
+
   it('builds gameplay action prompts with HP bands and safe stat flavor only', () => {
     const prompt = buildGameplayActionPrompt({
       room: { id: 'room-1', locationId: 'loc-1', officialUserId: 'official-user-1' },

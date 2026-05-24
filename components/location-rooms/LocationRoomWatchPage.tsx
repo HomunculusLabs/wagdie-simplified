@@ -39,6 +39,11 @@ export function LocationRoomWatchPage({ locationId }: LocationRoomWatchPageProps
       `Fetched ${lastFetchedAt ? formatDateTime(lastFetchedAt.toISOString()) : 'pending'}`,
     ];
 
+    if (roomData.ttrpg) {
+      facts.push(`Phase ${formatStatusLabel(roomData.ttrpg.phase)}`);
+      facts.push(`Readiness ${formatStatusLabel(roomData.ttrpg.combatReadiness)}`);
+      if (roomData.ttrpg.threatLevel != null) facts.push(`Threat ${roomData.ttrpg.threatLevel} / 5`);
+    }
     if (roomData.activity?.tickCount != null) facts.push(`${roomData.activity.tickCount} ticks`);
     if (roomData.activity?.completedTurnCount != null) facts.push(`${roomData.activity.completedTurnCount} completed turns`);
     if (roomData.activity?.targetTurnCount != null) facts.push(`${roomData.activity.targetTurnCount} target turns`);
@@ -128,6 +133,11 @@ export function LocationRoomWatchPage({ locationId }: LocationRoomWatchPageProps
             {roomData.identity?.isAlias && (
               <span className="rounded-full border border-amber-500/35 bg-amber-500/10 px-3 py-1 text-amber-100">
                 Requested {requestedLocationId} aliases to {canonicalLocationId}
+              </span>
+            )}
+            {roomData.ttrpg && (
+              <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-sky-100">
+                Phase {formatStatusLabel(roomData.ttrpg.phase)} · Readiness {formatStatusLabel(roomData.ttrpg.combatReadiness)}
               </span>
             )}
             {roomData.gameplay?.encounter && (

@@ -241,6 +241,11 @@ describe('location room narrative coordinator', () => {
           currentObjective: 'Answer the toll.',
           openThreads: ['Who rang it?'],
         },
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: 'start_combat',
+        encounterSeed: { title: 'The Bell Horror', summary: 'A bell-born horror steps from the gate.', stakes: 'Silence the toll.' },
         metadata: { featuredTokenIds: [1] },
       })),
     }
@@ -271,12 +276,24 @@ describe('location room narrative coordinator', () => {
     expect(narrativeRepository.storeBeatGameMasterOutput).toHaveBeenCalledWith('beat-1', expect.objectContaining({
       publicNarration: 'The bell tolls once.',
       speakerInstruction: 'Answer with dread.',
+      metadata: expect.objectContaining({
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: 'start_combat',
+        encounterSeed: expect.objectContaining({ title: 'The Bell Horror' }),
+      }),
     }))
     expect(repository.appendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
       authorKind: 'game_master',
       officialAgentId: 'gm-1',
       content: 'The bell tolls once.',
       tickId: 'tick-1',
+      metadata: expect.objectContaining({
+        messageDomain: 'narrative',
+        messageKind: 'gm_beat',
+        ttrpgPhase: 'threat',
+      }),
     }))
     expect(turnGenerator.generateTurn).toHaveBeenCalledWith(expect.objectContaining({
       narrativeContext: expect.objectContaining({
@@ -289,11 +306,23 @@ describe('location room narrative coordinator', () => {
       tokenId: 1,
       content: 'I hear it in my bones.',
       tickId: 'tick-1',
+      metadata: expect.objectContaining({
+        messageDomain: 'narrative',
+        messageKind: 'character_reaction',
+        ttrpgPhase: 'threat',
+      }),
     }))
     expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
       stateSummary: 'The bell has called Ash.',
       currentObjective: 'Answer the toll.',
       openThreads: ['Who rang it?'],
+      metadata: expect.objectContaining({
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        requestedGameplayAction: 'start_combat',
+        lastEncounterSeed: expect.objectContaining({ title: 'The Bell Horror' }),
+        lastCombatTriggerBeatId: 'beat-1',
+      }),
     }))
     expect(narrativeRepository.markBeatCompleted).toHaveBeenCalledWith('beat-1')
   })
@@ -403,6 +432,11 @@ describe('location room narrative coordinator', () => {
           currentObjective: null,
           openThreads: [],
         },
+        ttrpgPhase: 'story',
+        combatReadiness: 'none',
+        threatLevel: null,
+        requestedGameplayAction: null,
+        encounterSeed: null,
         metadata: {},
       })),
     }

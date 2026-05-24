@@ -46,25 +46,67 @@ export function formatCount(noun: string, count: number): string {
   return `${count} ${noun}${count === 1 ? '' : 's'}`;
 }
 
+export function getPublicRoomMessageDomain(message: PublicRoomMessage): PublicRoomMessage['messageDomain'] | undefined {
+  if (message.messageDomain) return message.messageDomain;
+  if (message.gameplayMessageKind) return 'combat';
+  if (message.authorKind === 'game_master' || message.authorKind === 'agent') return 'narrative';
+  return undefined;
+}
+
+export function getPublicRoomMessageKind(message: PublicRoomMessage): PublicRoomMessage['messageKind'] | undefined {
+  if (message.messageKind) return message.messageKind;
+  if (message.gameplayMessageKind) return message.gameplayMessageKind;
+  if (message.authorKind === 'game_master') return 'gm_beat';
+  if (message.authorKind === 'agent') return 'character_reaction';
+  return undefined;
+}
+
+export function getPublicRoomMessagePhase(message: PublicRoomMessage): PublicRoomMessage['ttrpgPhase'] | undefined {
+  if (message.ttrpgPhase) return message.ttrpgPhase;
+  const domain = getPublicRoomMessageDomain(message);
+  if (domain === 'combat') return 'combat';
+  if (domain === 'narrative') return 'story';
+  return undefined;
+}
+
 export function getGameplayMessageLabel(message: PublicRoomMessage): string | null {
-  if (message.gameplayMessageKind === 'gm_setup') return 'GM setup';
-  if (message.gameplayMessageKind === 'character_action') return 'Character action';
-  if (message.gameplayMessageKind === 'gm_outcome') return 'GM outcome';
-  if (message.authorKind === 'game_master') return 'Story beat';
+  const domain = getPublicRoomMessageDomain(message);
+  const kind = getPublicRoomMessageKind(message);
+
+  if (domain === 'combat' && kind === 'gm_setup') return 'Combat setup';
+  if (domain === 'combat' && kind === 'character_action') return 'Combat action';
+  if (domain === 'combat' && kind === 'gm_outcome') return 'Combat outcome';
+  if (domain === 'narrative' && kind === 'gm_beat') return 'Story beat';
+  if (domain === 'narrative' && kind === 'character_reaction') return 'Character reaction';
+  if (kind === 'gm_setup') return 'GM setup';
+  if (kind === 'character_action') return 'Character action';
+  if (kind === 'gm_outcome') return 'GM outcome';
+  if (kind === 'gm_beat') return 'Story beat';
   return null;
 }
 
 export function getMessageToneClassName(message: PublicRoomMessage): string {
-  if (message.gameplayMessageKind === 'gm_setup') {
+  const domain = getPublicRoomMessageDomain(message);
+  const kind = getPublicRoomMessageKind(message);
+
+  if (domain === 'combat' && kind === 'gm_setup') {
     return 'border-soul-accent/40 bg-soul-accent/10 shadow-[0_0_30px_rgba(180,130,255,0.10)]';
   }
 
-  if (message.gameplayMessageKind === 'character_action') {
+  if (domain === 'combat' && kind === 'character_action') {
     return 'border-amber-500/35 bg-amber-500/10 shadow-[0_0_30px_rgba(245,158,11,0.08)]';
   }
 
-  if (message.gameplayMessageKind === 'gm_outcome') {
+  if (domain === 'combat' && kind === 'gm_outcome') {
     return 'border-rose-500/35 bg-rose-500/10 shadow-[0_0_30px_rgba(244,63,94,0.08)]';
+  }
+
+  if (domain === 'narrative' && kind === 'gm_beat') {
+    return 'border-soul-accent/30 bg-soul-accent/10';
+  }
+
+  if (domain === 'narrative' && kind === 'character_reaction') {
+    return 'border-sky-500/25 bg-sky-500/10 shadow-[0_0_30px_rgba(14,165,233,0.06)]';
   }
 
   if (message.authorKind === 'game_master') {

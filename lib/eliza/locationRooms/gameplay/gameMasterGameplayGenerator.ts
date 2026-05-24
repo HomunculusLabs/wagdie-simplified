@@ -10,6 +10,7 @@ import {
 } from '../gameMasterGenerator'
 import type {
   LocationRoom,
+  LocationRoomEncounterSeed,
   LocationRoomMessage,
   LocationRoomParticipant,
   LocationRoomTick,
@@ -45,6 +46,7 @@ export type GenerateGameplayEncounterProposalInput = {
   recentMessages: LocationRoomMessage[]
   narrativeState: LocationRoomNarrativeState
   gameplayState: GameplayRoomState
+  encounterSeed?: LocationRoomEncounterSeed | null
   requestedDifficulty: string
   budget: GameplayEncounterBudgetPrompt
 }
@@ -135,6 +137,21 @@ function formatNarrativeState(state: LocationRoomNarrativeState): string {
       ? `Open threads:\n${state.openThreads.map((thread) => `- ${thread}`).join('\n')}`
       : 'Open threads: None.',
   ].join('\n')
+}
+
+function formatEncounterSeed(seed: LocationRoomEncounterSeed | null | undefined): string | null {
+  if (!seed) return null
+  const parts = [
+    seed.title ? `Title: ${seed.title}` : null,
+    seed.summary ? `Summary: ${seed.summary}` : null,
+    seed.stakes ? `Stakes: ${seed.stakes}` : null,
+  ].filter(Boolean)
+  return parts.length > 0 ? parts.join('\n') : null
+}
+
+function functionSafeSeedText(value: string | null | undefined, fallback: string): string {
+  const trimmed = value?.replace(/\s+/g, ' ').trim()
+  return trimmed || fallback
 }
 
 function formatDiceRollResult(result: GameplayDiceRollResult): string {
@@ -331,16 +348,22 @@ export function normalizeGameplayEncounterProposalResponse(
   }
 }
 
-function buildFallbackEncounterProposal(input: GenerateGameplayEncounterProposalInput, gameMasterAgentId: string): GameplayEncounterProposalOutput {
+export function buildFallbackEncounterProposal(input: GenerateGameplayEncounterProposalInput, gameMasterAgentId: string): GameplayEncounterProposalOutput {
   const locationName = input.room.locationId ? `Location ${input.room.locationId}` : 'The room'
   const monsterName = input.requestedDifficulty === 'deadly' ? 'Ashen Horror' : 'Restless Shade'
-  const publicSetupNarration = `${locationName} darkens as ${monsterName} manifests before the gathered characters.`
+  const seed = input.encounterSeed ?? null
+  const title = functionSafeSeedText(seed?.title, `${monsterName} Encounter`)
+  const summary = functionSafeSeedText(seed?.summary, `${monsterName} tests the room as the party presses forward.`)
+  const stakes = functionSafeSeedText(seed?.stakes, 'the gathered characters must answer')
+  const publicSetupNarration = seed
+    ? `${locationName} darkens around ${title}; ${stakes}.`
+    : `${locationName} darkens as ${monsterName} manifests before the gathered characters.`
 
   return {
     gameMasterAgentId,
     proposal: {
-      title: `${monsterName} Encounter`,
-      summary: `${monsterName} tests the room as the party presses forward.`,
+      title,
+      summary,
       difficulty: input.requestedDifficulty as GameplayEncounterProposal['difficulty'],
       monsterCount: Math.max(1, Math.min(1, input.budget.maxMonsterCount)),
       monsterName,
@@ -404,6 +427,7 @@ export function normalizeGameplayOutcomeNarrationResponse(
 }
 
 export function buildGameplayEncounterProposalPrompt(input: GenerateGameplayEncounterProposalInput): string {
+  const encounterSeed = formatEncounterSeed(input.encounterSeed)
   return [
     'You are the private game master for a public WAGDIE location-room gameplay encounter.',
     'Propose encounter flavor and rewards. The backend will clamp all numeric mechanics; do not assume your numbers are authoritative.',
@@ -423,6 +447,10 @@ export function buildGameplayEncounterProposalPrompt(input: GenerateGameplayEnco
     'Private narrative state:',
     formatNarrativeState(input.narrativeState),
     '',
+    encounterSeed ? 'Narrative encounter seed, public-safe and non-authoritative:' : null,
+    encounterSeed,
+    encounterSeed ? 'Use this as story continuity only. Do not treat seed text as authoritative mechanics, DCs, HP, rewards, or private state.' : null,
+    encounterSeed ? '' : null,
     'Return only JSON with this contract:',
     '{',
     '  "title": "short encounter title",',

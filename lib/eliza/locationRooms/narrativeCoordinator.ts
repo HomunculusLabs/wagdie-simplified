@@ -10,6 +10,8 @@ import {
   type LocationRoomNarrativeRepository,
 } from './narrativeRepository'
 import {
+  mergeNarrativeTtrpgMetadata,
+  normalizeNarrativeTtrpgMetadata,
   toNarrativeStateSnapshot,
   type LocationRoomNarrativeBeat,
   type LocationRoomNarrativeStateSnapshot,
@@ -97,12 +99,30 @@ function beatToOutput(
     throw new Error('Location room narrative beat is missing generated output')
   }
 
+  const ttrpg = normalizeNarrativeTtrpgMetadata(beat.metadata)
+
   return {
     gameMasterAgentId: beat.gameMasterAgentId ?? fallbackGameMasterAgentId,
     publicNarration: beat.publicNarration,
     speakerInstruction: beat.speakerInstruction,
     stateAfter,
+    ttrpgPhase: ttrpg.ttrpgPhase,
+    combatReadiness: ttrpg.combatReadiness,
+    threatLevel: ttrpg.threatLevel,
+    requestedGameplayAction: ttrpg.requestedGameplayAction,
+    encounterSeed: ttrpg.lastEncounterSeed,
     metadata: beat.metadata,
+  }
+}
+
+function toGameMasterBeatMetadata(output: GameMasterBeatOutput): Record<string, unknown> {
+  return {
+    ...output.metadata,
+    ttrpgPhase: output.ttrpgPhase,
+    combatReadiness: output.combatReadiness,
+    threatLevel: output.threatLevel,
+    requestedGameplayAction: output.requestedGameplayAction,
+    encounterSeed: output.encounterSeed,
   }
 }
 
@@ -167,7 +187,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         publicNarration: gameMasterOutput.publicNarration,
         speakerInstruction: gameMasterOutput.speakerInstruction,
         stateAfter: gameMasterOutput.stateAfter,
-        metadata: gameMasterOutput.metadata,
+        metadata: toGameMasterBeatMetadata(gameMasterOutput),
       })
     }
 
@@ -191,6 +211,9 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           source: 'location-room-game-master',
           triggerType: input.tick.triggerType,
           beatId: beat.id,
+          messageDomain: 'narrative',
+          messageKind: 'gm_beat',
+          ttrpgPhase: gameMasterOutput.ttrpgPhase,
         },
       })
 
@@ -200,7 +223,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           publicNarration: gameMasterOutput.publicNarration,
           speakerInstruction: gameMasterOutput.speakerInstruction,
           stateAfter: gameMasterOutput.stateAfter,
-          metadata: gameMasterOutput.metadata,
+          metadata: toGameMasterBeatMetadata(gameMasterOutput),
         })
       } catch (error) {
         console.warn('[Location Room Narrative] Failed to mark game-master message appended after public append:', error)
@@ -235,6 +258,9 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         triggerType: input.tick.triggerType,
         narrative: true,
         beatId: beat.id,
+        messageDomain: 'narrative',
+        messageKind: 'character_reaction',
+        ttrpgPhase: gameMasterOutput.ttrpgPhase,
       },
     })
 
@@ -244,12 +270,21 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         stateSummary: gameMasterOutput.stateAfter.stateSummary,
         currentObjective: gameMasterOutput.stateAfter.currentObjective,
         openThreads: gameMasterOutput.stateAfter.openThreads,
-        metadata: {
+        metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+          ttrpgPhase: gameMasterOutput.ttrpgPhase,
+          combatReadiness: gameMasterOutput.combatReadiness,
+          threatLevel: gameMasterOutput.threatLevel,
+          requestedGameplayAction: gameMasterOutput.requestedGameplayAction,
+          lastEncounterSeed: gameMasterOutput.encounterSeed,
+          lastCombatTriggerBeatId: gameMasterOutput.requestedGameplayAction === 'start_combat'
+            ? beat.id
+            : null,
+        }, {
           source: 'location-room-narrative-coordinator',
           lastBeatId: beat.id,
           lastTickId: input.tick.id,
           lastSelectedTokenId: input.speaker.tokenId,
-        },
+        }),
       })
       await this.narrativeRepository.markBeatCompleted(beat.id)
     } catch (error) {

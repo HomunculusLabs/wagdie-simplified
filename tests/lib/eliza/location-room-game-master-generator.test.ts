@@ -151,11 +151,14 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Ash #1: The bell rings.')
     expect(prompt).toContain('Continuity summary: A bell rings under the ash.')
     expect(prompt).toContain('Return only a JSON object')
+    expect(prompt).toContain('"ttrpgPhase"')
+    expect(prompt).toContain('Do not spawn combat by default')
+    expect(prompt).toContain('requestedGameplayAction "start_combat"')
   })
 
   it('normalizes fenced JSON and caps public/state/thread values', () => {
     const output = normalizeGameMasterBeatResponse(
-      '```json\n{"publicNarration":"The ash bell tolls beyond the ruined gate.","speakerInstruction":"Answer the bell without solving it.","stateSummary":"The bell is now louder near the ruined gate and the room is wary.","currentObjective":"Follow the sound","openThreads":["Who rings the bell?","What waits below?","extra"],"featuredTokenIds":[1,2],"selectedSpeakerTokenId":1}\n```',
+      '```json\n{"publicNarration":"The ash bell tolls beyond the ruined gate.","speakerInstruction":"Answer the bell without solving it.","stateSummary":"The bell is now louder near the ruined gate and the room is wary.","currentObjective":"Follow the sound","openThreads":["Who rings the bell?","What waits below?","extra"],"ttrpgPhase":"threat","combatReadiness":"ready","threatLevel":7,"requestedGameplayAction":"start_combat","encounterSeed":{"title":"Bell Horror","summary":"A horror answers the bell.","stakes":"The gate may open."},"featuredTokenIds":[1,2],"selectedSpeakerTokenId":1}\n```',
       { participants, speaker: participants[0] },
       { gameMasterAgentId: 'gm-1', limits }
     )
@@ -169,8 +172,24 @@ describe('game-master beat generator helpers', () => {
         currentObjective: 'Follow the sound',
         openThreads: ['Who rings th', 'What waits b'],
       },
+      ttrpgPhase: 'threat',
+      combatReadiness: 'ready',
+      threatLevel: 5,
+      requestedGameplayAction: 'start_combat',
+      encounterSeed: {
+        title: 'Bell Horror',
+        summary: 'A horror answers the bell.',
+        stakes: 'The gate may open.',
+      },
     })
     expect(output.metadata.featuredTokenIds).toEqual([1, 2])
+    expect(output.metadata).toEqual(expect.objectContaining({
+      ttrpgPhase: 'threat',
+      combatReadiness: 'ready',
+      threatLevel: 5,
+      requestedGameplayAction: 'start_combat',
+      encounterSeed: expect.objectContaining({ title: 'Bell Horror' }),
+    }))
 
     const noThreads = normalizeGameMasterBeatResponse(
       '{"speakerInstruction":"Speak","stateSummary":"State","openThreads":["ignored"]}',
@@ -178,6 +197,13 @@ describe('game-master beat generator helpers', () => {
       { gameMasterAgentId: 'gm-1', limits: { ...limits, openThreadsMaxCount: 0 } }
     )
     expect(noThreads.stateAfter.openThreads).toEqual([])
+    expect(noThreads).toMatchObject({
+      ttrpgPhase: 'story',
+      combatReadiness: 'none',
+      threatLevel: null,
+      requestedGameplayAction: null,
+      encounterSeed: null,
+    })
   })
 
   it('rejects invalid JSON and empty required fields before public output can be written', () => {

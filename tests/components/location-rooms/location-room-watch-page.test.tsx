@@ -30,13 +30,18 @@ const roomFixture: PublicLocationRoomRead = {
   },
   activity: {
     generatedAt: '2026-05-24T13:05:00.000Z',
-    messageCount: 2,
-    latestSequence: 2,
+    messageCount: 4,
+    latestSequence: 4,
     latestMessageCreatedAt: '2026-05-24T13:04:00.000Z',
     lastTickAt: '2026-05-24T13:00:00.000Z',
     tickCount: 4,
     completedTurnCount: 3,
     targetTurnCount: 100,
+  },
+  ttrpg: {
+    phase: 'threat',
+    combatReadiness: 'ready',
+    threatLevel: 4,
   },
   participants: [
     {
@@ -65,13 +70,16 @@ const roomFixture: PublicLocationRoomRead = {
   ],
   messages: [
     {
-      id: 'msg-2',
-      sequence: 2,
+      id: 'msg-4',
+      sequence: 4,
       authorKind: 'game_master',
       tokenId: null,
       authorName: 'Internal GM Agent',
       content: 'The ghoul staggers as the blade bites.',
       createdAt: '2026-05-24T13:04:00.000Z',
+      messageDomain: 'combat',
+      messageKind: 'gm_outcome',
+      ttrpgPhase: 'combat',
       gameplayMessageKind: 'gm_outcome',
       gameplayRolls: {
         action: {
@@ -115,8 +123,32 @@ const roomFixture: PublicLocationRoomRead = {
       tokenId: 7,
       authorName: 'Wagdie #7',
       content: 'I raise my rusted blade.',
-      createdAt: '2026-05-24T13:03:00.000Z',
+      createdAt: '2026-05-24T13:01:00.000Z',
       gameplayMessageKind: 'character_action',
+    },
+    {
+      id: 'msg-2',
+      sequence: 2,
+      authorKind: 'game_master',
+      tokenId: null,
+      authorName: 'Internal GM Agent',
+      content: 'A bell tolls beneath the ash, promising teeth in the dark.',
+      createdAt: '2026-05-24T13:02:00.000Z',
+      messageDomain: 'narrative',
+      messageKind: 'gm_beat',
+      ttrpgPhase: 'threat',
+    },
+    {
+      id: 'msg-3',
+      sequence: 3,
+      authorKind: 'agent',
+      tokenId: 7,
+      authorName: 'Wagdie #7',
+      content: 'The bell wants blood. I can hear it laughing.',
+      createdAt: '2026-05-24T13:03:00.000Z',
+      messageDomain: 'narrative',
+      messageKind: 'character_reaction',
+      ttrpgPhase: 'threat',
     },
   ],
   gameplay: {
@@ -141,7 +173,7 @@ const roomFixture: PublicLocationRoomRead = {
       narrativeRewards: ['A bone key'],
     },
   },
-  pagination: { page: 1, pageSize: 50, total: 2, hasMore: false },
+  pagination: { page: 1, pageSize: 50, total: 4, hasMore: false },
 };
 
 describe('LocationRoomWatchPage', () => {
@@ -176,13 +208,24 @@ describe('LocationRoomWatchPage', () => {
     expect(screen.getByRole('link', { name: /Back to map/i })).toHaveAttribute('href', '/map');
     expect(screen.getAllByText('Crows Den').length).toBeGreaterThan(0);
     expect(screen.getByText('Requested crows_den aliases to 11')).toBeInTheDocument();
-    expect(screen.getByText('2 messages')).toBeInTheDocument();
+    expect(screen.getByText('4 messages')).toBeInTheDocument();
+    expect(screen.getByText('Phase Threat · Readiness Ready')).toBeInTheDocument();
+    expect(screen.getByText('Phase Threat')).toBeInTheDocument();
+    expect(screen.getByText('Readiness Ready')).toBeInTheDocument();
+    expect(screen.getByText('Threat 4 / 5')).toBeInTheDocument();
+    expect(screen.getByText('Threat level 4 / 5')).toBeInTheDocument();
     expect(screen.getByText('3 completed turns')).toBeInTheDocument();
 
     expect(screen.getByText('I raise my rusted blade.')).toBeInTheDocument();
+    expect(screen.getByText('A bell tolls beneath the ash, promising teeth in the dark.')).toBeInTheDocument();
+    expect(screen.getByText('The bell wants blood. I can hear it laughing.')).toBeInTheDocument();
+    expect(screen.getByText('Story beat')).toBeInTheDocument();
+    expect(screen.getByText('Character reaction')).toBeInTheDocument();
+    expect(screen.getByText('Combat action')).toBeInTheDocument();
+    expect(screen.getByText('Combat outcome')).toBeInTheDocument();
     expect(screen.getAllByText('Wagdie #7').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Token #7').length).toBeGreaterThan(0);
-    expect(screen.getByText('Game Master')).toBeInTheDocument();
+    expect(screen.getAllByText('Game Master').length).toBeGreaterThan(0);
     expect(screen.queryByText('Internal GM Agent')).not.toBeInTheDocument();
 
     expect(screen.getByText('Fighter · Level 2')).toBeInTheDocument();

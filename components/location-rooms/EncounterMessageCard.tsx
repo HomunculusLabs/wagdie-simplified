@@ -7,6 +7,8 @@ import {
   formatStatusLabel,
   getGameplayMessageLabel,
   getMessageToneClassName,
+  getPublicRoomMessageDomain,
+  getPublicRoomMessagePhase,
   getStatusToneClassName,
   type PublicRoomMessage,
 } from './locationRoomPresentation';
@@ -26,6 +28,8 @@ export function EncounterMessageCard({ message, roomData }: EncounterMessageCard
   const isGameMaster = message.authorKind === 'game_master';
   const displayName = isGameMaster ? 'Game Master' : participant?.name ?? message.authorName;
   const label = getGameplayMessageLabel(message);
+  const domain = getPublicRoomMessageDomain(message);
+  const phase = getPublicRoomMessagePhase(message);
   const statusCopy = gameplayCharacter
     ? `${formatStatusLabel(gameplayCharacter.status)} · ${formatStatusLabel(gameplayCharacter.hpBand)}`
     : null;
@@ -69,7 +73,13 @@ export function EncounterMessageCard({ message, roomData }: EncounterMessageCard
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800/70 pb-3">
             <div className="flex flex-wrap items-center gap-2 font-eskapade text-xs uppercase tracking-[0.18em] text-neutral-500">
               <span>#{message.sequence}</span>
+              {domain && (
+                <span className={domain === 'combat' ? 'text-rose-300' : 'text-sky-300'}>
+                  {formatStatusLabel(domain)}
+                </span>
+              )}
               {label && <span className="text-soul-accent/80">{label}</span>}
+              {phase && <span className="text-neutral-400">{formatStatusLabel(phase)}</span>}
             </div>
             <time className="font-eskapade text-xs text-neutral-500" dateTime={message.createdAt}>
               {formatDateTime(message.createdAt)}

@@ -11,20 +11,37 @@ import type {
   LocationRoomWorkerResult,
   LocationRoomWorkerRunCounters,
   ProcessLocationRoomTickResult,
+  LocationRoomMessageDomain,
+  LocationRoomMessageKind,
+  LocationRoomTtrpgPhase,
   PublicGameplayStatusBand,
   PublicLocationRoomGameplayMessageKind,
   PublicLocationRoomGameplaySummary,
   PublicLocationRoomMessage,
   PublicLocationRoomParticipant,
   PublicLocationRoomRead,
+  PublicLocationRoomTtrpgSummary,
   RequestLocationRoomTickAndProcessResult,
   RequestLocationRoomTickInput,
   RequestLocationRoomTickResult,
 } from './types'
 import {
+  LOCATION_ROOM_MESSAGE_DOMAINS,
+  LOCATION_ROOM_MESSAGE_KINDS,
+  LOCATION_ROOM_TTRPG_PHASES,
+} from './types'
+import {
   locationRoomRepository,
   type LocationRoomRepository,
 } from './repository'
+import {
+  locationRoomNarrativeRepository,
+  type LocationRoomNarrativeRepository,
+} from './narrativeRepository'
+import {
+  mergeNarrativeTtrpgMetadata,
+  normalizeNarrativeTtrpgMetadata,
+} from './narrativeTypes'
 import {
   locationRoomMembershipRepository,
   participantBelongsToWallet,
@@ -43,6 +60,7 @@ import {
 import {
   locationRoomGameplayCoordinator,
   type LocationRoomGameplayCoordinator,
+  type LocationRoomGameplayEncounterTrigger,
 } from './gameplay/coordinator'
 import {
   locationRoomGameplayRepository,
@@ -121,6 +139,13 @@ export class LocationRoomManualCooldownError extends Error {
   }
 }
 
+export class LocationRoomManualTickIntentForbiddenError extends Error {
+  constructor() {
+    super('Combat tick intent is admin-only')
+    this.name = 'LocationRoomManualTickIntentForbiddenError'
+  }
+}
+
 export class LocationRoomTickDisabledError extends Error {
   constructor() {
     super('Location room ticks are disabled')
@@ -175,15 +200,64 @@ const PUBLIC_GAMEPLAY_MESSAGE_KINDS: readonly PublicLocationRoomGameplayMessageK
   'gm_outcome',
 ]
 
+function hasPublicStringValue<T extends readonly string[]>(values: T, value: unknown): value is T[number] {
+  return typeof value === 'string' && values.includes(value as T[number])
+}
+
 function toPublicGameplayMessageKind(metadata: Record<string, unknown>): PublicLocationRoomGameplayMessageKind | undefined {
   const value = metadata.gameplayMessageKind
-  return typeof value === 'string' && PUBLIC_GAMEPLAY_MESSAGE_KINDS.includes(value as PublicLocationRoomGameplayMessageKind)
-    ? value as PublicLocationRoomGameplayMessageKind
+  return hasPublicStringValue(PUBLIC_GAMEPLAY_MESSAGE_KINDS, value)
+    ? value
     : undefined
+}
+
+function toPublicMessageDomain(
+  message: LocationRoomMessage,
+  gameplayMessageKind: PublicLocationRoomGameplayMessageKind | undefined
+): LocationRoomMessageDomain | undefined {
+  const value = message.metadata.messageDomain
+  if (hasPublicStringValue(LOCATION_ROOM_MESSAGE_DOMAINS, value)) return value
+  if (gameplayMessageKind) return 'combat'
+  if (message.authorKind === 'game_master' || message.authorKind === 'agent') return 'narrative'
+  return undefined
+}
+
+function toPublicMessageKind(
+  message: LocationRoomMessage,
+  gameplayMessageKind: PublicLocationRoomGameplayMessageKind | undefined
+): LocationRoomMessageKind | undefined {
+  const value = message.metadata.messageKind
+  if (hasPublicStringValue(LOCATION_ROOM_MESSAGE_KINDS, value)) return value
+  if (gameplayMessageKind) return gameplayMessageKind
+  if (message.authorKind === 'game_master') return 'gm_beat'
+  if (message.authorKind === 'agent') return 'character_reaction'
+  return undefined
+}
+
+function toPublicMessagePhase(
+  metadata: Record<string, unknown>,
+  messageDomain: LocationRoomMessageDomain | undefined
+): LocationRoomTtrpgPhase | undefined {
+  if (hasPublicStringValue(LOCATION_ROOM_TTRPG_PHASES, metadata.ttrpgPhase)) return metadata.ttrpgPhase
+  if (messageDomain === 'combat') return 'combat'
+  if (messageDomain === 'narrative') return 'story'
+  return undefined
+}
+
+function toPublicTtrpgSummary(metadata: Record<string, unknown> | null | undefined): PublicLocationRoomTtrpgSummary {
+  const ttrpg = normalizeNarrativeTtrpgMetadata(metadata)
+  return {
+    phase: ttrpg.ttrpgPhase,
+    combatReadiness: ttrpg.combatReadiness,
+    threatLevel: ttrpg.threatLevel,
+  }
 }
 
 function toPublicMessage(message: LocationRoomMessage): PublicLocationRoomMessage {
   const gameplayMessageKind = toPublicGameplayMessageKind(message.metadata)
+  const messageDomain = toPublicMessageDomain(message, gameplayMessageKind)
+  const messageKind = toPublicMessageKind(message, gameplayMessageKind)
+  const ttrpgPhase = toPublicMessagePhase(message.metadata, messageDomain)
   const gameplayRolls = sanitizePublicGameplayRolls(message.metadata.publicRolls)
 
   return {
@@ -194,6 +268,9 @@ function toPublicMessage(message: LocationRoomMessage): PublicLocationRoomMessag
     authorName: message.authorName,
     content: message.content,
     createdAt: message.createdAt,
+    ...(messageDomain ? { messageDomain } : {}),
+    ...(messageKind ? { messageKind } : {}),
+    ...(ttrpgPhase ? { ttrpgPhase } : {}),
     ...(gameplayMessageKind ? { gameplayMessageKind } : {}),
     ...(gameplayRolls ? { gameplayRolls } : {}),
   }
@@ -296,6 +373,23 @@ function hasMinimumPlayableGameplayParticipants(
   return participants.filter((participant) => isPlayableGameplayCharacter(state.characters[String(participant.tokenId)])).length >= MIN_ELIGIBLE_PARTICIPANTS
 }
 
+function terminalEncounterRunStatus(status: string): 'completed' | 'stopped' | null {
+  if (status === 'victory' || status === 'defeat' || status === 'fled') return 'completed'
+  if (status === 'abandoned') return 'stopped'
+  return null
+}
+
+function gameplayRunStartedByActor(triggerType: LocationRoomTick['triggerType']): GameplayRun['startedByActor'] {
+  if (triggerType === 'scheduled') return 'scheduler'
+  return triggerType
+}
+
+function isUnconsumedCombatTrigger(metadata: ReturnType<typeof normalizeNarrativeTtrpgMetadata>): boolean {
+  return metadata.requestedGameplayAction === 'start_combat' &&
+    Boolean(metadata.lastCombatTriggerBeatId) &&
+    metadata.consumedCombatTriggerBeatId !== metadata.lastCombatTriggerBeatId
+}
+
 export function isLocationRoomGameplayEnabledForLocation(locationId: string): boolean {
   const gameplay = elizaConfig.locationRooms.gameplay
   if (!gameplay.enabled) return false
@@ -361,7 +455,8 @@ export class LocationRoomService {
     private readonly narrativeCoordinator: LocationRoomNarrativeCoordinator = locationRoomNarrativeCoordinator,
     private readonly gameMasterAgentResolver: GameMasterAgentResolver = gameMasterAgentService,
     private readonly gameplayCoordinator: LocationRoomGameplayCoordinator = locationRoomGameplayCoordinator,
-    private readonly gameplayRepository: LocationRoomGameplayRepository = locationRoomGameplayRepository
+    private readonly gameplayRepository: LocationRoomGameplayRepository = locationRoomGameplayRepository,
+    private readonly narrativeRepository: LocationRoomNarrativeRepository = locationRoomNarrativeRepository
   ) {}
 
   async getPublicRoom(locationId: string, params: { page?: string | null; pageSize?: string | null } = {}): Promise<PublicLocationRoomRead> {
@@ -396,6 +491,10 @@ export class LocationRoomService {
       state: gameplayState,
       encounter: gameplayEncounter,
     })
+    const narrativeState = elizaConfig.locationRooms.narrative.enabled
+      ? await this.narrativeRepository.findStateByRoomId(room.id)
+      : null
+    const ttrpg = narrativeState ? toPublicTtrpgSummary(narrativeState.metadata) : undefined
 
     return {
       room: {
@@ -429,6 +528,7 @@ export class LocationRoomService {
       },
       participants: participants.map(toPublicParticipant),
       messages: messages.messages.map(toPublicMessage),
+      ...(ttrpg ? { ttrpg } : {}),
       ...(gameplay ? { gameplay } : {}),
       pagination: {
         page: messages.page,
@@ -566,42 +666,48 @@ export class LocationRoomService {
       }
     }
 
+    const intent = input.intent ?? 'auto'
+    if (intent === 'combat' && input.actor !== 'admin') {
+      throw new LocationRoomManualTickIntentForbiddenError()
+    }
+
+    if (intent === 'combat' && !isLocationRoomGameplayEnabledForLocation(room.locationId)) {
+      throw new LocationRoomGameplayConfigError('Combat tick intent requires gameplay to be enabled for this location')
+    }
+
     const triggerType = input.actor === 'admin' ? 'admin' : 'owner'
     const requestedByTokenId = input.actor === 'owner'
       ? ownedParticipant?.tokenId ?? null
       : null
-    const gameplayRunResult = isLocationRoomGameplayEnabledForLocation(room.locationId)
-      ? await this.gameplayRepository.createOrReuseActiveRun({
-          room,
-          targetCompletedTurns: elizaConfig.locationRooms.gameplay.automation.targetCompletedTurns,
-          startedByActor: triggerType,
-          startedByWallet: normalizedWallet,
-          startedByTokenId: requestedByTokenId,
-          metadata: {
-            source: 'manual_gameplay_initiation',
-            triggerType,
-          },
-        })
-      : null
+    if (intent === 'combat') {
+      const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room })
+      const now = input.now ?? new Date()
+      await this.narrativeRepository.updateState(room, {
+        metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+          ttrpgPhase: 'threat',
+          combatReadiness: 'ready',
+          threatLevel: 5,
+          requestedGameplayAction: 'start_combat',
+          lastEncounterSeed: null,
+          lastCombatTriggerBeatId: `manual:${randomUUID()}`,
+        }, {
+          source: 'location-room-manual-tick-intent',
+          lastManualIntent: intent,
+          lastManualIntentActor: input.actor,
+          lastManualIntentAt: now.toISOString(),
+        }),
+      })
+    }
+
     const enqueueResult = await this.repository.enqueueTick({
       room,
       triggerType,
       requestedByWallet: normalizedWallet,
       requestedByTokenId,
-      gameplayRunId: gameplayRunResult?.run.id ?? null,
+      gameplayRunId: null,
     })
 
-    let enqueuedTick = enqueueResult.tick
-    if (!enqueuedTick && gameplayRunResult) {
-      const openTick = await this.repository.findOpenTickForRoom(room.id)
-      if (openTick && openTick.gameplayRunId === null && (openTick.status === 'pending' || openTick.status === 'failed')) {
-        enqueuedTick = await this.repository.attachTickToGameplayRun({
-          tickId: openTick.id,
-          roomId: room.id,
-          gameplayRunId: gameplayRunResult.run.id,
-        })
-      }
-    }
+    const enqueuedTick = enqueueResult.tick
 
     return {
       room,
@@ -615,7 +721,6 @@ export class LocationRoomService {
         deduped: enqueueResult.deduped,
         requestedByTokenId,
         participantCount: participants.length,
-        ...(gameplayRunResult ? { gameplayRun: toGameplayRunSummary(gameplayRunResult.run, gameplayRunResult.reused) } : {}),
       },
     }
   }
@@ -644,13 +749,10 @@ export class LocationRoomService {
     let deduped = 0
     for (const room of dueRooms) {
       try {
-        const activeRun = isLocationRoomGameplayEnabledForLocation(room.locationId)
-          ? await this.gameplayRepository.findActiveRunByRoomId(room.id)
-          : null
         const result = await this.repository.enqueueTick({
           room,
           triggerType: 'scheduled',
-          gameplayRunId: activeRun?.id ?? null,
+          gameplayRunId: null,
         })
         if (result.deduped) deduped += 1
         else enqueued += 1
@@ -774,7 +876,7 @@ export class LocationRoomService {
       representedRoomIds.add(run.roomId)
 
       const completedTurns = await this.repository.countCompletedGameplayTurnsForRun(run.id)
-      let currentRun = completedTurns !== run.completedTurns
+      const currentRun = completedTurns !== run.completedTurns
         ? await this.gameplayRepository.updateRunProgress(run.id, {
             completedTurns,
             lastAdvancedAt: run.lastAdvancedAt,
@@ -857,6 +959,40 @@ export class LocationRoomService {
       }
 
       const state = await this.gameplayRepository.findStateByRoomId(room.id)
+      const activeEncounter = state?.activeEncounterId
+        ? await this.gameplayRepository.findEncounterById(state.activeEncounterId)
+        : await this.gameplayRepository.findActiveEncounterByRoomId(room.id)
+      const terminalRunStatus = activeEncounter ? terminalEncounterRunStatus(activeEncounter.status) : null
+      if (!activeEncounter) {
+        await this.gameplayRepository.markRunStopped(currentRun.id, {
+          stopReason: 'no_active_gameplay_encounter',
+          completedTurns,
+          completedAt: now.toISOString(),
+        })
+        counters.stopped += 1
+        continue
+      }
+      if (terminalRunStatus === 'completed') {
+        await this.markTerminalEncounterAftermath({ room, encounter: activeEncounter, now, source: 'active-run-worker-terminal' })
+        await this.gameplayRepository.markRunCompleted(currentRun.id, {
+          stopReason: `encounter_${activeEncounter.status}`,
+          completedTurns,
+          completedAt: now.toISOString(),
+        })
+        counters.completed += 1
+        continue
+      }
+      if (terminalRunStatus === 'stopped') {
+        await this.markTerminalEncounterAftermath({ room, encounter: activeEncounter, now, source: 'active-run-worker-terminal' })
+        await this.gameplayRepository.markRunStopped(currentRun.id, {
+          stopReason: `encounter_${activeEncounter.status}`,
+          completedTurns,
+          completedAt: now.toISOString(),
+        })
+        counters.stopped += 1
+        continue
+      }
+
       if (!hasMinimumPlayableGameplayParticipants(participants, state)) {
         await this.gameplayRepository.markRunStopped(currentRun.id, {
           stopReason: 'insufficient_living_gameplay_participants',
@@ -891,12 +1027,128 @@ export class LocationRoomService {
     return { enqueued, deduped }
   }
 
+  private async buildEncounterTriggerFromNarrativeState(
+    room: LocationRoom,
+    stateMetadata: Record<string, unknown>
+  ): Promise<LocationRoomGameplayEncounterTrigger | null> {
+    const ttrpg = normalizeNarrativeTtrpgMetadata(stateMetadata)
+    if (!isUnconsumedCombatTrigger(ttrpg) || !ttrpg.lastCombatTriggerBeatId) return null
+
+    const triggerId = ttrpg.lastCombatTriggerBeatId
+    const isManualAdminTrigger = triggerId.startsWith('manual:')
+    let speakerInstruction: string | null = null
+
+    if (!isManualAdminTrigger) {
+      const beats = await this.narrativeRepository.listRecentBeatsByRoomId(room.id, 10).catch(() => [])
+      const beat = beats.find((candidate) => candidate.id === triggerId)
+      speakerInstruction = beat?.speakerInstruction ?? null
+    }
+
+    return {
+      source: isManualAdminTrigger ? 'admin' : 'narrative',
+      triggerId,
+      narrativeBeatId: isManualAdminTrigger ? null : triggerId,
+      encounterSeed: ttrpg.lastEncounterSeed,
+      speakerInstruction,
+    }
+  }
+
+  private async markTerminalEncounterAftermath(params: {
+    room: LocationRoom
+    encounter: GameplayEncounter
+    now: Date
+    source: string
+  }): Promise<void> {
+    const state = await this.gameplayRepository.findStateByRoomId(params.room.id).catch(() => null)
+    if (state && state.activeEncounterId === params.encounter.id) {
+      await this.gameplayRepository.updateState(params.room, {
+        status: 'aftermath',
+        activeEncounterId: null,
+        metadata: {
+          ...state.metadata,
+          source: params.source,
+          lastTerminalEncounterId: params.encounter.id,
+          lastTerminalEncounterStatus: params.encounter.status,
+          lastTerminalEncounterAt: params.now.toISOString(),
+        },
+      }).catch(() => null)
+    }
+
+    const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room: params.room }).catch(() => null)
+    if (narrativeState) {
+      await this.narrativeRepository.updateState(params.room, {
+        metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+          ttrpgPhase: 'aftermath',
+          combatReadiness: 'none',
+          threatLevel: null,
+          requestedGameplayAction: null,
+        }, {
+          source: params.source,
+          lastGameplayEncounterId: params.encounter.id,
+          lastGameplayTerminalStatus: params.encounter.status,
+          lastGameplayTerminalAt: params.now.toISOString(),
+        }),
+      }).catch(() => null)
+    }
+  }
+
+  private async ensureGameplayRunForCombat(params: {
+    room: LocationRoom
+    tick: LocationRoomTick
+    source: 'active_encounter' | 'combat_trigger'
+    encounterTrigger?: LocationRoomGameplayEncounterTrigger
+  }): Promise<{ tick: LocationRoomTick; run: GameplayRun; reused: boolean }> {
+    if (params.tick.gameplayRunId) {
+      const existing = await this.gameplayRepository.findRunById(params.tick.gameplayRunId)
+      if (existing && existing.status === 'active') {
+        return { tick: params.tick, run: existing, reused: true }
+      }
+      throw new Error('Claimed combat tick is attached to a stale gameplay run')
+    }
+
+    const runResult = await this.gameplayRepository.createOrReuseActiveRun({
+      room: params.room,
+      targetCompletedTurns: elizaConfig.locationRooms.gameplay.automation.targetCompletedTurns,
+      startedByActor: gameplayRunStartedByActor(params.tick.triggerType),
+      startedByWallet: params.tick.requestedByWallet,
+      startedByTokenId: params.tick.requestedByTokenId,
+      metadata: {
+        source: 'phase_aware_combat_routing',
+        routeSource: params.source,
+        triggerType: params.tick.triggerType,
+        tickId: params.tick.id,
+        ...(params.encounterTrigger ? {
+          encounterTriggerSource: params.encounterTrigger.source,
+          encounterTriggerId: params.encounterTrigger.triggerId,
+          narrativeBeatId: params.encounterTrigger.narrativeBeatId ?? null,
+        } : {}),
+      },
+    })
+
+    const attachedTick = await this.repository.attachTickToGameplayRun({
+      tickId: params.tick.id,
+      roomId: params.room.id,
+      gameplayRunId: runResult.run.id,
+    })
+
+    if (!attachedTick || attachedTick.gameplayRunId !== runResult.run.id) {
+      throw new Error('Claimed combat tick could not be durably attached to the gameplay run')
+    }
+
+    return {
+      tick: attachedTick,
+      run: runResult.run,
+      reused: runResult.reused,
+    }
+  }
+
   private async synchronizeGameplayRunAfterTick(
     tick: LocationRoomTick,
     result: ProcessLocationRoomTickResult,
-    now: Date
+    now: Date,
+    effectiveGameplayRunId?: string | null
   ): Promise<LocationRoomGameplayRunSummary | undefined> {
-    const runId = tick.gameplayRunId
+    const runId = result.gameplayRunId ?? effectiveGameplayRunId ?? tick.gameplayRunId
     if (!runId) return undefined
 
     const run = await this.gameplayRepository.findRunById(runId)
@@ -926,13 +1178,55 @@ export class LocationRoomService {
     const stopReason = result.status === 'skipped'
       ? result.reason ?? 'tick_skipped'
       : null
+    if (stopReason?.startsWith('encounter_')) {
+      const status = stopReason.slice('encounter_'.length)
+      const terminalRunStatus = terminalEncounterRunStatus(status)
+      if (terminalRunStatus === 'completed') {
+        const completedRun = await this.gameplayRepository.markRunCompleted(run.id, {
+          ...terminalBase,
+          stopReason,
+        })
+        return toGameplayRunSummary(completedRun)
+      }
+      if (terminalRunStatus === 'stopped') {
+        const stoppedRun = await this.gameplayRepository.markRunStopped(run.id, {
+          ...terminalBase,
+          stopReason,
+        })
+        return toGameplayRunSummary(stoppedRun)
+      }
+    }
     if (stopReason && [
       'insufficient_participants',
       'insufficient_living_gameplay_participants',
+      'no_active_gameplay_encounter',
+      'no_combat_trigger',
     ].includes(stopReason)) {
       const stoppedRun = await this.gameplayRepository.markRunStopped(run.id, {
         ...terminalBase,
         stopReason,
+      })
+      return toGameplayRunSummary(stoppedRun)
+    }
+
+    const turn = await this.gameplayRepository.findTurnByTickId(tick.id).catch(() => null)
+    const encounter = turn?.encounterId
+      ? await this.gameplayRepository.findEncounterById(turn.encounterId).catch(() => null)
+      : null
+    const terminalRunStatus = encounter ? terminalEncounterRunStatus(encounter.status) : null
+    if (terminalRunStatus === 'completed') {
+      await this.markTerminalEncounterAftermath({ room: { id: run.roomId, locationId: run.locationId } as LocationRoom, encounter: encounter!, now, source: 'gameplay-run-sync-terminal' })
+      const completedRun = await this.gameplayRepository.markRunCompleted(run.id, {
+        ...terminalBase,
+        stopReason: `encounter_${encounter?.status}`,
+      })
+      return toGameplayRunSummary(completedRun)
+    }
+    if (terminalRunStatus === 'stopped') {
+      await this.markTerminalEncounterAftermath({ room: { id: run.roomId, locationId: run.locationId } as LocationRoom, encounter: encounter!, now, source: 'gameplay-run-sync-terminal' })
+      const stoppedRun = await this.gameplayRepository.markRunStopped(run.id, {
+        ...terminalBase,
+        stopReason: `encounter_${encounter?.status}`,
       })
       return toGameplayRunSummary(stoppedRun)
     }
@@ -956,12 +1250,16 @@ export class LocationRoomService {
 
   private async processClaimedTick(tick: LocationRoomTick, now: Date): Promise<ProcessLocationRoomTickResult> {
     let result: ProcessLocationRoomTickResult
+    const context: { effectiveGameplayRunId: string | null } = { effectiveGameplayRunId: tick.gameplayRunId }
     try {
-      result = await this.processClaimedTickUnsafe(tick, now)
+      result = await this.processClaimedTickUnsafe(tick, now, context)
     } catch (error) {
       const storedError = routeSafeError(error)
       const selectedTokenId = tick.selectedTokenId
-      const shouldMarkGameplayTurn = isLocationRoomGameplayEnabledForLocation(tick.locationId)
+      const durableGameplayTurn = context.effectiveGameplayRunId || tick.gameplayRunId
+        ? null
+        : await Promise.resolve(this.gameplayRepository.findTurnByTickId(tick.id)).catch(() => null)
+      const shouldMarkGameplayTurn = Boolean(context.effectiveGameplayRunId || tick.gameplayRunId || durableGameplayTurn)
       const shouldMarkNarrativeBeat = !shouldMarkGameplayTurn && elizaConfig.locationRooms.narrative.enabled
 
       if (tick.attempts >= MAX_TICK_ATTEMPTS) {
@@ -996,18 +1294,22 @@ export class LocationRoomService {
       }
     }
 
-    if (tick.gameplayRunId) {
-      result = { ...result, gameplayRunId: tick.gameplayRunId }
+    if (context.effectiveGameplayRunId || tick.gameplayRunId) {
+      result = { ...result, gameplayRunId: result.gameplayRunId ?? context.effectiveGameplayRunId ?? tick.gameplayRunId }
     }
 
-    const gameplayRun = await this.synchronizeGameplayRunAfterTick(tick, result, now).catch((error) => {
+    const gameplayRun = await this.synchronizeGameplayRunAfterTick(tick, result, now, context.effectiveGameplayRunId).catch((error) => {
       console.error('[Eliza Location Rooms] gameplay run lifecycle update failed', error)
       return undefined
     })
     return gameplayRun ? { ...result, gameplayRun } : result
   }
 
-  private async processClaimedTickUnsafe(tick: LocationRoomTick, now: Date): Promise<ProcessLocationRoomTickResult> {
+  private async processClaimedTickUnsafe(
+    tick: LocationRoomTick,
+    now: Date,
+    context: { effectiveGameplayRunId: string | null }
+  ): Promise<ProcessLocationRoomTickResult> {
     const room = await this.repository.findRoomById(tick.roomId)
     if (!room) {
       await this.repository.markTickDead(tick.id, 'Location room no longer exists')
@@ -1042,45 +1344,76 @@ export class LocationRoomService {
     )
 
     if (isLocationRoomGameplayEnabledForLocation(room.locationId)) {
-      const gameplayRun = tick.gameplayRunId
-        ? await this.gameplayRepository.findRunById(tick.gameplayRunId)
-        : null
-      const gameplayResult = await this.gameplayCoordinator.processTurn({
-        room,
-        tick,
-        participants,
-        recentMessages,
-        now,
-        ...(gameplayRun && gameplayRun.status === 'active'
-          ? { gameplayRun: { id: gameplayRun.id, targetCompletedTurns: gameplayRun.targetCompletedTurns } }
-          : {}),
-      })
+      const activeEncounter = await this.gameplayRepository.findActiveEncounterByRoomId(room.id)
+      let encounterTrigger: LocationRoomGameplayEncounterTrigger | null = null
 
-      if (gameplayResult.status === 'skipped') {
-        await this.repository.markTickSkipped(tick.id, gameplayResult.reason)
+      if (!activeEncounter) {
+        const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room })
+        encounterTrigger = await this.buildEncounterTriggerFromNarrativeState(room, narrativeState.metadata)
+      }
+
+      if (activeEncounter || encounterTrigger) {
+        const runContext = await this.ensureGameplayRunForCombat({
+          room,
+          tick,
+          source: activeEncounter ? 'active_encounter' : 'combat_trigger',
+          ...(encounterTrigger ? { encounterTrigger } : {}),
+        })
+        context.effectiveGameplayRunId = runContext.run.id
+        const combatTick = runContext.tick
+        const gameplayResult = await this.gameplayCoordinator.processTurn({
+          room,
+          tick: combatTick,
+          participants,
+          recentMessages,
+          now,
+          gameplayRun: { id: runContext.run.id, targetCompletedTurns: runContext.run.targetCompletedTurns },
+          ...(encounterTrigger ? { encounterTrigger } : {}),
+        })
+
+        if (gameplayResult.status === 'skipped') {
+          await this.repository.markTickSkipped(tick.id, gameplayResult.reason)
+          await this.repository.updateRoomAfterProcessedTick(room, {
+            tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
+            now,
+          })
+          return {
+            tickId: tick.id,
+            gameplayRunId: runContext.run.id,
+            status: 'skipped',
+            selectedTokenId: null,
+            reason: gameplayResult.reason,
+          }
+        }
+
+        await this.repository.markTickCompleted(tick.id)
+        await this.repository.updateRoomAfterProcessedTick(room, {
+          tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
+          now,
+        })
+
+        return {
+          tickId: tick.id,
+          gameplayRunId: runContext.run.id,
+          status: 'completed',
+          selectedTokenId: gameplayResult.selectedTokenId,
+          messageId: gameplayResult.messageId,
+        }
+      }
+
+      if (tick.gameplayRunId) {
+        await this.repository.markTickSkipped(tick.id, 'no_active_gameplay_encounter')
         await this.repository.updateRoomAfterProcessedTick(room, {
           tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
           now,
         })
         return {
           tickId: tick.id,
+          gameplayRunId: tick.gameplayRunId,
           status: 'skipped',
           selectedTokenId: null,
-          reason: gameplayResult.reason,
+          reason: 'no_active_gameplay_encounter',
         }
-      }
-
-      await this.repository.markTickCompleted(tick.id)
-      await this.repository.updateRoomAfterProcessedTick(room, {
-        tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
-        now,
-      })
-
-      return {
-        tickId: tick.id,
-        status: 'completed',
-        selectedTokenId: gameplayResult.selectedTokenId,
-        messageId: gameplayResult.messageId,
       }
     }
 
