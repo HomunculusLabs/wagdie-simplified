@@ -1,5 +1,6 @@
 'use client';
 
+import { StructuredRollPanel } from '@/components/location-rooms/StructuredRollPanel';
 import { Badge, Button, Spinner, Alert } from '@/components/ui';
 import type { PublicLocationRoomRead } from '@/lib/eliza/locationRooms/types';
 
@@ -13,6 +14,7 @@ interface LocationRoomPanelProps {
   triggerError: string | null;
   onTrigger: () => Promise<void>;
   onRetry: () => Promise<PublicLocationRoomRead | null>;
+  watchHref?: string | null;
 }
 
 function formatTimestamp(value: string): string {
@@ -94,6 +96,19 @@ function hasGameplayRewards(gameplay: GameplaySummary): boolean {
   );
 }
 
+function WatchPageLink({ watchHref }: { watchHref?: string | null }) {
+  if (!watchHref) return null;
+
+  return (
+    <a
+      href={watchHref}
+      className="inline-flex items-center rounded-md border border-soul-accent/30 bg-soul-accent/10 px-3 py-1.5 text-xs font-eskapade text-soul-accent transition hover:border-soul-accent/60 hover:bg-soul-accent/15"
+    >
+      Open watch page
+    </a>
+  );
+}
+
 export function LocationRoomPanel({
   roomData,
   isLoading,
@@ -104,6 +119,7 @@ export function LocationRoomPanel({
   triggerError,
   onTrigger,
   onRetry,
+  watchHref,
 }: LocationRoomPanelProps) {
   const participants = roomData?.participants ?? [];
   const messages = roomData?.messages ?? [];
@@ -118,9 +134,12 @@ export function LocationRoomPanel({
 
   if (isLoading && !roomData) {
     return (
-      <div className="flex items-center justify-center gap-3 py-8">
-        <Spinner size="sm" />
-        <span className="text-base text-neutral-500 font-eskapade">Loading room transcript…</span>
+      <div className="space-y-3">
+        <div className="flex items-center justify-center gap-3 py-8">
+          <Spinner size="sm" />
+          <span className="text-base text-neutral-500 font-eskapade">Loading room transcript…</span>
+        </div>
+        <WatchPageLink watchHref={watchHref} />
       </div>
     );
   }
@@ -130,9 +149,12 @@ export function LocationRoomPanel({
       <Alert variant="default" className="bg-neutral-900/30 border-neutral-800">
         <div className="space-y-3">
           <p>{error}</p>
-          <Button type="button" variant="secondary" size="sm" onClick={() => void onRetry()}>
-            Retry
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="secondary" size="sm" onClick={() => void onRetry()}>
+              Retry
+            </Button>
+            <WatchPageLink watchHref={watchHref} />
+          </div>
         </div>
       </Alert>
     );
@@ -152,9 +174,12 @@ export function LocationRoomPanel({
                 : 'Public story activity from the eligible characters staked at this location.'}
             </p>
           </div>
-          <Badge variant={roomData?.room.tickEnabled ? 'accent' : 'outline'}>
-            {roomData?.room.tickEnabled ? 'Active' : 'Dormant'}
-          </Badge>
+          <div className="flex shrink-0 flex-col items-end gap-2">
+            <Badge variant={roomData?.room.tickEnabled ? 'accent' : 'outline'}>
+              {roomData?.room.tickEnabled ? 'Active' : 'Dormant'}
+            </Badge>
+            <WatchPageLink watchHref={watchHref} />
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2 text-xs font-eskapade text-neutral-500">
@@ -382,6 +407,9 @@ export function LocationRoomPanel({
                 >
                   {message.content}
                 </p>
+                {message.gameplayRolls && (
+                  <StructuredRollPanel rolls={message.gameplayRolls} variant="compact" />
+                )}
               </article>
             );
           })

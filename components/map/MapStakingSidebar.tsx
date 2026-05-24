@@ -100,6 +100,12 @@ export function MapStakingSidebar({
     walletAddress: panel.effectiveWallet,
     isConnected: panel.isConnected,
   });
+  const watchLocationId = locationRoom.roomData?.identity?.canonicalLocationId
+    ?? locationRoom.roomData?.room.locationId
+    ?? selectedLocation?.location.id
+    ?? locationData?.id
+    ?? null;
+  const watchHref = watchLocationId ? `/location-rooms/${encodeURIComponent(watchLocationId)}` : null;
 
   if (!visible && !isOpen) return null;
 
@@ -184,6 +190,7 @@ export function MapStakingSidebar({
             triggerError={locationRoom.triggerError}
             onTrigger={locationRoom.triggerTick}
             onRetry={locationRoom.refetch}
+            watchHref={watchHref}
           />
         )}
 

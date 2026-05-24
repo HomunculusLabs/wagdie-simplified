@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { readApiRaw } from '@/lib/api/client-response';
+import { usePublicLocationRoom } from '@/hooks/usePublicLocationRoom';
 import { isAdmin } from '@/lib/auth/admin';
 import type { CharacterWithLocation } from '@/lib/repositories/character-repository';
 import type { PublicLocationRoomRead } from '@/lib/eliza/locationRooms/types';
@@ -54,14 +55,19 @@ function delay(ms: number): Promise<void> {
 
 export function useLocationRoom(input: UseLocationRoomInput): UseLocationRoomResult {
   const { locationId, isActive, stakedHere, walletAddress, isConnected } = input;
-  const [roomData, setRoomData] = useState<PublicLocationRoomRead | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    roomData,
+    isLoading,
+    error,
+    refetch,
+  } = usePublicLocationRoom({
+    locationId,
+    isActive,
+    pageSize: ROOM_PAGE_SIZE,
+  });
   const [isTriggering, setIsTriggering] = useState(false);
   const [triggerState, setTriggerState] = useState<LocationRoomTriggerState>('idle');
   const [triggerError, setTriggerError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const requestNonceRef = useRef(0);
 
   const canTriggerAsOwner = useMemo(() => {
     const normalizedWallet = normalizeAddress(walletAddress);
@@ -73,70 +79,12 @@ export function useLocationRoom(input: UseLocationRoomInput): UseLocationRoomRes
     );
   }, [isConnected, stakedHere, walletAddress]);
 
-  const fetchRoom = useCallback(async (options: { silent?: boolean } = {}) => {
-    if (!locationId) {
-      setRoomData(null);
-      setError(null);
-      return null;
-    }
-
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const nonce = ++requestNonceRef.current;
-
-    if (!options.silent) {
-      setIsLoading(true);
-    }
-    setError(null);
-
-    try {
-      const params = new URLSearchParams({ pageSize: String(ROOM_PAGE_SIZE) });
-      const response = await fetch(
-        `/api/eliza/location-rooms/${encodeURIComponent(locationId)}?${params.toString()}`,
-        { cache: 'no-store', signal: controller.signal }
-      );
-
-      const data = await readApiRaw<PublicLocationRoomRead>(
-        response,
-        'Failed to load room transcript'
-      );
-      if (requestNonceRef.current !== nonce) return data;
-
-      setRoomData(data);
-      return data;
-    } catch (err) {
-      if (controller.signal.aborted) return null;
-      const message = err instanceof Error ? err.message : 'Failed to load room transcript';
-      setError(message);
-      return null;
-    } finally {
-      if (requestNonceRef.current === nonce) {
-        setIsLoading(false);
-      }
-    }
-  }, [locationId]);
-
-  const refetch = useCallback(() => fetchRoom(), [fetchRoom]);
-
   useEffect(() => {
     if (!isActive || !locationId) {
-      abortRef.current?.abort();
-      requestNonceRef.current += 1;
-      setRoomData(null);
-      setIsLoading(false);
-      setError(null);
       setTriggerState('idle');
       setTriggerError(null);
-      return;
     }
-
-    void fetchRoom();
-
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, [fetchRoom, isActive, locationId]);
+  }, [isActive, locationId]);
 
   const triggerTick = useCallback(async () => {
     if (!locationId || !canTriggerAsOwner || isTriggering) return;
@@ -165,7 +113,7 @@ export function useLocationRoom(input: UseLocationRoomInput): UseLocationRoomRes
 
       for (let attempt = 0; attempt < POST_TRIGGER_POLL_ATTEMPTS; attempt += 1) {
         await delay(POST_TRIGGER_POLL_INTERVAL_MS);
-        const nextData = await fetchRoom({ silent: true });
+        const nextData = await refetch({ silent: true });
         const latestSequence = Math.max(
           0,
           ...(nextData?.messages.map((message) => message.sequence) ?? [])
@@ -179,7 +127,7 @@ export function useLocationRoom(input: UseLocationRoomInput): UseLocationRoomRes
     } finally {
       setIsTriggering(false);
     }
-  }, [canTriggerAsOwner, fetchRoom, isTriggering, locationId, roomData]);
+  }, [canTriggerAsOwner, isTriggering, locationId, refetch, roomData]);
 
   return {
     roomData,

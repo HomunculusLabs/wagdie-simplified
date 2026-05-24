@@ -6,6 +6,7 @@ import {
   type GameplayMechanicalOutcomeSummary,
   type GameMasterGameplayGenerator,
 } from './gameMasterGameplayGenerator'
+import { projectPublicGameplayRolls } from './publicRolls'
 import {
   officialGameplayActionGenerator,
   type GameplayActionGenerator,
@@ -104,27 +105,6 @@ type SpeakerSelector = (
   participants: LocationRoomParticipant[],
   recentMessages: LocationRoomMessage[]
 ) => LocationRoomParticipant
-
-function appendRollSummaryToNarration(
-  narration: string,
-  summary: GameplayMechanicalOutcomeSummary
-): string {
-  const rollSummary = formatPublicGameplayRollSummary(summary)
-  if (!rollSummary) return narration
-
-  const separator = '\n\n'
-  const maxLength = elizaConfig.locationRooms.narrative.publicNarrationMaxLength
-  const reserved = separator.length + rollSummary.length
-  if (narration.length + reserved <= maxLength) {
-    return `${narration}${separator}${rollSummary}`
-  }
-
-  const narrationBudget = Math.max(0, maxLength - reserved)
-  const trimmedNarration = narration.slice(0, narrationBudget).trim()
-  return trimmedNarration
-    ? `${trimmedNarration}${separator}${rollSummary}`
-    : rollSummary.slice(0, maxLength)
-}
 
 function nowIso(now: Date): string {
   return now.toISOString()
@@ -721,7 +701,8 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       action,
       mechanicalSummary,
     })
-    const outcomeContent = appendRollSummaryToNarration(outcome.publicNarration, mechanicalSummary)
+    const outcomeContent = outcome.publicNarration
+    const publicRolls = projectPublicGameplayRolls(mechanicalSummary)
 
     const actionMessage = await this.repository.appendMessage({
       roomId: input.room.id,
@@ -763,6 +744,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         gameplayTurnId: turn.id,
         encounterId: encounter.id,
         rollSummary: formatPublicGameplayRollSummary(mechanicalSummary),
+        ...(publicRolls ? { publicRolls } : {}),
       },
     })
     messageIds = messageIdsWith(messageIds, outcomeMessage.id)

@@ -49,6 +49,7 @@ import {
   type LocationRoomGameplayRepository,
 } from './gameplay/repository'
 import { parseGameplayMonsters, parseGameplayRewardPlan } from './gameplay/rules'
+import { sanitizePublicGameplayRolls } from './gameplay/publicRolls'
 import type { GameplayCharacterState, GameplayEncounter, GameplayRoomState, GameplayRun } from './gameplay/types'
 import { selectLocationRoomSpeaker as selectLocationRoomSpeakerInternal } from './speakerSelection'
 
@@ -159,6 +160,12 @@ function toPublicParticipant(participant: LocationRoomParticipant): PublicLocati
     tokenId: participant.tokenId,
     name: participant.name,
     imageUrl: participant.imageUrl,
+    characterClass: participant.characterClass ?? null,
+    level: participant.level ?? null,
+    coreStats: participant.coreStats ?? null,
+    maxHp: participant.maxHp ?? null,
+    ac: participant.ac ?? null,
+    speed: participant.speed ?? null,
   }
 }
 
@@ -177,6 +184,7 @@ function toPublicGameplayMessageKind(metadata: Record<string, unknown>): PublicL
 
 function toPublicMessage(message: LocationRoomMessage): PublicLocationRoomMessage {
   const gameplayMessageKind = toPublicGameplayMessageKind(message.metadata)
+  const gameplayRolls = sanitizePublicGameplayRolls(message.metadata.publicRolls)
 
   return {
     id: message.id,
@@ -187,6 +195,7 @@ function toPublicMessage(message: LocationRoomMessage): PublicLocationRoomMessag
     content: message.content,
     createdAt: message.createdAt,
     ...(gameplayMessageKind ? { gameplayMessageKind } : {}),
+    ...(gameplayRolls ? { gameplayRolls } : {}),
   }
 }
 
@@ -254,6 +263,10 @@ async function toPublicGameplaySummary(params: {
 }
 
 export const selectLocationRoomSpeaker = selectLocationRoomSpeakerInternal
+
+function latestMessageFromPage(messages: LocationRoomMessage[], page: number): LocationRoomMessage | null {
+  return page === 1 && messages.length > 0 ? messages[messages.length - 1] : null
+}
 
 function normalizeWallet(value: string): string {
   return value.trim().toLowerCase()
@@ -363,7 +376,12 @@ export class LocationRoomService {
     const page = normalizePage(params.page ?? null)
     const pageSize = normalizePageSize(params.pageSize ?? null)
     const messages = await this.repository.listPublicMessages({ roomId: room.id, page, pageSize })
+    const messageStats = await this.repository.getPublicMessageStats(room.id)
+    const latestPageMessage = latestMessageFromPage(messages.messages, page)
     const gameplayEnabled = isLocationRoomGameplayEnabledForLocation(canonicalLocationId)
+    const activeRun = gameplayEnabled
+      ? await this.gameplayRepository.findActiveRunByRoomId(room.id)
+      : null
     const gameplayState = gameplayEnabled
       ? await this.gameplayRepository.findStateByRoomId(room.id)
       : null
@@ -390,6 +408,24 @@ export class LocationRoomService {
         tickCount: room.tickCount,
         createdAt: room.createdAt,
         updatedAt: room.updatedAt,
+      },
+      identity: {
+        requestedLocationId: locationId,
+        canonicalLocationId,
+        canonicalLocationName: location.name,
+        isAlias: locationId.trim() !== canonicalLocationId,
+      },
+      activity: {
+        generatedAt: new Date().toISOString(),
+        messageCount: Math.max(messages.total, messageStats.messageCount),
+        latestSequence: messageStats.latestSequence ?? latestPageMessage?.sequence ?? null,
+        latestMessageCreatedAt: messageStats.latestCreatedAt ?? latestPageMessage?.createdAt ?? null,
+        lastTickAt: room.lastTickAt,
+        tickCount: room.tickCount,
+        ...(activeRun ? {
+          completedTurnCount: activeRun.completedTurns,
+          targetTurnCount: activeRun.targetCompletedTurns,
+        } : {}),
       },
       participants: participants.map(toPublicParticipant),
       messages: messages.messages.map(toPublicMessage),

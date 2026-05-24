@@ -85,15 +85,105 @@ export type LocationRoomParticipant = {
   ownerAddress: string | null
   stakerAddress: string | null
   locationId: string
+  /** Public-safe static sheet data sourced from character rows; never include raw equipment/mechanics here. */
+  characterClass?: string | null
+  level?: number | null
+  coreStats?: PublicLocationRoomCoreStats | null
+  maxHp?: number | null
+  ac?: number | null
+  speed?: number | null
+}
+
+export type PublicLocationRoomCoreStats = {
+  strength: number | null
+  dexterity: number | null
+  constitution: number | null
+  intelligence: number | null
+  wisdom: number | null
+  charisma: number | null
 }
 
 export type PublicLocationRoomParticipant = {
   tokenId: number
   name: string
   imageUrl: string | null
+  /** Public static sheet data only; never include owner/staker wallets or private backstory here. */
+  characterClass?: string | null
+  level?: number | null
+  coreStats?: PublicLocationRoomCoreStats | null
+  maxHp?: number | null
+  ac?: number | null
+  speed?: number | null
 }
 
 export type PublicLocationRoomGameplayMessageKind = 'gm_setup' | 'character_action' | 'gm_outcome'
+
+export type PublicLocationRoomGameplayRollDie = {
+  formula: string | null
+  total: number | null
+}
+
+export type PublicLocationRoomGameplayRollActor = {
+  kind: 'character' | 'monster' | 'game_master' | 'unknown'
+  id: string | null
+  tokenId?: number | null
+  name: string | null
+}
+
+export type PublicLocationRoomGameplayRollTarget = {
+  kind: 'character' | 'monster' | 'environment' | 'unknown'
+  id: string | null
+  tokenId?: number | null
+  name: string | null
+}
+
+export type PublicLocationRoomGameplayActionRoll = {
+  actionType: string
+  actor: PublicLocationRoomGameplayRollActor
+  target: PublicLocationRoomGameplayRollTarget | null
+  roll: PublicLocationRoomGameplayRollDie | null
+  modifier: number | null
+  total: number | null
+  dc: number | null
+  tier: 'critical_success' | 'success' | 'partial_success' | 'failure' | 'critical_failure' | 'unknown'
+  outcome: 'critical_success' | 'success' | 'partial_success' | 'failure' | 'critical_failure' | 'unknown'
+}
+
+export type PublicLocationRoomGameplayRollEffect = {
+  kind: 'damage' | 'healing' | 'status' | 'narrative'
+  target: PublicLocationRoomGameplayRollTarget | null
+  amount: number | null
+  status: string | null
+  summary: string
+}
+
+export type PublicLocationRoomGameplayRetaliation = {
+  actor: PublicLocationRoomGameplayRollActor
+  target: PublicLocationRoomGameplayRollTarget | null
+  attackRoll: PublicLocationRoomGameplayRollDie | null
+  damageRoll: PublicLocationRoomGameplayRollDie | null
+  targetAc: number | null
+  hit: boolean | null
+  amount: number | null
+  summary: string
+}
+
+export type PublicLocationRoomGameplayDeath = {
+  target: PublicLocationRoomGameplayRollTarget
+  summary: string
+}
+
+/**
+ * Public-safe structured roll summary for encounter UI.
+ * Do not expose raw mechanics, modifier sources, mechanical deltas, full metadata, or exact private state here.
+ */
+export type PublicLocationRoomGameplayRolls = {
+  action: PublicLocationRoomGameplayActionRoll
+  publicEffects: PublicLocationRoomGameplayRollEffect[]
+  retaliation?: PublicLocationRoomGameplayRetaliation | null
+  deaths: PublicLocationRoomGameplayDeath[]
+  encounterStatusAfter: 'active' | 'victory' | 'defeat' | 'fled' | 'abandoned' | 'unknown'
+}
 
 export type PublicLocationRoomMessage = {
   id: string
@@ -104,6 +194,7 @@ export type PublicLocationRoomMessage = {
   content: string
   createdAt: string
   gameplayMessageKind?: PublicLocationRoomGameplayMessageKind
+  gameplayRolls?: PublicLocationRoomGameplayRolls
 }
 
 export type PublicGameplayStatusBand = 'healthy' | 'injured' | 'critical' | 'down' | 'dead' | 'fled' | 'unknown'
@@ -149,8 +240,30 @@ export type PublicLocationRoomSummary = {
   updatedAt: string
 }
 
+export type PublicLocationRoomIdentity = {
+  requestedLocationId: string
+  canonicalLocationId: string
+  canonicalLocationName: string
+  isAlias: boolean
+}
+
+export type PublicLocationRoomActivity = {
+  generatedAt: string
+  messageCount: number
+  latestSequence: number | null
+  latestMessageCreatedAt: string | null
+  /** Optional lightweight counters; omit rather than adding heavy public queries. */
+  lastTickAt?: string | null
+  tickCount?: number | null
+  completedTurnCount?: number | null
+  targetTurnCount?: number | null
+}
+
 export type PublicLocationRoomRead = {
   room: PublicLocationRoomSummary
+  /** Public-safe location identity/freshness metadata; no wallet or private room internals. */
+  identity?: PublicLocationRoomIdentity
+  activity?: PublicLocationRoomActivity
   participants: PublicLocationRoomParticipant[]
   messages: PublicLocationRoomMessage[]
   gameplay?: PublicLocationRoomGameplaySummary

@@ -14,14 +14,27 @@ type CharacterRow = {
   staker_address: string | null
   location_id: string | null
   burned: boolean | null
+  level: number | null
+  str: number | null
+  dex: number | null
+  con: number | null
+  int: number | null
+  wis: number | null
+  cha: number | null
+  max_hp: number | null
 }
 
 type EligibleLocationRow = Pick<CharacterRow, 'token_id' | 'owner_address' | 'location_id' | 'burned'>
 
 type QueryResult<T> = { data: T | null; error: { message: string } | null }
 
+// Source seam for public participant/sidebar data. Verified committed wagdie_characters
+// columns: token_id, name, metadata, background_story, owner_address, staker_address,
+// location_id, burned, level, str, dex, con, "int", wis, cha, max_hp.
+// The default wagdie_characters table does not define class/ac/speed columns, so those
+// are not selected here; class is derived from NFT metadata when present.
 const CHARACTER_COLUMNS =
-  'token_id, name, metadata, background_story, owner_address, staker_address, location_id, burned'
+  'token_id, name, metadata, background_story, owner_address, staker_address, location_id, burned, level, str, dex, con, int, wis, cha, max_hp'
 
 const ELIGIBLE_LOCATION_COLUMNS = 'token_id, owner_address, location_id, burned'
 
@@ -61,6 +74,27 @@ function resolveImageUrl(row: CharacterRow): string | null {
   return metadataImage || null
 }
 
+function normalizePublicInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null
+}
+
+function resolveCharacterClass(row: CharacterRow): string | null {
+  const metadata = row.metadata as (CharacterMetadata & { sheet?: { class?: unknown } }) | null
+  const sheetClass = metadata?.sheet?.class
+  if (typeof sheetClass === 'string' && sheetClass.trim()) return sheetClass.trim()
+
+  const attributes = metadata?.attributes
+  if (Array.isArray(attributes)) {
+    const classAttribute = attributes.find((attribute) =>
+      typeof attribute?.trait_type === 'string' && attribute.trait_type.trim().toLowerCase() === 'class'
+    )
+    const value = classAttribute?.value
+    return typeof value === 'string' && value.trim() ? value.trim() : null
+  }
+
+  return null
+}
+
 function rowToParticipant(row: CharacterRow): LocationRoomParticipant | null {
   if (!isValidTokenId(row.token_id)) return null
   if (!row.location_id) return null
@@ -74,6 +108,19 @@ function rowToParticipant(row: CharacterRow): LocationRoomParticipant | null {
     ownerAddress: normalizeAddress(row.owner_address),
     stakerAddress: normalizeAddress(row.staker_address),
     locationId: row.location_id,
+    characterClass: resolveCharacterClass(row),
+    level: normalizePublicInteger(row.level),
+    coreStats: {
+      strength: normalizePublicInteger(row.str),
+      dexterity: normalizePublicInteger(row.dex),
+      constitution: normalizePublicInteger(row.con),
+      intelligence: normalizePublicInteger(row.int),
+      wisdom: normalizePublicInteger(row.wis),
+      charisma: normalizePublicInteger(row.cha),
+    },
+    maxHp: normalizePublicInteger(row.max_hp),
+    ac: null,
+    speed: null,
   }
 }
 

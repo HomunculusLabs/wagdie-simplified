@@ -61,7 +61,11 @@ function room(overrides: Partial<LocationRoom> = {}): LocationRoom {
   }
 }
 
-function participant(tokenId: number, name = `Character #${tokenId}`): LocationRoomParticipant {
+function participant(
+  tokenId: number,
+  name = `Character #${tokenId}`,
+  overrides: Partial<LocationRoomParticipant> = {}
+): LocationRoomParticipant {
   return {
     tokenId,
     name,
@@ -70,6 +74,7 @@ function participant(tokenId: number, name = `Character #${tokenId}`): LocationR
     ownerAddress: `0x${tokenId}`,
     stakerAddress: null,
     locationId: 'loc-1',
+    ...overrides,
   }
 }
 
@@ -296,11 +301,16 @@ describe('location room domain service', () => {
         : null),
       ensureRoomForLocation: jest.fn(async () => canonicalRoom),
       listPublicMessages: jest.fn(async () => ({
-        messages: [message({ id: 'msg-11', roomId: 'room-11', locationId: '11', sequence: 30 })],
+        messages: [message({ id: 'msg-11', roomId: 'room-11', locationId: '11', sequence: 30, createdAt: '2026-05-11T12:01:00.000Z' })],
         total: 1,
         page: 1,
         pageSize: 20,
         hasMore: false,
+      })),
+      getPublicMessageStats: jest.fn(async () => ({
+        messageCount: 2,
+        latestSequence: 31,
+        latestCreatedAt: '2026-05-11T12:02:00.000Z',
       })),
     })
     const membership = makeMembership([participant(1443, 'Vola')])
@@ -312,7 +322,73 @@ describe('location room domain service', () => {
     expect(repository.ensureRoomForLocation).toHaveBeenCalledWith('11')
     expect(membership.listEligibleParticipantsByLocation).toHaveBeenCalledWith('11')
     expect(result.room).toMatchObject({ id: 'room-11', locationId: '11', locationName: "The Crow's Den" })
+    expect(result.identity).toEqual({
+      requestedLocationId: 'crows_den',
+      canonicalLocationId: '11',
+      canonicalLocationName: "The Crow's Den",
+      isAlias: true,
+    })
+    expect(result.activity).toEqual(expect.objectContaining({
+      generatedAt: expect.any(String),
+      messageCount: 2,
+      latestSequence: 31,
+      latestMessageCreatedAt: '2026-05-11T12:02:00.000Z',
+      lastTickAt: null,
+      tickCount: 0,
+    }))
     expect(result.messages).toEqual([expect.objectContaining({ id: 'msg-11' })])
+  })
+
+  it('exposes public-safe participant sheet fields without private membership data', async () => {
+    const repository = makeRepository()
+    const membership = makeMembership([
+      participant(1, 'Ash', {
+        imageUrl: 'https://example.test/ash.png',
+        backgroundStory: 'private backstory',
+        ownerAddress: '0xOwner',
+        stakerAddress: '0xStaker',
+        characterClass: 'Cleric',
+        level: 3,
+        coreStats: {
+          strength: 12,
+          dexterity: 13,
+          constitution: 14,
+          intelligence: 15,
+          wisdom: 16,
+          charisma: 17,
+        },
+        maxHp: 22,
+        ac: null,
+        speed: null,
+      }),
+    ])
+    const service = new LocationRoomService(repository, membership)
+
+    const result = await service.getPublicRoom('loc-1')
+
+    expect(result.participants).toEqual([
+      {
+        tokenId: 1,
+        name: 'Ash',
+        imageUrl: 'https://example.test/ash.png',
+        characterClass: 'Cleric',
+        level: 3,
+        coreStats: {
+          strength: 12,
+          dexterity: 13,
+          constitution: 14,
+          intelligence: 15,
+          wisdom: 16,
+          charisma: 17,
+        },
+        maxHp: 22,
+        ac: null,
+        speed: null,
+      },
+    ])
+    expect(result.participants[0]).not.toHaveProperty('ownerAddress')
+    expect(result.participants[0]).not.toHaveProperty('stakerAddress')
+    expect(result.participants[0]).not.toHaveProperty('backgroundStory')
   })
 
   it('adds safe public gameplay summaries and message classification without raw mechanics metadata', async () => {
@@ -330,7 +406,28 @@ describe('location room domain service', () => {
             content: 'The marrow gate opens.',
             metadata: {
               gameplayMessageKind: 'gm_outcome',
+              publicRolls: {
+                action: {
+                  actionType: 'attack',
+                  actor: { kind: 'character', id: '1', tokenId: 1, name: 'Ash', ownerAddress: '0xHidden' },
+                  target: { kind: 'monster', id: 'monster-1', name: 'Bell Horror', privateHp: 4 },
+                  roll: { formula: 'd20', total: 16, rawRolls: [16] },
+                  modifier: 2,
+                  total: 18,
+                  dc: 12,
+                  tier: 'success',
+                  outcome: 'success',
+                },
+                publicEffects: [
+                  { kind: 'damage', target: { kind: 'monster', id: 'monster-1', name: 'Bell Horror' }, amount: 5, status: null, summary: 'Damage dealt: 5', privateBeforeHp: 9 },
+                ],
+                retaliation: null,
+                deaths: [],
+                encounterStatusAfter: 'active',
+                mechanicalDeltas: { hidden: true },
+              },
               diceResults: [{ total: 20 }],
+              mechanicalDeltas: { hidden: true },
               privateInstruction: 'do not expose',
             },
           }),
@@ -342,6 +439,7 @@ describe('location room domain service', () => {
       })),
     })
     const gameplayRepository = makeGameplayRepository({
+      findActiveRunByRoomId: jest.fn(async () => gameplayRun({ completedTurns: 7, targetCompletedTurns: 100 })),
       findStateByRoomId: jest.fn(async () => ({
         id: 'state-1',
         roomId: 'room-1',
@@ -401,7 +499,26 @@ describe('location room domain service', () => {
     expect(result.messages).toEqual([expect.objectContaining({
       id: 'msg-gm',
       gameplayMessageKind: 'gm_outcome',
+      gameplayRolls: expect.objectContaining({
+        action: expect.objectContaining({
+          actionType: 'attack',
+          actor: { kind: 'character', id: '1', tokenId: 1, name: 'Ash' },
+          target: { kind: 'monster', id: 'monster-1', tokenId: undefined, name: 'Bell Horror' },
+          roll: { formula: 'd20', total: 16 },
+          total: 18,
+          dc: 12,
+        }),
+        publicEffects: [expect.objectContaining({ kind: 'damage', amount: 5 })],
+        encounterStatusAfter: 'active',
+      }),
     })])
+    expect(result.activity).toEqual(expect.objectContaining({
+      messageCount: 1,
+      latestSequence: 1,
+      latestMessageCreatedAt: now,
+      completedTurnCount: 7,
+      targetTurnCount: 100,
+    }))
     expect(result.gameplay).toMatchObject({
       mode: 'enabled',
       status: 'active_encounter',
@@ -420,8 +537,14 @@ describe('location room domain service', () => {
         temporaryBoons: ['Ashen focus'],
       }),
     })
+    expect(result.gameplay.characters[0]).not.toHaveProperty('hp')
+    expect(result.gameplay.characters[0]).not.toHaveProperty('maxHp')
     expect(JSON.stringify(result)).not.toContain('privateInstruction')
     expect(JSON.stringify(result)).not.toContain('diceResults')
+    expect(JSON.stringify(result)).not.toContain('mechanicalDeltas')
+    expect(JSON.stringify(result)).not.toContain('ownerAddress')
+    expect(JSON.stringify(result)).not.toContain('privateBeforeHp')
+    expect(JSON.stringify(result)).not.toContain('privateHp')
     expect(JSON.stringify(result)).not.toContain('privateDc')
     expect(JSON.stringify(result)).not.toContain('hiddenPrompt')
     expect(JSON.stringify(result)).not.toContain('roundsActed')
@@ -429,6 +552,39 @@ describe('location room domain service', () => {
     expect(JSON.stringify(result)).not.toContain('performanceScore')
     expect(JSON.stringify(result)).not.toContain('lineItems')
     expect(JSON.stringify(result)).not.toContain('claimStatus')
+  })
+
+  it('omits malformed stored public roll metadata from public messages', async () => {
+    const repository = makeRepository({
+      listPublicMessages: jest.fn(async () => ({
+        messages: [
+          message({
+            id: 'msg-bad-rolls',
+            authorKind: 'game_master',
+            tokenId: null,
+            metadata: {
+              gameplayMessageKind: 'gm_outcome',
+              publicRolls: { publicEffects: [{ kind: 'damage', amount: 999, summary: 'no action' }] },
+              rollSummary: 'Rolls: legacy debug text is retained in metadata but not forwarded.',
+            },
+          }),
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+        hasMore: false,
+      })),
+    })
+    const service = new LocationRoomService(repository, makeMembership())
+
+    const result = await service.getPublicRoom('loc-1')
+
+    expect(result.messages[0]).toMatchObject({
+      id: 'msg-bad-rolls',
+      gameplayMessageKind: 'gm_outcome',
+    })
+    expect(result.messages[0]).not.toHaveProperty('gameplayRolls')
+    expect(JSON.stringify(result.messages[0])).not.toContain('rollSummary')
   })
 
   it('omits stale gameplay summaries when the public gameplay gate is disabled', async () => {

@@ -1,0 +1,93 @@
+import type { PublicLocationRoomRead } from '@/lib/eliza/locationRooms/types';
+import { StructuredRollPanel } from './StructuredRollPanel';
+import {
+  findGameplayCharacter,
+  findParticipantForMessage,
+  formatDateTime,
+  formatStatusLabel,
+  getGameplayMessageLabel,
+  getMessageToneClassName,
+  getStatusToneClassName,
+  type PublicRoomMessage,
+} from './locationRoomPresentation';
+
+interface EncounterMessageCardProps {
+  message: PublicRoomMessage;
+  roomData: PublicLocationRoomRead;
+}
+
+function avatarInitial(name: string): string {
+  return name.trim().charAt(0).toUpperCase() || 'W';
+}
+
+export function EncounterMessageCard({ message, roomData }: EncounterMessageCardProps) {
+  const participant = findParticipantForMessage(roomData.participants, message);
+  const gameplayCharacter = findGameplayCharacter(roomData.gameplay, message.tokenId);
+  const isGameMaster = message.authorKind === 'game_master';
+  const displayName = isGameMaster ? 'Game Master' : participant?.name ?? message.authorName;
+  const label = getGameplayMessageLabel(message);
+  const statusCopy = gameplayCharacter
+    ? `${formatStatusLabel(gameplayCharacter.status)} · ${formatStatusLabel(gameplayCharacter.hpBand)}`
+    : null;
+
+  return (
+    <article className={`rounded-2xl border p-4 md:p-5 ${getMessageToneClassName(message)}`}>
+      <div className="grid gap-4 md:grid-cols-[12rem,minmax(0,1fr)] md:gap-6">
+        <aside className="flex gap-3 md:block md:space-y-3">
+          {isGameMaster ? (
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border border-soul-accent/40 bg-soul-accent/15 font-display text-2xl lowercase text-soul-accent md:h-16 md:w-16">
+              gm
+            </div>
+          ) : participant?.imageUrl ? (
+            <img
+              src={participant.imageUrl}
+              alt={`${displayName} avatar`}
+              className="h-14 w-14 shrink-0 rounded-xl border border-neutral-700 object-cover md:h-20 md:w-20"
+            />
+          ) : (
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-neutral-700 bg-neutral-900 font-display text-2xl lowercase text-neutral-300 md:h-20 md:w-20">
+              {avatarInitial(displayName)}
+            </div>
+          )}
+
+          <div className="min-w-0">
+            <p className={isGameMaster ? 'font-display text-xl lowercase text-soul-accent' : 'truncate font-eskapade text-lg text-neutral-100'}>
+              {displayName}
+            </p>
+            {message.tokenId != null && !isGameMaster && (
+              <p className="font-eskapade text-xs text-neutral-500">Token #{message.tokenId}</p>
+            )}
+            {statusCopy && (
+              <p className={`mt-2 inline-flex rounded-full border px-2.5 py-1 font-eskapade text-xs ${getStatusToneClassName(gameplayCharacter?.status, gameplayCharacter?.hpBand)}`}>
+                {statusCopy}
+              </p>
+            )}
+          </div>
+        </aside>
+
+        <div className="min-w-0 space-y-4">
+          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800/70 pb-3">
+            <div className="flex flex-wrap items-center gap-2 font-eskapade text-xs uppercase tracking-[0.18em] text-neutral-500">
+              <span>#{message.sequence}</span>
+              {label && <span className="text-soul-accent/80">{label}</span>}
+            </div>
+            <time className="font-eskapade text-xs text-neutral-500" dateTime={message.createdAt}>
+              {formatDateTime(message.createdAt)}
+            </time>
+          </header>
+
+          <p className={isGameMaster
+            ? 'whitespace-pre-wrap font-serif text-xl leading-[1.8] text-neutral-200 md:text-2xl md:leading-[1.75]'
+            : 'whitespace-pre-wrap font-serif text-lg leading-[1.75] text-neutral-300 md:text-xl'}
+          >
+            {message.content}
+          </p>
+
+          {message.gameplayRolls && (
+            <StructuredRollPanel rolls={message.gameplayRolls} variant="roomy" />
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}

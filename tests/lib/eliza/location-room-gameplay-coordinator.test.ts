@@ -600,6 +600,25 @@ describe('location room gameplay coordinator', () => {
       'character_action',
       'gm_outcome',
     ])
+    const outcomeMessage = roomRepository.messages.find((message) => message.metadata.gameplayMessageKind === 'gm_outcome')
+    expect(outcomeMessage?.content).toBe('The backend result echoes through the room.')
+    expect(outcomeMessage?.content).not.toContain('Rolls:')
+    expect(outcomeMessage?.metadata).toEqual(expect.objectContaining({
+      rollSummary: expect.stringContaining('Rolls:'),
+      publicRolls: expect.objectContaining({
+        action: expect.objectContaining({
+          actionType: 'attack',
+          actor: expect.objectContaining({ kind: 'character', tokenId: 1 }),
+          target: expect.objectContaining({ kind: 'monster', id: 'monster-1' }),
+        }),
+        publicEffects: expect.arrayContaining([expect.objectContaining({ kind: 'damage' })]),
+        encounterStatusAfter: 'victory',
+      }),
+    }))
+    expect(outcomeMessage?.metadata).not.toHaveProperty('mechanicalDeltas')
+    expect(outcomeMessage?.metadata).not.toHaveProperty('diceResults')
+    expect(JSON.stringify(outcomeMessage?.metadata.publicRolls)).not.toContain('charactersAfter')
+    expect(JSON.stringify(outcomeMessage?.metadata.publicRolls)).not.toContain('rewardAssignments')
     expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
       stateSummary: 'A gameplay turn resolved.',
     }))

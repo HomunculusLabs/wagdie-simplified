@@ -88,6 +88,91 @@ describe('staking-sidebar presentational components', () => {
     expect(setActiveTab).toHaveBeenCalledWith('room');
   });
 
+  it('renders watch page link and compact structured rolls in the room transcript', () => {
+    render(
+      <LocationRoomPanel
+        roomData={{
+          room: {
+            id: 'room-1',
+            locationId: 'loc-1',
+            locationName: 'The Abyss',
+            tickEnabled: true,
+            lastTickAt: null,
+            nextTickAt: null,
+            tickCount: 2,
+            createdAt: '2026-05-11T12:00:00.000Z',
+            updatedAt: '2026-05-11T12:00:00.000Z',
+          },
+          participants: [
+            { tokenId: 7, name: 'Wagdie #7', imageUrl: null },
+            { tokenId: 8, name: 'Wagdie #8', imageUrl: null },
+          ],
+          messages: [{
+            id: 'outcome',
+            sequence: 3,
+            authorKind: 'game_master',
+            tokenId: null,
+            authorName: 'Configured Service Agent',
+            content: 'The blow lands, but the ghoul answers in blood.',
+            createdAt: '2026-05-11T12:02:00.000Z',
+            gameplayMessageKind: 'gm_outcome',
+            gameplayRolls: {
+              action: {
+                actionType: 'attack',
+                actor: { kind: 'character', id: '7', tokenId: 7, name: 'Wagdie #7' },
+                target: { kind: 'monster', id: 'ghoul-1', name: 'Ash Ghoul' },
+                roll: { formula: '1d20+4', total: 18 },
+                modifier: 4,
+                total: 18,
+                dc: 13,
+                tier: 'success',
+                outcome: 'success',
+              },
+              publicEffects: [{
+                kind: 'damage',
+                target: { kind: 'monster', id: 'ghoul-1', name: 'Ash Ghoul' },
+                amount: 7,
+                status: null,
+                summary: 'Ash Ghoul takes 7 damage.',
+              }],
+              retaliation: {
+                actor: { kind: 'monster', id: 'ghoul-1', name: 'Ash Ghoul' },
+                target: { kind: 'character', id: '7', tokenId: 7, name: 'Wagdie #7' },
+                attackRoll: { formula: '1d20+3', total: 10 },
+                damageRoll: { formula: '1d6+1', total: 4 },
+                targetAc: 15,
+                hit: false,
+                amount: 0,
+                summary: 'The ghoul misses.',
+              },
+              deaths: [],
+              encounterStatusAfter: 'active',
+            },
+          }],
+          pagination: { page: 1, pageSize: 20, total: 1, hasMore: false },
+        }}
+        isLoading={false}
+        error={null}
+        canTriggerAsOwner={false}
+        isTriggering={false}
+        triggerState="idle"
+        triggerError={null}
+        onTrigger={jest.fn()}
+        onRetry={jest.fn()}
+        watchHref="/location-rooms/loc-1"
+      />
+    );
+
+    expect(screen.getByRole('link', { name: 'Open watch page' })).toHaveAttribute('href', '/location-rooms/loc-1');
+    expect(screen.getByText('Structured rolls')).toBeInTheDocument();
+    expect(screen.getByText('The blow lands, but the ghoul answers in blood.')).toBeInTheDocument();
+    expect(screen.queryByText(/Rolls:/)).not.toBeInTheDocument();
+    expect(screen.getByText('Attack')).toBeInTheDocument();
+    expect(screen.getByText('Wagdie #7 → Ash Ghoul')).toBeInTheDocument();
+    expect(screen.getByText('The ghoul misses.')).toBeInTheDocument();
+    expect(screen.getByText(/Ash Ghoul takes 7 damage\./)).toBeInTheDocument();
+  });
+
   it('renders public room transcript and hides trigger controls from ineligible visitors', () => {
     render(
       <LocationRoomPanel
