@@ -623,7 +623,7 @@ describe('location room domain service', () => {
     expect(turnGenerator.generateTurn).toHaveBeenCalled()
   })
 
-  it('manual gameplay initiation kicks the automation worker after the first active turn', async () => {
+  it('manual gameplay initiation does not batch-drain follow-up turns in the click request', async () => {
     mutableElizaConfig.mode = 'official'
     mutableNarrativeConfig.enabled = true
     mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
@@ -659,19 +659,7 @@ describe('location room domain service', () => {
       gameplayCoordinator,
       gameplayRepository
     )
-    const automation = {
-      enabled: true,
-      enqueued: 4,
-      deduped: 0,
-      processed: 4,
-      completed: 4,
-      skipped: 0,
-      failed: 0,
-      dead: 0,
-      gameplayRuns: { inspected: 1, enqueued: 4, blocked: 0, updated: 4, completed: 0, stopped: 0, failed: 0 },
-      results: [],
-    }
-    const automationSpy = jest.spyOn(service, 'runScheduledWorker').mockResolvedValueOnce(automation)
+    const automationSpy = jest.spyOn(service, 'runScheduledWorker')
 
     const result = await service.requestTickAndProcess('loc-1', {
       actor: 'admin',
@@ -680,8 +668,7 @@ describe('location room domain service', () => {
     })
 
     expect(result.processing).toMatchObject({ attempted: true, status: 'completed', tickId: 'tick-new' })
-    expect(result.automation).toBe(automation)
-    expect(automationSpy).toHaveBeenCalledWith(new Date(now))
+    expect(automationSpy).not.toHaveBeenCalled()
   })
 
   it('manual enqueue-and-process claims a newly enqueued tick at its DB due timestamp when DB time is ahead', async () => {

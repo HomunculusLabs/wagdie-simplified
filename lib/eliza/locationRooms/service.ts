@@ -462,10 +462,6 @@ export class LocationRoomService {
     }
 
     const processed = await this.processClaimedTick(claimedTick, now)
-    const automation = processed.gameplayRun?.status === 'active'
-      ? await this.runScheduledWorker(now)
-      : undefined
-
     return {
       ...prepared.result,
       processing: {
@@ -474,7 +470,6 @@ export class LocationRoomService {
         tickId: processed.tickId,
         result: processed,
       },
-      ...(automation ? { automation } : {}),
     }
   }
 

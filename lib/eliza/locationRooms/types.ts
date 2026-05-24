@@ -256,7 +256,6 @@ export type RequestLocationRoomTickProcessingSummary = {
 
 export type RequestLocationRoomTickAndProcessResult = RequestLocationRoomTickResult & {
   processing: RequestLocationRoomTickProcessingSummary
-  automation?: LocationRoomWorkerResult
 }
 
 export type LocationRoomNarrativeTurnContext = {
