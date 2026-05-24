@@ -836,6 +836,7 @@ export class LocationRoomService {
           room,
           triggerType: 'scheduled',
           gameplayRunId: currentRun.id,
+          nextAttemptAt: now,
         })
         if (result.deduped) {
           deduped += 1

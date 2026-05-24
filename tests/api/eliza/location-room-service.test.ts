@@ -1301,6 +1301,10 @@ describe('location room domain service', () => {
     expect(result).toMatchObject({ enqueued: 2, processed: 2, completed: 2 })
     expect(gameplayCoordinator.processTurn).toHaveBeenCalledTimes(2)
     expect(repository.enqueueTick).toHaveBeenCalledTimes(2)
+    expect(repository.enqueueTick).toHaveBeenCalledWith(expect.objectContaining({
+      gameplayRunId: 'run-1',
+      nextAttemptAt: new Date(now),
+    }))
     expect(repository.claimDueTicks).toHaveBeenLastCalledWith(1, expect.stringMatching(/^location-room-worker-/), new Date(now))
   })
 

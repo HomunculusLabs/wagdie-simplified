@@ -245,6 +245,7 @@ export interface LocationRoomRepository {
     requestedByWallet?: string | null
     requestedByTokenId?: number | null
     gameplayRunId?: string | null
+    nextAttemptAt?: Date | string | null
   }): Promise<{ tick: LocationRoomTick | null; deduped: boolean }>
   attachTickToGameplayRun(input: { tickId: string; roomId: string; gameplayRunId: string }): Promise<LocationRoomTick | null>
   countCompletedGameplayTurnsForRun(gameplayRunId: string): Promise<number>
@@ -359,6 +360,7 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     requestedByWallet?: string | null
     requestedByTokenId?: number | null
     gameplayRunId?: string | null
+    nextAttemptAt?: Date | string | null
   }): Promise<{ tick: LocationRoomTick | null; deduped: boolean }> {
     const { data, error } = (await table(TICKS_TABLE)
       .insert({
@@ -369,6 +371,9 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
         requested_by_token_id: input.requestedByTokenId ?? null,
         gameplay_run_id: input.gameplayRunId ?? null,
         status: 'pending',
+        ...(input.nextAttemptAt
+          ? { next_attempt_at: input.nextAttemptAt instanceof Date ? input.nextAttemptAt.toISOString() : input.nextAttemptAt }
+          : {}),
       })
       .select(TICK_COLUMNS)
       .single()) as QueryResult<TickRow>
