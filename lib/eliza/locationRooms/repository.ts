@@ -531,17 +531,31 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
   }
 
   async claimDueTicks(limit: number, workerId: string, now: Date): Promise<LocationRoomTick[]> {
-    const { data, error } = (await table(TICKS_TABLE)
+    const dueAt = now.toISOString()
+    const { data: pendingData, error: pendingError } = (await table(TICKS_TABLE)
       .select(TICK_COLUMNS)
-      .in('status', ['pending', 'failed'])
-      .lte('next_attempt_at', now.toISOString())
+      .eq('status', 'pending')
+      .lte('next_attempt_at', dueAt)
       .order('created_at', { ascending: true })
       .limit(limit)) as QueryResult<TickRow[]>
 
-    if (error) throw new Error(error.message)
+    if (pendingError) throw new Error(pendingError.message)
 
-    const candidates = [...(data ?? [])]
-    const remaining = limit - candidates.length
+    const candidates = [...(pendingData ?? [])]
+    let remaining = limit - candidates.length
+
+    if (remaining > 0) {
+      const { data: failedData, error: failedError } = (await table(TICKS_TABLE)
+        .select(TICK_COLUMNS)
+        .eq('status', 'failed')
+        .lte('next_attempt_at', dueAt)
+        .order('created_at', { ascending: true })
+        .limit(remaining)) as QueryResult<TickRow[]>
+
+      if (failedError) throw new Error(failedError.message)
+      candidates.push(...(failedData ?? []))
+      remaining = limit - candidates.length
+    }
 
     if (remaining > 0) {
       const staleBefore = new Date(now.getTime() - WORKER_LOCK_TTL_MS).toISOString()
