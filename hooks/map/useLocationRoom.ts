@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { readApiRaw } from '@/lib/api/client-response';
+import { isAdmin } from '@/lib/auth/admin';
 import type { CharacterWithLocation } from '@/lib/repositories/character-repository';
 import type { PublicLocationRoomRead } from '@/lib/eliza/locationRooms/types';
 
@@ -65,6 +66,7 @@ export function useLocationRoom(input: UseLocationRoomInput): UseLocationRoomRes
   const canTriggerAsOwner = useMemo(() => {
     const normalizedWallet = normalizeAddress(walletAddress);
     if (!isConnected || !normalizedWallet) return false;
+    if (isAdmin(normalizedWallet)) return true;
 
     return stakedHere.some((row) =>
       isEligibleClientParticipant(row) && getEffectiveOwner(row) === normalizedWallet
