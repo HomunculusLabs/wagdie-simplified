@@ -39,7 +39,7 @@ export type GenerateGameplayActionInput = {
 }
 
 export type GenerateGameplayActionResult = {
-  officialAgentId: string
+  officialAgentId: string | null
   action: GameplayActionEnvelope
   rawResponseLength: number
 }
@@ -239,74 +239,80 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
   ) {}
 
   async generateAction(input: GenerateGameplayActionInput): Promise<GenerateGameplayActionResult> {
-    const [{ createOfficialServerClient }, { resolveCharacterByTokenId }] = await Promise.all([
-      import('@/lib/eliza/client'),
-      import('@/lib/eliza/characterResolver'),
-    ])
-    const officialClient = createOfficialServerClient()
-    const record = await resolveCharacterByTokenId({
-      elizaClient: officialClient,
-      tokenId: String(input.speaker.tokenId),
-      wagdieDefaults: {
-        name: input.speaker.name,
-        backgroundStory: input.speaker.backgroundStory,
-      },
-    })
-
-    await this.messaging.startAgent(record.id)
-    const session = await this.messaging.createSession({
-      agentId: record.id,
-      userId: input.room.officialUserId,
-      metadata: {
-        source: 'wagdie-location-room-gameplay-action',
-        roomId: input.room.id,
-        locationId: input.room.locationId,
-        tickId: input.tick.id,
-        speakerTokenId: input.speaker.tokenId,
-        officialAgentId: record.id,
-      },
-    })
+    let officialAgentId: string | null = null
+    let sessionId: string | null = null
 
     try {
-      try {
-        const response = await this.messaging.sendSessionMessage({
-          sessionId: session.sessionId,
-          content: buildGameplayActionPrompt(input),
-          metadata: {
-            source: 'wagdie-location-room-gameplay-action',
-            roomId: input.room.id,
-            locationId: input.room.locationId,
-            tickId: input.tick.id,
-            speakerTokenId: input.speaker.tokenId,
-            officialAgentId: record.id,
-          },
-        })
-        const collected = await this.messaging.collectStreamedResponseText(response, {
-          conversationId: session.sessionId,
-        })
-        const normalized = normalizeGameplayActionResponse(collected.text, input.validation)
+      const [{ createOfficialServerClient }, { resolveCharacterByTokenId }] = await Promise.all([
+        import('@/lib/eliza/client'),
+        import('@/lib/eliza/characterResolver'),
+      ])
+      const officialClient = createOfficialServerClient()
+      const record = await resolveCharacterByTokenId({
+        elizaClient: officialClient,
+        tokenId: String(input.speaker.tokenId),
+        wagdieDefaults: {
+          name: input.speaker.name,
+          backgroundStory: input.speaker.backgroundStory,
+        },
+      })
+      officialAgentId = record.id
 
-        return {
-          officialAgentId: record.id,
-          action: normalized.action,
-          rawResponseLength: normalized.rawResponseLength,
-        }
-      } catch (error) {
-        console.warn('[Eliza Location Rooms] gameplay action stream failed; using fallback action', {
+      await this.messaging.startAgent(record.id)
+      const session = await this.messaging.createSession({
+        agentId: record.id,
+        userId: input.room.officialUserId,
+        metadata: {
+          source: 'wagdie-location-room-gameplay-action',
           roomId: input.room.id,
           locationId: input.room.locationId,
           tickId: input.tick.id,
           speakerTokenId: input.speaker.tokenId,
-          error: error instanceof Error ? error.message : String(error),
-        })
-        return {
           officialAgentId: record.id,
-          action: buildFallbackActionFromOfficialError(input, error),
-          rawResponseLength: 0,
-        }
+        },
+      })
+      sessionId = session.sessionId
+
+      const response = await this.messaging.sendSessionMessage({
+        sessionId: session.sessionId,
+        content: buildGameplayActionPrompt(input),
+        metadata: {
+          source: 'wagdie-location-room-gameplay-action',
+          roomId: input.room.id,
+          locationId: input.room.locationId,
+          tickId: input.tick.id,
+          speakerTokenId: input.speaker.tokenId,
+          officialAgentId: record.id,
+        },
+      })
+      const collected = await this.messaging.collectStreamedResponseText(response, {
+        conversationId: session.sessionId,
+      })
+      const normalized = normalizeGameplayActionResponse(collected.text, input.validation)
+
+      return {
+        officialAgentId: record.id,
+        action: normalized.action,
+        rawResponseLength: normalized.rawResponseLength,
+      }
+    } catch (error) {
+      console.warn('[Eliza Location Rooms] gameplay action generation failed; using fallback action', {
+        roomId: input.room.id,
+        locationId: input.room.locationId,
+        tickId: input.tick.id,
+        speakerTokenId: input.speaker.tokenId,
+        officialAgentId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return {
+        officialAgentId,
+        action: buildFallbackActionFromOfficialError(input, error),
+        rawResponseLength: 0,
       }
     } finally {
-      await this.messaging.deleteSession(session.sessionId).catch(() => null)
+      if (sessionId) {
+        await this.messaging.deleteSession(sessionId).catch(() => null)
+      }
     }
   }
 }
