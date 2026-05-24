@@ -67,6 +67,7 @@ function tick(): LocationRoomTick {
     id: 'tick-1',
     roomId: 'room-1',
     locationId: 'loc-1',
+    gameplayRunId: null,
     triggerType: 'scheduled',
     requestedByWallet: null,
     requestedByTokenId: null,

@@ -4,45 +4,12 @@
 
 import { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
-import { GET as getPublicRoom } from '@/app/api/eliza/location-rooms/[locationId]/route'
-import { POST as postManualTick } from '@/app/api/eliza/location-rooms/[locationId]/tick/route'
-import { GET as getAdminNarrative } from '@/app/api/admin/eliza/location-rooms/[locationId]/narrative/route'
-import { GET as getAdminHealth } from '@/app/api/admin/eliza/location-rooms/[locationId]/health/route'
-import { GET as syncGet, POST as syncPost } from '@/app/api/sync/eliza-location-rooms/route'
-import { requireAdmin, requireAuth } from '@/lib/api/auth'
-import { isAdmin } from '@/lib/auth/admin'
-import {
-  LocationRoomFeatureDisabledError,
-  LocationRoomForbiddenError,
-  LocationRoomGameplayConfigError,
-  LocationRoomInsufficientParticipantsError,
-  LocationRoomManualCooldownError,
-  LocationRoomNarrativeConfigError,
-  LocationRoomNotFoundError,
-  LocationRoomOfficialServiceDisabledError,
-  locationRoomService,
-} from '@/lib/eliza/locationRooms/service'
-import { locationRoomRepository } from '@/lib/eliza/locationRooms/repository'
-import { locationRoomNarrativeRepository } from '@/lib/eliza/locationRooms/narrativeRepository'
-import { locationRoomAdminDiagnosticsService } from '@/lib/eliza/locationRooms/adminDiagnostics'
 
-const requireAuthMock = requireAuth as jest.Mock
-const requireAdminMock = requireAdmin as jest.Mock
-const isAdminMock = isAdmin as jest.Mock
-const locationRoomServiceMock = locationRoomService as jest.Mocked<typeof locationRoomService>
-const locationRoomRepositoryMock = locationRoomRepository as jest.Mocked<typeof locationRoomRepository>
-const locationRoomNarrativeRepositoryMock = locationRoomNarrativeRepository as jest.Mocked<typeof locationRoomNarrativeRepository>
-const locationRoomAdminDiagnosticsServiceMock = locationRoomAdminDiagnosticsService as jest.Mocked<typeof locationRoomAdminDiagnosticsService>
-
-jest.mock('@/lib/api/auth', () => {
-  const { NextResponse: MockNextResponse } = jest.requireActual('next/server')
-
-  return {
-    requireAuth: jest.fn(),
-    requireAdmin: jest.fn(),
-    isAuthError: (result: unknown) => result instanceof MockNextResponse,
-  }
-})
+jest.mock('@/lib/api/auth', () => ({
+  requireAuth: jest.fn(),
+  requireAdmin: jest.fn(),
+  isAuthError: (result: unknown) => result instanceof Response,
+}))
 
 jest.mock('@/lib/eliza/locationRooms/repository', () => ({
   locationRoomRepository: {
@@ -101,6 +68,36 @@ jest.mock('@/lib/eliza/locationRooms/service', () => {
     },
   }
 })
+
+const { GET: getPublicRoom } = require('@/app/api/eliza/location-rooms/[locationId]/route')
+const { POST: postManualTick } = require('@/app/api/eliza/location-rooms/[locationId]/tick/route')
+const { GET: getAdminNarrative } = require('@/app/api/admin/eliza/location-rooms/[locationId]/narrative/route')
+const { GET: getAdminHealth } = require('@/app/api/admin/eliza/location-rooms/[locationId]/health/route')
+const { GET: syncGet, POST: syncPost } = require('@/app/api/sync/eliza-location-rooms/route')
+const { requireAdmin, requireAuth } = require('@/lib/api/auth')
+const { isAdmin } = require('@/lib/auth/admin')
+const {
+  LocationRoomFeatureDisabledError,
+  LocationRoomForbiddenError,
+  LocationRoomGameplayConfigError,
+  LocationRoomInsufficientParticipantsError,
+  LocationRoomManualCooldownError,
+  LocationRoomNarrativeConfigError,
+  LocationRoomNotFoundError,
+  LocationRoomOfficialServiceDisabledError,
+  locationRoomService,
+} = require('@/lib/eliza/locationRooms/service')
+const { locationRoomRepository } = require('@/lib/eliza/locationRooms/repository')
+const { locationRoomNarrativeRepository } = require('@/lib/eliza/locationRooms/narrativeRepository')
+const { locationRoomAdminDiagnosticsService } = require('@/lib/eliza/locationRooms/adminDiagnostics')
+
+const requireAuthMock = requireAuth as jest.Mock
+const requireAdminMock = requireAdmin as jest.Mock
+const isAdminMock = isAdmin as jest.Mock
+const locationRoomServiceMock = locationRoomService as jest.Mocked<typeof locationRoomService>
+const locationRoomRepositoryMock = locationRoomRepository as jest.Mocked<typeof locationRoomRepository>
+const locationRoomNarrativeRepositoryMock = locationRoomNarrativeRepository as jest.Mocked<typeof locationRoomNarrativeRepository>
+const locationRoomAdminDiagnosticsServiceMock = locationRoomAdminDiagnosticsService as jest.Mocked<typeof locationRoomAdminDiagnosticsService>
 
 function publicRequest(query = '') {
   return new NextRequest(`http://localhost/api/eliza/location-rooms/loc-1${query}`, { method: 'GET' })
@@ -206,6 +203,8 @@ describe('Eliza location room routes', () => {
         recentTurnCount: 0,
         latestTurnStatus: null,
         rewardClaimCount: 0,
+        activeRun: null,
+        recentRuns: [],
       },
       recommendedNextAction: 'healthy',
     })
@@ -250,6 +249,7 @@ describe('Eliza location room routes', () => {
       deduped: false,
       requestedByTokenId: 7,
       participantCount: 2,
+      gameplayRun: { id: 'run-1', status: 'active', targetCompletedTurns: 100, completedTurns: 0, remainingTurns: 100, reused: false },
       processing: {
         attempted: true,
         status: 'completed',
@@ -271,6 +271,7 @@ describe('Eliza location room routes', () => {
       queued: true,
       tickId: 'tick-1',
       triggerType: 'owner',
+      gameplayRun: { id: 'run-1', remainingTurns: 100 },
       processing: { attempted: true, status: 'completed' },
     })
   })
@@ -541,6 +542,7 @@ describe('Eliza location room routes', () => {
       skipped: 0,
       failed: 0,
       dead: 0,
+      gameplayRuns: { inspected: 0, enqueued: 0, blocked: 0, updated: 0, completed: 0, stopped: 0, failed: 0 },
       results: [{ tickId: 'tick-1', status: 'completed', selectedTokenId: 1, messageId: 'msg-1' }],
     })
 

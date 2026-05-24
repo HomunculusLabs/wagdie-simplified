@@ -1,3 +1,5 @@
+import type { GameplayRunStatus } from './gameplay/types'
+
 export type LocationRoomTriggerType = 'scheduled' | 'owner' | 'admin'
 export type LocationRoomTickStatus = 'pending' | 'processing' | 'completed' | 'skipped' | 'failed' | 'dead'
 export type LocationRoomMessageVisibility = 'public' | 'internal'
@@ -39,6 +41,7 @@ export type LocationRoomTick = {
   id: string
   roomId: string
   locationId: string
+  gameplayRunId: string | null
   triggerType: LocationRoomTriggerType
   requestedByWallet: string | null
   requestedByTokenId: number | null
@@ -173,12 +176,34 @@ export type EnqueueScheduledTicksResult = {
   deduped: number
 }
 
+export type LocationRoomGameplayRunSummary = {
+  id: string
+  status: GameplayRunStatus
+  targetCompletedTurns: number
+  completedTurns: number
+  remainingTurns: number
+  reused?: boolean
+  stopReason?: string | null
+}
+
 export type ProcessLocationRoomTickResult = {
   tickId: string
+  gameplayRunId?: string | null
   status: Extract<LocationRoomTickStatus, 'completed' | 'skipped' | 'failed' | 'dead'>
   selectedTokenId: number | null
   messageId?: string
   reason?: string
+  gameplayRun?: LocationRoomGameplayRunSummary
+}
+
+export type LocationRoomWorkerRunCounters = {
+  inspected: number
+  enqueued: number
+  blocked: number
+  updated: number
+  completed: number
+  stopped: number
+  failed: number
 }
 
 export type LocationRoomWorkerResult = {
@@ -190,6 +215,7 @@ export type LocationRoomWorkerResult = {
   skipped: number
   failed: number
   dead: number
+  gameplayRuns: LocationRoomWorkerRunCounters
   results: ProcessLocationRoomTickResult[]
 }
 
@@ -209,6 +235,7 @@ export type RequestLocationRoomTickResult = {
   deduped: boolean
   requestedByTokenId: number | null
   participantCount: number
+  gameplayRun?: LocationRoomGameplayRunSummary
 }
 
 export type RequestLocationRoomTickProcessingStatus =

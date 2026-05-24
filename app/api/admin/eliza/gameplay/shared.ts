@@ -12,6 +12,7 @@ import type {
   GameplayEncounter,
   GameplayRewardClaim,
   GameplayRewardClaimSummary,
+  GameplayRun,
   GameplayTurn,
 } from '@/lib/eliza/locationRooms/gameplay/types'
 
@@ -93,6 +94,27 @@ function serializeEncounter(encounter: GameplayEncounter | null) {
   }
 }
 
+function serializeRun(run: GameplayRun | null | undefined) {
+  if (!run) return null
+
+  return {
+    id: run.id,
+    status: run.status,
+    targetCompletedTurns: run.targetCompletedTurns,
+    completedTurns: run.completedTurns,
+    remainingTurns: Math.max(0, run.targetCompletedTurns - run.completedTurns),
+    startedByActor: run.startedByActor,
+    startedByTokenId: run.startedByTokenId,
+    lastTickId: run.lastTickId,
+    lastAdvancedAt: run.lastAdvancedAt,
+    completedAt: run.completedAt,
+    stopReason: run.stopReason,
+    lastError: run.lastError ? SAFE_GAMEPLAY_ERROR_MESSAGE : null,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  }
+}
+
 function serializeTurn(turn: GameplayTurn) {
   return {
     id: turn.id,
@@ -143,6 +165,8 @@ export function serializeGameplayInspection(result: InspectRoomGameplayResult) {
     activeEncounter: serializeEncounter(result.activeEncounter),
     turns: result.turns.map(serializeTurn),
     rewardClaims: result.rewardClaims.map(serializeRewardClaimSummary),
+    activeRun: serializeRun(result.activeRun),
+    recentRuns: result.recentRuns.map(serializeRun),
     count: result.turns.length,
   }
 }

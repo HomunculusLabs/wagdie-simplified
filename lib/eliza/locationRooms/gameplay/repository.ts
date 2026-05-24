@@ -3,6 +3,8 @@ import type { LocationRoom } from '../types'
 import { defaultGameplayPerformanceCounters } from './types'
 import type {
   CreateGameplayEncounterInput,
+  CreateOrReuseGameplayRunInput,
+  CreateOrReuseGameplayRunResult,
   CreateOrReuseGameplayTurnInput,
   CreateOrReuseRewardClaimInput,
   CreatePendingDeathReviewInput,
@@ -16,6 +18,9 @@ import type {
   GameplayRewardClaimLineItem,
   GameplayRewardClaimScoreBreakdown,
   GameplayRewardClaimStatus,
+  GameplayRun,
+  GameplayRunStartedByActor,
+  GameplayRunStatus,
   GameplaySourceStats,
   GameplayDeathReview,
   GameplayDiceRollResult,
@@ -32,9 +37,12 @@ import type {
   EnsureGameplayRoomStateInput,
   ListGameplayDeathReviewsInput,
   ListGameplayRewardClaimsInput,
+  MarkGameplayRunTerminalInput,
   UpdateGameplayRewardClaimStatusInput,
+  UpdateGameplayRunProgressInput,
 } from './types'
 
+const RUNS_TABLE = 'eliza_location_room_gameplay_runs'
 const STATES_TABLE = 'eliza_location_room_gameplay_states'
 const ENCOUNTERS_TABLE = 'eliza_location_room_gameplay_encounters'
 const TURNS_TABLE = 'eliza_location_room_gameplay_turns'
@@ -42,6 +50,8 @@ const DEATH_REVIEWS_TABLE = 'eliza_location_room_gameplay_death_reviews'
 const REWARD_CLAIMS_TABLE = 'eliza_location_room_gameplay_reward_claims'
 const MAX_STORED_ERROR_LENGTH = 1000
 
+const RUN_COLUMNS =
+  'id, room_id, location_id, status, target_completed_turns, completed_turns, started_by_actor, started_by_wallet, started_by_token_id, last_tick_id, last_advanced_at, completed_at, stop_reason, last_error, metadata, created_at, updated_at'
 const STATE_COLUMNS =
   'id, room_id, location_id, status, active_encounter_id, characters, rewards, metadata, created_at, updated_at'
 const ENCOUNTER_COLUMNS =
@@ -54,7 +64,27 @@ const REWARD_CLAIM_COLUMNS =
   'id, room_id, location_id, encounter_id, turn_id, death_review_id, token_id, beneficiary_wallet, beneficiary_source, status, policy_version, performance_score, score_breakdown, line_items, release_admin_wallet, released_at, metadata, last_error, created_at, updated_at'
 
 type SupabaseError = { code?: string; message: string }
-type QueryResult<T> = { data: T | null; error: SupabaseError | null }
+type QueryResult<T> = { data: T | null; error: SupabaseError | null; count?: number | null }
+
+type GameplayRunRow = {
+  id: string
+  room_id: string
+  location_id: string
+  status: GameplayRunStatus
+  target_completed_turns: number
+  completed_turns: number
+  started_by_actor: GameplayRunStartedByActor
+  started_by_wallet: string | null
+  started_by_token_id: number | null
+  last_tick_id: string | null
+  last_advanced_at: string | null
+  completed_at: string | null
+  stop_reason: string | null
+  last_error: string | null
+  metadata: Record<string, unknown> | null
+  created_at: string
+  updated_at: string
+}
 
 type GameplayStateRow = {
   id: string
@@ -365,6 +395,14 @@ function normalizeWallet(value: string | null | undefined): string | null {
   return nullableTrimmed(value)?.toLowerCase() ?? null
 }
 
+function normalizeRunTarget(value: number): number {
+  return clampInteger(value, 100, 1, 10000)
+}
+
+function normalizeRunProgress(value: number): number {
+  return clampInteger(value, 0, 0, 10000)
+}
+
 export function sanitizeGameplayStoredError(error: unknown): string {
   const message = error instanceof Error && error.message.trim()
     ? error.message.trim()
@@ -373,6 +411,28 @@ export function sanitizeGameplayStoredError(error: unknown): string {
       : 'Location room gameplay operation failed'
 
   return message.slice(0, MAX_STORED_ERROR_LENGTH)
+}
+
+function mapRun(row: GameplayRunRow): GameplayRun {
+  return {
+    id: row.id,
+    roomId: row.room_id,
+    locationId: row.location_id,
+    status: row.status,
+    targetCompletedTurns: normalizeRunTarget(row.target_completed_turns),
+    completedTurns: normalizeRunProgress(row.completed_turns),
+    startedByActor: row.started_by_actor,
+    startedByWallet: row.started_by_wallet,
+    startedByTokenId: row.started_by_token_id,
+    lastTickId: row.last_tick_id,
+    lastAdvancedAt: row.last_advanced_at,
+    completedAt: row.completed_at,
+    stopReason: nullableTrimmed(row.stop_reason),
+    lastError: row.last_error,
+    metadata: row.metadata ?? {},
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
 }
 
 function mapState(row: GameplayStateRow): GameplayRoomState {
@@ -481,6 +541,15 @@ function mapRewardClaim(row: GameplayRewardClaimRow): GameplayRewardClaim {
 }
 
 export interface LocationRoomGameplayRepository {
+  findActiveRunByRoomId(roomId: string): Promise<GameplayRun | null>
+  findRunById(runId: string): Promise<GameplayRun | null>
+  listRecentRunsByRoomId(roomId: string, limit?: number): Promise<GameplayRun[]>
+  listActiveRunsForWorker(limit?: number): Promise<GameplayRun[]>
+  createOrReuseActiveRun(input: CreateOrReuseGameplayRunInput): Promise<CreateOrReuseGameplayRunResult>
+  updateRunProgress(runId: string, input: UpdateGameplayRunProgressInput): Promise<GameplayRun>
+  markRunCompleted(runId: string, input: MarkGameplayRunTerminalInput): Promise<GameplayRun>
+  markRunStopped(runId: string, input: MarkGameplayRunTerminalInput): Promise<GameplayRun>
+  markRunFailed(runId: string, input: MarkGameplayRunTerminalInput): Promise<GameplayRun>
   findStateByRoomId(roomId: string): Promise<GameplayRoomState | null>
   ensureStateForRoom(input: EnsureGameplayRoomStateInput): Promise<GameplayRoomState>
   updateState(room: Pick<LocationRoom, 'id'>, input: UpdateGameplayRoomStateInput): Promise<GameplayRoomState>
@@ -506,6 +575,113 @@ export interface LocationRoomGameplayRepository {
 }
 
 export class SupabaseLocationRoomGameplayRepository implements LocationRoomGameplayRepository {
+  async findActiveRunByRoomId(roomId: string): Promise<GameplayRun | null> {
+    const { data, error } = (await table(RUNS_TABLE)
+      .select(RUN_COLUMNS)
+      .eq('room_id', roomId)
+      .eq('status', 'active')
+      .maybeSingle()) as QueryResult<GameplayRunRow>
+
+    if (error) throw new Error(error.message)
+    return data ? mapRun(data) : null
+  }
+
+  async findRunById(runId: string): Promise<GameplayRun | null> {
+    const { data, error } = (await table(RUNS_TABLE)
+      .select(RUN_COLUMNS)
+      .eq('id', runId)
+      .maybeSingle()) as QueryResult<GameplayRunRow>
+
+    if (error) throw new Error(error.message)
+    return data ? mapRun(data) : null
+  }
+
+  async listRecentRunsByRoomId(roomId: string, limit = 10): Promise<GameplayRun[]> {
+    const safeLimit = normalizeLimit(limit, 10, 50)
+    const { data, error } = (await table(RUNS_TABLE)
+      .select(RUN_COLUMNS)
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: false })
+      .limit(safeLimit)) as QueryResult<GameplayRunRow[]>
+
+    if (error) throw new Error(error.message)
+    return (data ?? []).map(mapRun)
+  }
+
+  async listActiveRunsForWorker(limit = 10): Promise<GameplayRun[]> {
+    const safeLimit = normalizeLimit(limit, 10, 100)
+    const { data, error } = (await table(RUNS_TABLE)
+      .select(RUN_COLUMNS)
+      .eq('status', 'active')
+      .order('last_advanced_at', { ascending: true, nullsFirst: true })
+      .order('updated_at', { ascending: true })
+      .limit(safeLimit)) as QueryResult<GameplayRunRow[]>
+
+    if (error) throw new Error(error.message)
+    return (data ?? []).map(mapRun)
+  }
+
+  async createOrReuseActiveRun(input: CreateOrReuseGameplayRunInput): Promise<CreateOrReuseGameplayRunResult> {
+    const existing = await this.findActiveRunByRoomId(input.room.id)
+    if (existing) return { run: existing, reused: true }
+
+    const { data, error } = (await table(RUNS_TABLE)
+      .insert({
+        room_id: input.room.id,
+        location_id: input.room.locationId,
+        status: 'active',
+        target_completed_turns: normalizeRunTarget(input.targetCompletedTurns),
+        completed_turns: 0,
+        started_by_actor: input.startedByActor,
+        started_by_wallet: normalizeWallet(input.startedByWallet),
+        started_by_token_id: input.startedByTokenId ?? null,
+        metadata: input.metadata ?? {},
+      })
+      .select(RUN_COLUMNS)
+      .single()) as QueryResult<GameplayRunRow>
+
+    if (isUniqueViolation(error)) {
+      const raced = await this.findActiveRunByRoomId(input.room.id)
+      if (raced) return { run: raced, reused: true }
+    }
+
+    if (error) throw new Error(error.message)
+    if (!data) throw new Error('Location room gameplay run insert returned no row')
+    return { run: mapRun(data), reused: false }
+  }
+
+  async updateRunProgress(runId: string, input: UpdateGameplayRunProgressInput): Promise<GameplayRun> {
+    const values: Record<string, unknown> = {
+      completed_turns: normalizeRunProgress(input.completedTurns),
+      last_error: null,
+    }
+    if (input.lastTickId !== undefined) values.last_tick_id = input.lastTickId
+    if (input.lastAdvancedAt !== undefined) values.last_advanced_at = input.lastAdvancedAt
+    if (input.metadata !== undefined) values.metadata = input.metadata
+
+    const { data, error } = (await table(RUNS_TABLE)
+      .update(values)
+      .eq('id', runId)
+      .select(RUN_COLUMNS)
+      .single()) as QueryResult<GameplayRunRow>
+
+    if (error) throw new Error(error.message)
+    if (!data) throw new Error('Location room gameplay run progress update returned no row')
+    return mapRun(data)
+  }
+
+  async markRunCompleted(runId: string, input: MarkGameplayRunTerminalInput): Promise<GameplayRun> {
+    return this.markRunTerminal(runId, 'completed', input)
+  }
+
+  async markRunStopped(runId: string, input: MarkGameplayRunTerminalInput): Promise<GameplayRun> {
+    return this.markRunTerminal(runId, 'stopped', input)
+  }
+
+  async markRunFailed(runId: string, input: MarkGameplayRunTerminalInput): Promise<GameplayRun> {
+    return this.markRunTerminal(runId, 'failed', input)
+  }
+
   async findStateByRoomId(roomId: string): Promise<GameplayRoomState | null> {
     const { data, error } = (await table(STATES_TABLE)
       .select(STATE_COLUMNS)
@@ -912,6 +1088,35 @@ export class SupabaseLocationRoomGameplayRepository implements LocationRoomGamep
 
     if (error) throw new Error(error.message)
     return data ? mapRewardClaim(data) : null
+  }
+
+  private async markRunTerminal(
+    runId: string,
+    status: Extract<GameplayRunStatus, 'completed' | 'stopped' | 'failed'>,
+    input: MarkGameplayRunTerminalInput
+  ): Promise<GameplayRun> {
+    const values: Record<string, unknown> = {
+      status,
+      completed_at: input.completedAt ?? new Date().toISOString(),
+      stop_reason: nullableTrimmed(input.stopReason),
+    }
+    if (input.completedTurns !== undefined) values.completed_turns = normalizeRunProgress(input.completedTurns)
+    if (input.lastTickId !== undefined) values.last_tick_id = input.lastTickId
+    if (input.lastAdvancedAt !== undefined) values.last_advanced_at = input.lastAdvancedAt
+    if (input.lastError !== undefined) {
+      values.last_error = nullableTrimmed(input.lastError)?.slice(0, MAX_STORED_ERROR_LENGTH) ?? null
+    }
+    if (input.metadata !== undefined) values.metadata = input.metadata
+
+    const { data, error } = (await table(RUNS_TABLE)
+      .update(values)
+      .eq('id', runId)
+      .select(RUN_COLUMNS)
+      .single()) as QueryResult<GameplayRunRow>
+
+    if (error) throw new Error(error.message)
+    if (!data) throw new Error('Location room gameplay run terminal update returned no row')
+    return mapRun(data)
   }
 
   private async updateTurnError(turnId: string, status: Extract<GameplayTurnStatus, 'failed' | 'dead'>, error: unknown): Promise<GameplayTurn> {

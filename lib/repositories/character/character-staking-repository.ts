@@ -4,10 +4,24 @@ import {
   noopCharacterRuntimeAssets,
 } from '@/lib/domain/character/character-runtime-assets'
 import { normalizeLocationMetadata } from '@/lib/domain/location/metadata'
-import { supabase } from '@/lib/supabase'
+import { getSupabaseAdmin } from '@/lib/supabase'
 import { isBurnedOwner } from '@/lib/utils/blockchain'
 import type { Character } from '@/types/character'
 import type { CharacterWithLocation } from './character-types'
+
+const STAKED_CHARACTER_COLUMNS = [
+  'token_id',
+  'name',
+  'metadata',
+  'image_url',
+  'infection_status',
+  'infected',
+  'owner_address',
+  'staker_address',
+  'location_id',
+  'burned',
+  'background_story',
+].join(', ')
 
 /**
  * Handles staked-character queries and location joins for map data.
@@ -18,9 +32,14 @@ export class CharacterStakingRepository {
   ) {}
 
   async getStakedCharacters(): Promise<CharacterWithLocation[]> {
-    const { data, error: charError } = await supabase!
+    const adminClient = getSupabaseAdmin()
+    if (!adminClient) {
+      throw new Error('Supabase admin client not configured')
+    }
+
+    const { data, error: charError } = await adminClient
       .from(CHARACTERS_TABLE)
-      .select('*')
+      .select(STAKED_CHARACTER_COLUMNS)
       .not('location_id', 'is', null)
       .order('token_id', { ascending: true })
 
@@ -42,7 +61,7 @@ export class CharacterStakingRepository {
       ),
     ]
 
-    const { data: locationsData, error: locError } = await supabase!
+    const { data: locationsData, error: locError } = await adminClient
       .from('locations')
       .select('id, name, metadata')
       .in('id', locationIds)

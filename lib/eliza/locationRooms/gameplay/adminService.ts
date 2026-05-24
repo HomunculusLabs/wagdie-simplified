@@ -9,6 +9,7 @@ import type {
   GameplayRewardClaim,
   GameplayRewardClaimStatus,
   GameplayRoomState,
+  GameplayRun,
 } from './types'
 
 export const GAMEPLAY_DEATH_REVIEW_OUTCOMES = [
@@ -47,6 +48,8 @@ export type InspectRoomGameplayResult = {
   activeEncounter: Awaited<ReturnType<LocationRoomGameplayRepository['findActiveEncounterByRoomId']>>
   turns: Awaited<ReturnType<LocationRoomGameplayRepository['listRecentTurnsByRoomId']>>
   rewardClaims: GameplayRewardClaim[]
+  activeRun: GameplayRun | null
+  recentRuns: GameplayRun[]
 }
 
 export type ListDeathReviewsInput = {
@@ -131,14 +134,18 @@ export class LocationRoomGameplayAdminService {
         activeEncounter: null,
         turns: [],
         rewardClaims: [],
+        activeRun: null,
+        recentRuns: [],
       }
     }
 
-    const [state, activeEncounter, turns, rewardClaims] = await Promise.all([
+    const [state, activeEncounter, turns, rewardClaims, activeRun, recentRuns] = await Promise.all([
       this.gameplayRepository.findStateByRoomId(room.id),
       this.gameplayRepository.findActiveEncounterByRoomId(room.id),
       this.gameplayRepository.listRecentTurnsByRoomId(room.id, limit),
       this.gameplayRepository.listRewardClaims({ roomId: room.id, limit }),
+      this.gameplayRepository.findActiveRunByRoomId(room.id),
+      this.gameplayRepository.listRecentRunsByRoomId(room.id, limit),
     ])
 
     return {
@@ -148,6 +155,8 @@ export class LocationRoomGameplayAdminService {
       activeEncounter,
       turns,
       rewardClaims,
+      activeRun,
+      recentRuns,
     }
   }
 

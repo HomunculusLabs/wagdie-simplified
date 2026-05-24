@@ -21,6 +21,7 @@ import type {
   LocationRoomParticipant,
   LocationRoomTick,
 } from '@/lib/eliza/locationRooms/types'
+import type { GameplayRun } from '@/lib/eliza/locationRooms/gameplay/types'
 
 const now = new Date('2026-05-23T12:00:00.000Z')
 
@@ -61,6 +62,7 @@ function tick(overrides: Partial<LocationRoomTick> = {}): LocationRoomTick {
     id: 'tick-1',
     roomId: 'room-11',
     locationId: '11',
+    gameplayRunId: null,
     triggerType: 'scheduled',
     requestedByWallet: null,
     requestedByTokenId: null,
@@ -75,6 +77,29 @@ function tick(overrides: Partial<LocationRoomTick> = {}): LocationRoomTick {
     lastError: null,
     createdAt: '2026-05-23T11:00:00.000Z',
     updatedAt: '2026-05-23T11:01:00.000Z',
+    ...overrides,
+  }
+}
+
+function run(overrides: Partial<GameplayRun> = {}): GameplayRun {
+  return {
+    id: 'run-1',
+    roomId: 'room-11',
+    locationId: '11',
+    status: 'active',
+    targetCompletedTurns: 100,
+    completedTurns: 12,
+    startedByActor: 'admin',
+    startedByWallet: '0xsecretadminwallet',
+    startedByTokenId: 7,
+    lastTickId: 'tick-12',
+    lastAdvancedAt: '2026-05-23T11:55:00.000Z',
+    completedAt: null,
+    stopReason: null,
+    lastError: null,
+    metadata: { private: 'hidden' },
+    createdAt: '2026-05-23T11:00:00.000Z',
+    updatedAt: '2026-05-23T11:55:00.000Z',
     ...overrides,
   }
 }
@@ -117,6 +142,9 @@ function makeRoomRepository(overrides: Partial<jest.Mocked<LocationRoomRepositor
     ensureRoomForLocation: jest.fn(async () => baseRoom),
     listDueRooms: jest.fn(async () => [baseRoom]),
     enqueueTick: jest.fn(),
+    attachTickToGameplayRun: jest.fn(),
+    countCompletedGameplayTurnsForRun: jest.fn(),
+    findOpenTickForRoom: jest.fn(),
     findRecentCompletedOwnerTick: jest.fn(),
     findOldestProcessableTickForRoom: jest.fn(),
     findNonStaleProcessingTickForRoom: jest.fn(),
@@ -170,6 +198,15 @@ function makeNarrativeRepository(): jest.Mocked<LocationRoomNarrativeRepository>
 
 function makeGameplayRepository(): jest.Mocked<LocationRoomGameplayRepository> {
   return {
+    findActiveRunByRoomId: jest.fn(async () => null),
+    findRunById: jest.fn(async () => null),
+    listRecentRunsByRoomId: jest.fn(async () => []),
+    listActiveRunsForWorker: jest.fn(async () => []),
+    createOrReuseActiveRun: jest.fn(),
+    updateRunProgress: jest.fn(),
+    markRunCompleted: jest.fn(),
+    markRunStopped: jest.fn(),
+    markRunFailed: jest.fn(),
     findStateByRoomId: jest.fn(async () => null),
     ensureStateForRoom: jest.fn(),
     updateState: jest.fn(),
@@ -198,13 +235,14 @@ function makeGameplayRepository(): jest.Mocked<LocationRoomGameplayRepository> {
 function makeService(overrides: {
   roomRepository?: jest.Mocked<LocationRoomRepository>
   membershipRepository?: jest.Mocked<LocationRoomMembershipRepository>
+  gameplayRepository?: jest.Mocked<LocationRoomGameplayRepository>
   gameMasterResolver?: { resolveActiveGameMasterAgent: jest.Mock }
 } = {}) {
   return new LocationRoomAdminDiagnosticsService({
     roomRepository: overrides.roomRepository ?? makeRoomRepository(),
     membershipRepository: overrides.membershipRepository ?? makeMembershipRepository(),
     narrativeRepository: makeNarrativeRepository(),
-    gameplayRepository: makeGameplayRepository(),
+    gameplayRepository: overrides.gameplayRepository ?? makeGameplayRepository(),
     gameMasterResolver: overrides.gameMasterResolver ?? {
       resolveActiveGameMasterAgent: jest.fn(async () => gmResolution()),
     },
@@ -367,6 +405,44 @@ describe('LocationRoomAdminDiagnosticsService', () => {
       isCanonical: false,
     })
     expect(result.recommendedNextAction).toBe('use_canonical_location_11')
+  })
+
+  it('reports safe active and recent gameplay run status in diagnostics', async () => {
+    mutableGameplay.enabled = true
+    mutableGameplay.locationAllowlist = ['11']
+    const gameplayRepository = makeGameplayRepository()
+    gameplayRepository.findActiveRunByRoomId.mockResolvedValue(run({ lastError: 'raw active run failure' }))
+    gameplayRepository.listRecentRunsByRoomId.mockResolvedValue([
+      run({ id: 'run-1', status: 'active', completedTurns: 12 }),
+      run({ id: 'run-completed', status: 'completed', completedTurns: 100, stopReason: 'target_reached', completedAt: '2026-05-23T12:00:00.000Z' }),
+      run({ id: 'run-failed', status: 'failed', completedTurns: 2, stopReason: 'tick_dead', lastError: 'raw failed run failure', completedAt: '2026-05-23T12:05:00.000Z' }),
+    ])
+
+    const result = await makeService({ gameplayRepository }).inspectLocation('11')
+
+    expect(gameplayRepository.findActiveRunByRoomId).toHaveBeenCalledWith('room-11')
+    expect(gameplayRepository.listRecentRunsByRoomId).toHaveBeenCalledWith('room-11', 5)
+    expect(result.gameplay.activeRun).toMatchObject({
+      id: 'run-1',
+      status: 'active',
+      targetCompletedTurns: 100,
+      completedTurns: 12,
+      remainingTurns: 88,
+      startedByActor: 'admin',
+      startedByTokenId: 7,
+      lastTickId: 'tick-12',
+      lastError: 'Gameplay operation failed. Check server logs for details.',
+    })
+    expect(result.gameplay.recentRuns).toEqual([
+      expect.objectContaining({ id: 'run-1', status: 'active', remainingTurns: 88, lastError: null }),
+      expect.objectContaining({ id: 'run-completed', status: 'completed', remainingTurns: 0, stopReason: 'target_reached' }),
+      expect.objectContaining({ id: 'run-failed', status: 'failed', remainingTurns: 98, stopReason: 'tick_dead', lastError: 'Gameplay operation failed. Check server logs for details.' }),
+    ])
+    expect(JSON.stringify(result)).not.toContain('startedByWallet')
+    expect(JSON.stringify(result)).not.toContain('0xsecretadminwallet')
+    expect(JSON.stringify(result)).not.toContain('raw active run failure')
+    expect(JSON.stringify(result)).not.toContain('raw failed run failure')
+    expect(JSON.stringify(result)).not.toContain('private')
   })
 
   it('reports healthy canonical rooms with participants, messages, and no active due ticks', async () => {

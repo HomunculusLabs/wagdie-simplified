@@ -94,6 +94,29 @@ function claim(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function run(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'run-1',
+    roomId: 'room-1',
+    locationId: 'loc-1',
+    status: 'active',
+    targetCompletedTurns: 100,
+    completedTurns: 12,
+    startedByActor: 'admin',
+    startedByWallet: '0xsecretadminwallet',
+    startedByTokenId: 7,
+    lastTickId: 'tick-12',
+    lastAdvancedAt: '2026-05-22T12:12:00.000Z',
+    completedAt: null,
+    stopReason: null,
+    lastError: null,
+    metadata: { private: 'hidden' },
+    createdAt: '2026-05-22T12:00:00.000Z',
+    updatedAt: '2026-05-22T12:12:00.000Z',
+    ...overrides,
+  }
+}
+
 function review(overrides: Record<string, unknown> = {}) {
   return {
     id: 'review-1',
@@ -148,6 +171,8 @@ describe('admin Eliza gameplay routes', () => {
       activeEncounter: null,
       turns: [],
       rewardClaims: [claim()],
+      activeRun: null,
+      recentRuns: [],
     })
     mockedService.listDeathReviews.mockResolvedValue([review()])
     mockedService.updateDeathReviewOutcome.mockResolvedValue(review({
@@ -304,6 +329,13 @@ describe('admin Eliza gameplay routes', () => {
       },
       turns: [],
       rewardClaims: [claim({ lastError: 'raw claim stack' })],
+      activeRun: run({ lastError: 'raw active run stack' }),
+      recentRuns: [
+        run({ id: 'run-1', status: 'active', completedTurns: 12, lastError: null }),
+        run({ id: 'run-stopped', status: 'stopped', completedTurns: 14, stopReason: 'insufficient_participants', completedAt: '2026-05-22T12:20:00.000Z' }),
+        run({ id: 'run-completed', status: 'completed', completedTurns: 100, stopReason: 'target_reached', completedAt: '2026-05-22T12:30:00.000Z' }),
+        run({ id: 'run-failed', status: 'failed', completedTurns: 2, stopReason: 'tick_dead', lastError: 'raw failed run stack', completedAt: '2026-05-22T12:40:00.000Z' }),
+      ],
     })
 
     const response = await GET_ROOM_GAMEPLAY(
@@ -325,10 +357,34 @@ describe('admin Eliza gameplay routes', () => {
         id: 'claim-1',
         lastError: 'Gameplay operation failed. Check server logs for details.',
       })],
+      activeRun: {
+        id: 'run-1',
+        status: 'active',
+        targetCompletedTurns: 100,
+        completedTurns: 12,
+        remainingTurns: 88,
+        startedByActor: 'admin',
+        startedByTokenId: 7,
+        lastTickId: 'tick-12',
+        lastAdvancedAt: '2026-05-22T12:12:00.000Z',
+        stopReason: null,
+        lastError: 'Gameplay operation failed. Check server logs for details.',
+      },
+      recentRuns: [
+        expect.objectContaining({ id: 'run-1', status: 'active', remainingTurns: 88, lastError: null }),
+        expect.objectContaining({ id: 'run-stopped', status: 'stopped', remainingTurns: 86, stopReason: 'insufficient_participants' }),
+        expect.objectContaining({ id: 'run-completed', status: 'completed', remainingTurns: 0, stopReason: 'target_reached' }),
+        expect.objectContaining({ id: 'run-failed', status: 'failed', remainingTurns: 98, stopReason: 'tick_dead', lastError: 'Gameplay operation failed. Check server logs for details.' }),
+      ],
       count: 0,
     })
     expect(JSON.stringify(body)).not.toContain('raw provider stack')
     expect(JSON.stringify(body)).not.toContain('raw claim stack')
+    expect(JSON.stringify(body)).not.toContain('raw active run stack')
+    expect(JSON.stringify(body)).not.toContain('raw failed run stack')
+    expect(JSON.stringify(body)).not.toContain('startedByWallet')
+    expect(JSON.stringify(body)).not.toContain('0xsecretadminwallet')
+    expect(JSON.stringify(body)).not.toContain('private')
   })
 
   it('room gameplay inspection maps missing locations to 404', async () => {

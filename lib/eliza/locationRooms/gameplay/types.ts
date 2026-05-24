@@ -10,6 +10,8 @@ export const GAMEPLAY_DEATH_STATUSES = ['dead', 'restored'] as const
 export const GAMEPLAY_BURN_SYNC_STATUSES = ['not_applicable', 'pending', 'synced', 'failed'] as const
 export const GAMEPLAY_REWARD_CLAIM_STATUSES = ['pending_review', 'released', 'rejected', 'voided'] as const
 export const GAMEPLAY_REWARD_CLAIM_BENEFICIARY_SOURCES = ['staker_address', 'owner_address'] as const
+export const GAMEPLAY_RUN_STATUSES = ['active', 'completed', 'stopped', 'failed'] as const
+export const GAMEPLAY_RUN_STARTED_BY_ACTORS = ['owner', 'admin', 'scheduler', 'system'] as const
 export const GAMEPLAY_ACTION_TYPES = ['attack', 'defend', 'help', 'investigate', 'negotiate', 'flee', 'rest'] as const
 
 export type GameplayRoomStatus = typeof GAMEPLAY_ROOM_STATUSES[number]
@@ -20,6 +22,8 @@ export type GameplayDeathStatus = typeof GAMEPLAY_DEATH_STATUSES[number]
 export type GameplayBurnSyncStatus = typeof GAMEPLAY_BURN_SYNC_STATUSES[number]
 export type GameplayRewardClaimStatus = typeof GAMEPLAY_REWARD_CLAIM_STATUSES[number]
 export type GameplayRewardClaimBeneficiarySource = typeof GAMEPLAY_REWARD_CLAIM_BENEFICIARY_SOURCES[number]
+export type GameplayRunStatus = typeof GAMEPLAY_RUN_STATUSES[number]
+export type GameplayRunStartedByActor = typeof GAMEPLAY_RUN_STARTED_BY_ACTORS[number]
 export type GameplayActionType = typeof GAMEPLAY_ACTION_TYPES[number]
 export type GameplayDifficulty = ElizaLocationRoomGameplayDifficulty
 
@@ -207,6 +211,26 @@ export type GameplayRewardClaim = GameplayRewardClaimSummary & {
   metadata: Record<string, unknown>
 }
 
+export type GameplayRun = {
+  id: string
+  roomId: string
+  locationId: string
+  status: GameplayRunStatus
+  targetCompletedTurns: number
+  completedTurns: number
+  startedByActor: GameplayRunStartedByActor
+  startedByWallet: string | null
+  startedByTokenId: number | null
+  lastTickId: string | null
+  lastAdvancedAt: string | null
+  completedAt: string | null
+  stopReason: string | null
+  lastError: string | null
+  metadata: Record<string, unknown>
+  createdAt: string
+  updatedAt: string
+}
+
 export type GameplayCharacterStateMap = Record<string, GameplayCharacterState>
 
 export type GameplayMonsterState = {
@@ -328,6 +352,37 @@ export type GameplayDeathReview = {
 export type EnsureGameplayRoomStateInput = {
   room: Pick<LocationRoom, 'id' | 'locationId'>
   characters?: GameplayCharacterStateMap
+  metadata?: Record<string, unknown>
+}
+
+export type CreateOrReuseGameplayRunInput = {
+  room: Pick<LocationRoom, 'id' | 'locationId'>
+  targetCompletedTurns: number
+  startedByActor: GameplayRunStartedByActor
+  startedByWallet?: string | null
+  startedByTokenId?: number | null
+  metadata?: Record<string, unknown>
+}
+
+export type CreateOrReuseGameplayRunResult = {
+  run: GameplayRun
+  reused: boolean
+}
+
+export type UpdateGameplayRunProgressInput = {
+  completedTurns: number
+  lastTickId?: string | null
+  lastAdvancedAt?: string | null
+  metadata?: Record<string, unknown>
+}
+
+export type MarkGameplayRunTerminalInput = {
+  stopReason: string
+  completedTurns?: number
+  lastTickId?: string | null
+  lastAdvancedAt?: string | null
+  lastError?: string | null
+  completedAt?: string | null
   metadata?: Record<string, unknown>
 }
 

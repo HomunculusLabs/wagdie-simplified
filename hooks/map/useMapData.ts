@@ -70,50 +70,25 @@ export function useMapData() {
   }
 
   const fetchStakedCharactersFromApi = async (): Promise<CharacterWithLocation[]> => {
-    const perPage = 100
-    const maxPages = 50
-    const rows: CharacterWithLocation[] = []
+    const response = await fetch('/api/characters/staked-map', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+    })
 
-    for (let page = 1; page <= maxPages; page += 1) {
-      const response = await fetch(
-        `/api/characters?tab=staked&page=${page}&perPage=${perPage}&sort=asc`,
-        {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-          cache: 'no-store',
-        }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '')
+      const suffix = text ? ` - ${text}` : ''
+      throw new Error(
+        `Failed to fetch staked characters (${response.status})${suffix}`
       )
-
-      if (!response.ok) {
-        const text = await response.text().catch(() => '')
-        const suffix = text ? ` - ${text}` : ''
-        throw new Error(
-          `Failed to fetch staked characters (${response.status})${suffix}`
-        )
-      }
-
-      const payload = (await response.json()) as {
-        characters?: CharacterWithLocation[]
-        totalCount?: number
-        hasMore?: boolean
-      }
-
-      const pageRows = Array.isArray(payload.characters) ? payload.characters : []
-      rows.push(...pageRows)
-
-      const hasMore =
-        typeof payload.hasMore === 'boolean'
-          ? payload.hasMore
-          : typeof payload.totalCount === 'number'
-            ? rows.length < payload.totalCount
-            : pageRows.length === perPage
-
-      if (!hasMore) {
-        break
-      }
     }
 
-    return rows
+    const payload = (await response.json()) as {
+      characters?: CharacterWithLocation[]
+    }
+
+    return Array.isArray(payload.characters) ? payload.characters : []
   }
 
   useEffect(() => {

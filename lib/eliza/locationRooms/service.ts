@@ -6,8 +6,10 @@ import type {
   LocationRoom,
   LocationRoomMessage,
   LocationRoomParticipant,
+  LocationRoomGameplayRunSummary,
   LocationRoomTick,
   LocationRoomWorkerResult,
+  LocationRoomWorkerRunCounters,
   ProcessLocationRoomTickResult,
   PublicGameplayStatusBand,
   PublicLocationRoomGameplayMessageKind,
@@ -47,7 +49,7 @@ import {
   type LocationRoomGameplayRepository,
 } from './gameplay/repository'
 import { parseGameplayMonsters, parseGameplayRewardPlan } from './gameplay/rules'
-import type { GameplayCharacterState, GameplayEncounter, GameplayRoomState } from './gameplay/types'
+import type { GameplayCharacterState, GameplayEncounter, GameplayRoomState, GameplayRun } from './gameplay/types'
 import { selectLocationRoomSpeaker as selectLocationRoomSpeakerInternal } from './speakerSelection'
 
 const MIN_ELIGIBLE_PARTICIPANTS = 2
@@ -141,6 +143,10 @@ function routeSafeError(error: unknown): string {
     ? error.message.trim()
     : 'Location room tick failed'
   return message.slice(0, MAX_STORED_ERROR_LENGTH)
+}
+
+function isActiveTickConstraintError(error: unknown): boolean {
+  return error instanceof Error && /idx_eliza_location_room_ticks_one_active|duplicate key/i.test(error.message)
 }
 
 function nextRetryAt(attempts: number, now: Date): string {
@@ -251,6 +257,30 @@ export const selectLocationRoomSpeaker = selectLocationRoomSpeakerInternal
 
 function normalizeWallet(value: string): string {
   return value.trim().toLowerCase()
+}
+
+function toGameplayRunSummary(run: GameplayRun, reused?: boolean): LocationRoomGameplayRunSummary {
+  return {
+    id: run.id,
+    status: run.status,
+    targetCompletedTurns: run.targetCompletedTurns,
+    completedTurns: run.completedTurns,
+    remainingTurns: Math.max(0, run.targetCompletedTurns - run.completedTurns),
+    ...(reused !== undefined ? { reused } : {}),
+    ...(run.stopReason !== null ? { stopReason: run.stopReason } : {}),
+  }
+}
+
+function isPlayableGameplayCharacter(character: GameplayCharacterState | undefined): boolean {
+  return Boolean(character && character.status !== 'dead' && character.status !== 'fled' && character.hp > 0)
+}
+
+function hasMinimumPlayableGameplayParticipants(
+  participants: LocationRoomParticipant[],
+  state: GameplayRoomState | null
+): boolean {
+  if (!state) return true
+  return participants.filter((participant) => isPlayableGameplayCharacter(state.characters[String(participant.tokenId)])).length >= MIN_ELIGIBLE_PARTICIPANTS
 }
 
 export function isLocationRoomGameplayEnabledForLocation(locationId: string): boolean {
@@ -407,7 +437,10 @@ export class LocationRoomService {
       }
     }
 
-    const claimedTick = await this.repository.claimTick(targetTick.id, workerId, now)
+    const claimNow = prepared.enqueuedTickIsFresh && prepared.enqueuedTick?.id === targetTick.id
+      ? new Date(Math.max(now.getTime(), new Date(targetTick.nextAttemptAt).getTime()))
+      : now
+    const claimedTick = await this.repository.claimTick(targetTick.id, workerId, claimNow)
     if (!claimedTick) {
       const processingTick = await this.repository.findNonStaleProcessingTickForRoom(prepared.room.id, now)
       return {
@@ -446,6 +479,7 @@ export class LocationRoomService {
   ): Promise<{
     room: LocationRoom
     enqueuedTick: LocationRoomTick | null
+    enqueuedTickIsFresh: boolean
     result: RequestLocationRoomTickResult
   }> {
     const canonicalLocationId = resolveCanonicalLocationRoomId(locationId)
@@ -500,24 +534,52 @@ export class LocationRoomService {
     const requestedByTokenId = input.actor === 'owner'
       ? ownedParticipant?.tokenId ?? null
       : null
+    const gameplayRunResult = isLocationRoomGameplayEnabledForLocation(room.locationId)
+      ? await this.gameplayRepository.createOrReuseActiveRun({
+          room,
+          targetCompletedTurns: elizaConfig.locationRooms.gameplay.automation.targetCompletedTurns,
+          startedByActor: triggerType,
+          startedByWallet: normalizedWallet,
+          startedByTokenId: requestedByTokenId,
+          metadata: {
+            source: 'manual_gameplay_initiation',
+            triggerType,
+          },
+        })
+      : null
     const enqueueResult = await this.repository.enqueueTick({
       room,
       triggerType,
       requestedByWallet: normalizedWallet,
       requestedByTokenId,
+      gameplayRunId: gameplayRunResult?.run.id ?? null,
     })
+
+    let enqueuedTick = enqueueResult.tick
+    if (!enqueuedTick && gameplayRunResult) {
+      const openTick = await this.repository.findOpenTickForRoom(room.id)
+      if (openTick && openTick.gameplayRunId === null && (openTick.status === 'pending' || openTick.status === 'failed')) {
+        enqueuedTick = await this.repository.attachTickToGameplayRun({
+          tickId: openTick.id,
+          roomId: room.id,
+          gameplayRunId: gameplayRunResult.run.id,
+        })
+      }
+    }
 
     return {
       room,
-      enqueuedTick: enqueueResult.tick,
+      enqueuedTick,
+      enqueuedTickIsFresh: Boolean(enqueueResult.tick),
       result: {
         roomId: room.id,
         locationId: room.locationId,
-        tickId: enqueueResult.tick?.id ?? null,
+        tickId: enqueuedTick?.id ?? enqueueResult.tick?.id ?? null,
         triggerType,
         deduped: enqueueResult.deduped,
         requestedByTokenId,
         participantCount: participants.length,
+        ...(gameplayRunResult ? { gameplayRun: toGameplayRunSummary(gameplayRunResult.run, gameplayRunResult.reused) } : {}),
       },
     }
   }
@@ -545,9 +607,21 @@ export class LocationRoomService {
     let enqueued = 0
     let deduped = 0
     for (const room of dueRooms) {
-      const result = await this.repository.enqueueTick({ room, triggerType: 'scheduled' })
-      if (result.deduped) deduped += 1
-      else enqueued += 1
+      try {
+        const activeRun = isLocationRoomGameplayEnabledForLocation(room.locationId)
+          ? await this.gameplayRepository.findActiveRunByRoomId(room.id)
+          : null
+        const result = await this.repository.enqueueTick({
+          room,
+          triggerType: 'scheduled',
+          gameplayRunId: activeRun?.id ?? null,
+        })
+        if (result.deduped) deduped += 1
+        else enqueued += 1
+      } catch (error) {
+        if (!isActiveTickConstraintError(error)) throw error
+        deduped += 1
+      }
     }
 
     return {
@@ -574,25 +648,295 @@ export class LocationRoomService {
   async runScheduledWorker(now = new Date()): Promise<LocationRoomWorkerResult> {
     await ensureLocationRoomFeatureEnabled(this.gameMasterAgentResolver)
 
+    const maxTicks = Math.max(0, elizaConfig.locationRooms.maxTicksPerRun)
     const enqueueResult = await this.enqueueDueScheduledTicks(now)
-    const results = await this.processDueTicks(elizaConfig.locationRooms.maxTicksPerRun, now)
+    const workerId = `location-room-worker-${randomUUID()}`
+    const results: ProcessLocationRoomTickResult[] = []
+    const processedTickIds = new Set<string>()
+    const inspectedActiveRunIds = new Set<string>()
+    const gameplayRuns: LocationRoomWorkerRunCounters = {
+      inspected: 0,
+      enqueued: 0,
+      blocked: 0,
+      updated: 0,
+      completed: 0,
+      stopped: 0,
+      failed: 0,
+    }
+    let enqueued = enqueueResult.enqueued
+    let deduped = enqueueResult.deduped
+
+    while (results.length < maxTicks) {
+      const remaining = maxTicks - results.length
+      const claimedTicks = await this.repository.claimDueTicks(remaining, workerId, now)
+      const ticks = claimedTicks.filter((tick) => !processedTickIds.has(tick.id))
+
+      if (ticks.length > 0) {
+        for (const tick of ticks) {
+          processedTickIds.add(tick.id)
+          const result = await this.processClaimedTick(tick, now)
+          results.push(result)
+          if (result.gameplayRun) {
+            if (result.gameplayRun.status === 'active' && result.status !== 'failed') gameplayRuns.updated += 1
+            else if (result.gameplayRun.status === 'completed') gameplayRuns.completed += 1
+            else if (result.gameplayRun.status === 'stopped') gameplayRuns.stopped += 1
+            else if (result.gameplayRun.status === 'failed') gameplayRuns.failed += 1
+          }
+        }
+        continue
+      }
+
+      if (claimedTicks.length > 0) break
+
+      const activeRunEnqueue = await this.enqueueActiveGameplayRunContinuations(
+        now,
+        gameplayRuns,
+        maxTicks - results.length,
+        inspectedActiveRunIds
+      )
+      enqueued += activeRunEnqueue.enqueued
+      deduped += activeRunEnqueue.deduped
+      if (activeRunEnqueue.enqueued === 0 && activeRunEnqueue.deduped === 0) break
+    }
 
     return {
       enabled: true,
-      enqueued: enqueueResult.enqueued,
-      deduped: enqueueResult.deduped,
+      enqueued,
+      deduped,
       processed: results.length,
       completed: results.filter((result) => result.status === 'completed').length,
       skipped: results.filter((result) => result.status === 'skipped').length,
       failed: results.filter((result) => result.status === 'failed').length,
       dead: results.filter((result) => result.status === 'dead').length,
+      gameplayRuns,
       results,
     }
   }
 
+  private async enqueueActiveGameplayRunContinuations(
+    now: Date,
+    counters: LocationRoomWorkerRunCounters,
+    remainingProcessingCapacity: number,
+    inspectedRunIds: Set<string>
+  ): Promise<{ enqueued: number; deduped: number }> {
+    const runs = await this.gameplayRepository.listActiveRunsForWorker(
+      elizaConfig.locationRooms.gameplay.automation.maxActiveRunsPerWorker
+    )
+    let enqueued = 0
+    let deduped = 0
+    const representedRoomIds = new Set<string>()
+
+    for (const run of runs) {
+      if (enqueued >= remainingProcessingCapacity) break
+      const firstInspection = !inspectedRunIds.has(run.id)
+      if (firstInspection && inspectedRunIds.size >= elizaConfig.locationRooms.gameplay.automation.maxActiveRunsPerWorker) break
+      if (firstInspection) {
+        inspectedRunIds.add(run.id)
+        counters.inspected += 1
+      }
+      if (representedRoomIds.has(run.roomId)) continue
+      representedRoomIds.add(run.roomId)
+
+      const completedTurns = await this.repository.countCompletedGameplayTurnsForRun(run.id)
+      let currentRun = completedTurns !== run.completedTurns
+        ? await this.gameplayRepository.updateRunProgress(run.id, {
+            completedTurns,
+            lastAdvancedAt: run.lastAdvancedAt,
+            lastTickId: run.lastTickId,
+          })
+        : run
+
+      if (completedTurns >= currentRun.targetCompletedTurns) {
+        await this.gameplayRepository.markRunCompleted(currentRun.id, {
+          stopReason: 'target_reached',
+          completedTurns,
+          lastTickId: currentRun.lastTickId,
+          lastAdvancedAt: currentRun.lastAdvancedAt ?? now.toISOString(),
+          completedAt: now.toISOString(),
+        })
+        counters.completed += 1
+        continue
+      }
+
+      const room = await this.repository.findRoomById(currentRun.roomId)
+      if (!room) {
+        await this.gameplayRepository.markRunFailed(currentRun.id, {
+          stopReason: 'room_missing',
+          completedTurns,
+          lastError: 'Location room no longer exists',
+          completedAt: now.toISOString(),
+        })
+        counters.failed += 1
+        continue
+      }
+
+      if (!room.tickEnabled) {
+        await this.gameplayRepository.markRunStopped(currentRun.id, {
+          stopReason: 'tick_disabled',
+          completedTurns,
+          completedAt: now.toISOString(),
+        })
+        counters.stopped += 1
+        continue
+      }
+
+      if (!isLocationRoomGameplayEnabledForLocation(room.locationId)) {
+        await this.gameplayRepository.markRunStopped(currentRun.id, {
+          stopReason: 'gameplay_disabled',
+          completedTurns,
+          completedAt: now.toISOString(),
+        })
+        counters.stopped += 1
+        continue
+      }
+
+      try {
+        await ensureLocationRoomGameplayConfigReady(room.locationId, this.gameMasterAgentResolver)
+      } catch (error) {
+        await this.gameplayRepository.markRunStopped(currentRun.id, {
+          stopReason: 'invalid_gameplay_config',
+          completedTurns,
+          lastError: routeSafeError(error),
+          completedAt: now.toISOString(),
+        })
+        counters.stopped += 1
+        continue
+      }
+
+      const openTick = await this.repository.findOpenTickForRoom(room.id)
+      if (openTick) {
+        counters.blocked += 1
+        continue
+      }
+
+      const participants = await this.membership.listEligibleParticipantsByLocation(room.locationId)
+      if (participants.length < MIN_ELIGIBLE_PARTICIPANTS) {
+        await this.gameplayRepository.markRunStopped(currentRun.id, {
+          stopReason: 'insufficient_participants',
+          completedTurns,
+          completedAt: now.toISOString(),
+        })
+        counters.stopped += 1
+        continue
+      }
+
+      const state = await this.gameplayRepository.findStateByRoomId(room.id)
+      if (!hasMinimumPlayableGameplayParticipants(participants, state)) {
+        await this.gameplayRepository.markRunStopped(currentRun.id, {
+          stopReason: 'insufficient_living_gameplay_participants',
+          completedTurns,
+          completedAt: now.toISOString(),
+        })
+        counters.stopped += 1
+        continue
+      }
+
+      try {
+        const result = await this.repository.enqueueTick({
+          room,
+          triggerType: 'scheduled',
+          gameplayRunId: currentRun.id,
+        })
+        if (result.deduped) {
+          deduped += 1
+          counters.blocked += 1
+        } else {
+          enqueued += 1
+          counters.enqueued += 1
+        }
+      } catch (error) {
+        if (!isActiveTickConstraintError(error)) throw error
+        deduped += 1
+        counters.blocked += 1
+      }
+    }
+
+    return { enqueued, deduped }
+  }
+
+  private async synchronizeGameplayRunAfterTick(
+    tick: LocationRoomTick,
+    result: ProcessLocationRoomTickResult,
+    now: Date
+  ): Promise<LocationRoomGameplayRunSummary | undefined> {
+    const runId = tick.gameplayRunId
+    if (!runId) return undefined
+
+    const run = await this.gameplayRepository.findRunById(runId)
+    if (!run || run.status !== 'active') return run ? toGameplayRunSummary(run) : undefined
+
+    if (result.status === 'failed') {
+      return toGameplayRunSummary(run)
+    }
+
+    const completedTurns = await this.repository.countCompletedGameplayTurnsForRun(run.id)
+    const terminalBase = {
+      completedTurns,
+      lastTickId: tick.id,
+      lastAdvancedAt: now.toISOString(),
+      completedAt: now.toISOString(),
+    }
+
+    if (result.status === 'dead') {
+      const failedRun = await this.gameplayRepository.markRunFailed(run.id, {
+        ...terminalBase,
+        stopReason: 'tick_dead',
+        lastError: result.reason ?? 'Location room tick died',
+      })
+      return toGameplayRunSummary(failedRun)
+    }
+
+    const stopReason = result.status === 'skipped'
+      ? result.reason ?? 'tick_skipped'
+      : null
+    if (stopReason && [
+      'insufficient_participants',
+      'insufficient_living_gameplay_participants',
+      'encounter_defeat',
+      'encounter_fled',
+      'encounter_abandoned',
+      'no_active_gameplay_encounter',
+    ].includes(stopReason)) {
+      const stoppedRun = await this.gameplayRepository.markRunStopped(run.id, {
+        ...terminalBase,
+        stopReason,
+      })
+      return toGameplayRunSummary(stoppedRun)
+    }
+
+    let updatedRun = await this.gameplayRepository.updateRunProgress(run.id, {
+      completedTurns,
+      lastTickId: tick.id,
+      lastAdvancedAt: now.toISOString(),
+    })
+
+    if (completedTurns >= updatedRun.targetCompletedTurns) {
+      updatedRun = await this.gameplayRepository.markRunCompleted(run.id, {
+        ...terminalBase,
+        stopReason: 'target_reached',
+      })
+      return toGameplayRunSummary(updatedRun)
+    }
+
+    const turn = await this.gameplayRepository.findTurnByTickId(tick.id)
+    const encounter = turn?.encounterId
+      ? await this.gameplayRepository.findEncounterById(turn.encounterId)
+      : null
+    if (encounter && ['defeat', 'fled', 'abandoned'].includes(encounter.status)) {
+      updatedRun = await this.gameplayRepository.markRunStopped(run.id, {
+        ...terminalBase,
+        stopReason: `encounter_${encounter.status}`,
+      })
+      return toGameplayRunSummary(updatedRun)
+    }
+
+    return toGameplayRunSummary(updatedRun)
+  }
+
   private async processClaimedTick(tick: LocationRoomTick, now: Date): Promise<ProcessLocationRoomTickResult> {
+    let result: ProcessLocationRoomTickResult
     try {
-      return await this.processClaimedTickUnsafe(tick, now)
+      result = await this.processClaimedTickUnsafe(tick, now)
     } catch (error) {
       const storedError = routeSafeError(error)
       const selectedTokenId = tick.selectedTokenId
@@ -606,28 +950,40 @@ export class LocationRoomService {
           await this.narrativeCoordinator.markTickFailed(tick.id, error, { dead: true }).catch(() => null)
         }
         await this.repository.markTickDead(tick.id, storedError).catch(() => null)
-        return {
+        result = {
           tickId: tick.id,
+          gameplayRunId: tick.gameplayRunId,
           status: 'dead',
           selectedTokenId,
           reason: 'attempts_exhausted',
         }
-      }
+      } else {
+        if (shouldMarkGameplayTurn) {
+          await this.gameplayCoordinator.markTickFailed(tick.id, error).catch(() => null)
+        } else if (shouldMarkNarrativeBeat) {
+          await this.narrativeCoordinator.markTickFailed(tick.id, error).catch(() => null)
+        }
 
-      if (shouldMarkGameplayTurn) {
-        await this.gameplayCoordinator.markTickFailed(tick.id, error).catch(() => null)
-      } else if (shouldMarkNarrativeBeat) {
-        await this.narrativeCoordinator.markTickFailed(tick.id, error).catch(() => null)
-      }
-
-      await this.repository.markTickFailed(tick.id, storedError, nextRetryAt(tick.attempts, now)).catch(() => null)
-      return {
-        tickId: tick.id,
-        status: 'failed',
-        selectedTokenId,
-        reason: 'retry_scheduled',
+        await this.repository.markTickFailed(tick.id, storedError, nextRetryAt(tick.attempts, now)).catch(() => null)
+        result = {
+          tickId: tick.id,
+          gameplayRunId: tick.gameplayRunId,
+          status: 'failed',
+          selectedTokenId,
+          reason: 'retry_scheduled',
+        }
       }
     }
+
+    if (tick.gameplayRunId) {
+      result = { ...result, gameplayRunId: tick.gameplayRunId }
+    }
+
+    const gameplayRun = await this.synchronizeGameplayRunAfterTick(tick, result, now).catch((error) => {
+      console.error('[Eliza Location Rooms] gameplay run lifecycle update failed', error)
+      return undefined
+    })
+    return gameplayRun ? { ...result, gameplayRun } : result
   }
 
   private async processClaimedTickUnsafe(tick: LocationRoomTick, now: Date): Promise<ProcessLocationRoomTickResult> {
@@ -665,12 +1021,18 @@ export class LocationRoomService {
     )
 
     if (isLocationRoomGameplayEnabledForLocation(room.locationId)) {
+      const gameplayRun = tick.gameplayRunId
+        ? await this.gameplayRepository.findRunById(tick.gameplayRunId)
+        : null
       const gameplayResult = await this.gameplayCoordinator.processTurn({
         room,
         tick,
         participants,
         recentMessages,
         now,
+        ...(gameplayRun && gameplayRun.status === 'active'
+          ? { gameplayRun: { id: gameplayRun.id, targetCompletedTurns: gameplayRun.targetCompletedTurns } }
+          : {}),
       })
 
       if (gameplayResult.status === 'skipped') {

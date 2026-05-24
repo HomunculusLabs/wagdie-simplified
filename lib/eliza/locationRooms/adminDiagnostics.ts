@@ -25,6 +25,7 @@ import type {
   LocationRoomParticipant,
   LocationRoomTick,
 } from './types'
+import type { GameplayRun } from './gameplay/types'
 
 export type LocationRoomRecommendedNextAction =
   | 'healthy'
@@ -116,8 +117,27 @@ export type LocationRoomHealthDiagnostics = {
     recentTurnCount: number
     latestTurnStatus: string | null
     rewardClaimCount: number
+    activeRun: LocationRoomHealthGameplayRunSummary | null
+    recentRuns: LocationRoomHealthGameplayRunSummary[]
   }
   recommendedNextAction: LocationRoomRecommendedNextAction
+}
+
+type LocationRoomHealthGameplayRunSummary = {
+  id: string
+  status: GameplayRun['status']
+  targetCompletedTurns: number
+  completedTurns: number
+  remainingTurns: number
+  startedByActor: GameplayRun['startedByActor']
+  startedByTokenId: number | null
+  lastTickId: string | null
+  lastAdvancedAt: string | null
+  completedAt: string | null
+  stopReason: string | null
+  lastError: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 type LocationRoomHealthTickSummary = {
@@ -151,11 +171,31 @@ const RECENT_TICK_LIMIT = 10
 const SAFE_ROOM_ERROR = 'Location room operation failed. Check server logs for details.'
 const SAFE_TICK_ERROR = 'Location room tick failed. Check server logs for details.'
 const SAFE_NARRATIVE_ERROR = 'Narrative beat failed. Check server logs for details.'
+const SAFE_GAMEPLAY_ERROR = 'Gameplay operation failed. Check server logs for details.'
 const CROWS_DEN_ALIAS_ID = 'crows_den'
 const CROWS_DEN_CANONICAL_ID = '11'
 
 function sanitizeStoredError(value: string | null | undefined, fallback: string): string | null {
   return value && value.trim() ? fallback : null
+}
+
+function serializeRun(run: GameplayRun): LocationRoomHealthGameplayRunSummary {
+  return {
+    id: run.id,
+    status: run.status,
+    targetCompletedTurns: run.targetCompletedTurns,
+    completedTurns: run.completedTurns,
+    remainingTurns: Math.max(0, run.targetCompletedTurns - run.completedTurns),
+    startedByActor: run.startedByActor,
+    startedByTokenId: run.startedByTokenId,
+    lastTickId: run.lastTickId,
+    lastAdvancedAt: run.lastAdvancedAt,
+    completedAt: run.completedAt,
+    stopReason: run.stopReason,
+    lastError: sanitizeStoredError(run.lastError, SAFE_GAMEPLAY_ERROR),
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  }
 }
 
 function serializeTick(tick: LocationRoomTick): LocationRoomHealthTickSummary {
@@ -369,6 +409,8 @@ export class LocationRoomAdminDiagnosticsService {
           recentTurnCount: 0,
           latestTurnStatus: null,
           rewardClaimCount: 0,
+          activeRun: null,
+          recentRuns: [],
         },
         recommendedNextAction: recommendedNextAction({
           locationExists: false,
@@ -399,7 +441,16 @@ export class LocationRoomAdminDiagnosticsService {
       ? await this.roomRepository.getPublicMessageStats(room.id)
       : { messageCount: 0, latestSequence: null, latestCreatedAt: null }
 
-    const [narrativeState, latestBeats, gameplayState, activeEncounter, gameplayTurns, rewardClaims] = room
+    const [
+      narrativeState,
+      latestBeats,
+      gameplayState,
+      activeEncounter,
+      gameplayTurns,
+      rewardClaims,
+      activeRun,
+      recentRuns,
+    ] = room
       ? await Promise.all([
         config.narrativeEnabled ? this.narrativeRepository.findStateByRoomId(room.id) : Promise.resolve(null),
         config.narrativeEnabled ? this.narrativeRepository.listRecentBeatsByRoomId(room.id, 1) : Promise.resolve([]),
@@ -407,8 +458,10 @@ export class LocationRoomAdminDiagnosticsService {
         gameplayEnabledForLocation ? this.gameplayRepository.findActiveEncounterByRoomId(room.id) : Promise.resolve(null),
         gameplayEnabledForLocation ? this.gameplayRepository.listRecentTurnsByRoomId(room.id, 5) : Promise.resolve([]),
         gameplayEnabledForLocation ? this.gameplayRepository.listRewardClaims({ roomId: room.id, limit: 5 }) : Promise.resolve([]),
+        gameplayEnabledForLocation ? this.gameplayRepository.findActiveRunByRoomId(room.id) : Promise.resolve(null),
+        gameplayEnabledForLocation ? this.gameplayRepository.listRecentRunsByRoomId(room.id, 5) : Promise.resolve([]),
       ])
-      : [null, [], null, null, [], []] as const
+      : [null, [], null, null, [], [], null, []] as const
 
     const latestBeat = latestBeats[0] ?? null
     const diagnostics: LocationRoomHealthDiagnostics = {
@@ -465,6 +518,8 @@ export class LocationRoomAdminDiagnosticsService {
         recentTurnCount: gameplayTurns.length,
         latestTurnStatus: gameplayTurns[0]?.status ?? null,
         rewardClaimCount: rewardClaims.length,
+        activeRun: activeRun ? serializeRun(activeRun) : null,
+        recentRuns: recentRuns.map(serializeRun),
       },
       recommendedNextAction: 'healthy',
     }

@@ -19,13 +19,14 @@ import type {
 const ROOMS_TABLE = 'eliza_location_rooms'
 const MESSAGES_TABLE = 'eliza_location_room_messages'
 const TICKS_TABLE = 'eliza_location_room_ticks'
+const GAMEPLAY_TURNS_TABLE = 'eliza_location_room_gameplay_turns'
 
 const ROOM_COLUMNS =
   'id, location_id, official_room_id, official_world_id, official_user_id, channel_id, tick_enabled, last_tick_at, next_tick_at, tick_count, last_error, created_at, updated_at'
 const MESSAGE_COLUMNS =
   'id, room_id, location_id, tick_id, sequence, visibility, author_kind, token_id, official_agent_id, author_name, content, metadata, created_at'
 const TICK_COLUMNS =
-  'id, room_id, location_id, trigger_type, requested_by_wallet, requested_by_token_id, status, attempts, next_attempt_at, locked_at, locked_by, selected_token_id, started_at, completed_at, last_error, created_at, updated_at'
+  'id, room_id, location_id, gameplay_run_id, trigger_type, requested_by_wallet, requested_by_token_id, status, attempts, next_attempt_at, locked_at, locked_by, selected_token_id, started_at, completed_at, last_error, created_at, updated_at'
 const WORKER_LOCK_TTL_MS = 15 * 60_000
 
 type SupabaseError = { code?: string; message: string }
@@ -81,6 +82,7 @@ type TickRow = {
   id: string
   room_id: string
   location_id: string
+  gameplay_run_id: string | null
   trigger_type: LocationRoomTriggerType
   requested_by_wallet: string | null
   requested_by_token_id: number | null
@@ -171,6 +173,7 @@ function mapTick(row: TickRow): LocationRoomTick {
     id: row.id,
     roomId: row.room_id,
     locationId: row.location_id,
+    gameplayRunId: row.gameplay_run_id,
     triggerType: row.trigger_type,
     requestedByWallet: row.requested_by_wallet,
     requestedByTokenId: row.requested_by_token_id,
@@ -241,7 +244,11 @@ export interface LocationRoomRepository {
     triggerType: LocationRoomTriggerType
     requestedByWallet?: string | null
     requestedByTokenId?: number | null
+    gameplayRunId?: string | null
   }): Promise<{ tick: LocationRoomTick | null; deduped: boolean }>
+  attachTickToGameplayRun(input: { tickId: string; roomId: string; gameplayRunId: string }): Promise<LocationRoomTick | null>
+  countCompletedGameplayTurnsForRun(gameplayRunId: string): Promise<number>
+  findOpenTickForRoom(roomId: string): Promise<LocationRoomTick | null>
   findRecentCompletedOwnerTick(params: { roomId: string; walletAddress: string; since: Date }): Promise<LocationRoomTick | null>
   findOldestProcessableTickForRoom(roomId: string, now: Date): Promise<LocationRoomTick | null>
   findNonStaleProcessingTickForRoom(roomId: string, now: Date): Promise<LocationRoomTick | null>
@@ -351,6 +358,7 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     triggerType: LocationRoomTriggerType
     requestedByWallet?: string | null
     requestedByTokenId?: number | null
+    gameplayRunId?: string | null
   }): Promise<{ tick: LocationRoomTick | null; deduped: boolean }> {
     const { data, error } = (await table(TICKS_TABLE)
       .insert({
@@ -359,6 +367,7 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
         trigger_type: input.triggerType,
         requested_by_wallet: input.requestedByWallet?.trim().toLowerCase() || null,
         requested_by_token_id: input.requestedByTokenId ?? null,
+        gameplay_run_id: input.gameplayRunId ?? null,
         status: 'pending',
       })
       .select(TICK_COLUMNS)
@@ -368,6 +377,44 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     if (error) throw new Error(error.message)
     if (!data) throw new Error('Location room tick insert returned no row')
     return { tick: mapTick(data), deduped: false }
+  }
+
+  async attachTickToGameplayRun(input: { tickId: string; roomId: string; gameplayRunId: string }): Promise<LocationRoomTick | null> {
+    const { data, error } = (await table(TICKS_TABLE)
+      .update({ gameplay_run_id: input.gameplayRunId })
+      .eq('id', input.tickId)
+      .eq('room_id', input.roomId)
+      .is('gameplay_run_id', null)
+      .in('status', ['pending', 'failed'])
+      .select(TICK_COLUMNS)
+      .maybeSingle()) as QueryResult<TickRow>
+
+    if (error && !isNoRowsReturned(error)) throw new Error(error.message)
+    return data ? mapTick(data) : null
+  }
+
+  async countCompletedGameplayTurnsForRun(gameplayRunId: string): Promise<number> {
+    const { error, count } = (await table(GAMEPLAY_TURNS_TABLE)
+      .select('id, eliza_location_room_ticks!inner(status, gameplay_run_id)', { count: 'exact', head: true })
+      .eq('status', 'completed')
+      .eq('eliza_location_room_ticks.status', 'completed')
+      .eq('eliza_location_room_ticks.gameplay_run_id', gameplayRunId)) as QueryResult<null>
+
+    if (error) throw new Error(error.message)
+    return count ?? 0
+  }
+
+  async findOpenTickForRoom(roomId: string): Promise<LocationRoomTick | null> {
+    const { data, error } = (await table(TICKS_TABLE)
+      .select(TICK_COLUMNS)
+      .eq('room_id', roomId)
+      .in('status', ['pending', 'processing', 'failed'])
+      .order('created_at', { ascending: true })
+      .limit(1)) as QueryResult<TickRow[]>
+
+    if (error) throw new Error(error.message)
+    const tick = data?.[0]
+    return tick ? mapTick(tick) : null
   }
 
   async findRecentCompletedOwnerTick(params: { roomId: string; walletAddress: string; since: Date }): Promise<LocationRoomTick | null> {
@@ -511,8 +558,12 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
 
     const claimed: LocationRoomTick[] = []
     for (const row of candidates) {
-      const claimedTick = await this.claimTick(row.id, workerId, now)
-      if (claimedTick) claimed.push(claimedTick)
+      try {
+        const claimedTick = await this.claimTick(row.id, workerId, now)
+        if (claimedTick) claimed.push(claimedTick)
+      } catch (error) {
+        if (!isUniqueViolation(error as SupabaseError)) throw error
+      }
     }
 
     return claimed

@@ -5,7 +5,7 @@
 import { LocationRoomGameplayAdminService } from '@/lib/eliza/locationRooms/gameplay/adminService'
 import type { LocationRoomRepository } from '@/lib/eliza/locationRooms/repository'
 import type { LocationRoomGameplayRepository } from '@/lib/eliza/locationRooms/gameplay/repository'
-import type { GameplayDeathReview, GameplayRewardClaim, GameplayRoomState } from '@/lib/eliza/locationRooms/gameplay/types'
+import type { GameplayDeathReview, GameplayRewardClaim, GameplayRoomState, GameplayRun } from '@/lib/eliza/locationRooms/gameplay/types'
 
 const now = new Date('2026-05-22T12:00:00.000Z')
 
@@ -82,6 +82,29 @@ function claim(overrides: Partial<GameplayRewardClaim> = {}): GameplayRewardClai
   }
 }
 
+function run(overrides: Partial<GameplayRun> = {}): GameplayRun {
+  return {
+    id: 'run-1',
+    roomId: 'room-1',
+    locationId: 'loc-1',
+    status: 'active',
+    targetCompletedTurns: 100,
+    completedTurns: 10,
+    startedByActor: 'admin',
+    startedByWallet: '0xadmin',
+    startedByTokenId: null,
+    lastTickId: 'tick-10',
+    lastAdvancedAt: now.toISOString(),
+    completedAt: null,
+    stopReason: null,
+    lastError: null,
+    metadata: {},
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    ...overrides,
+  }
+}
+
 function state(): GameplayRoomState {
   return {
     id: 'state-1',
@@ -118,6 +141,9 @@ function makeRoomRepository(): jest.Mocked<LocationRoomRepository> {
     ensureRoomForLocation: jest.fn(),
     listDueRooms: jest.fn(),
     enqueueTick: jest.fn(),
+    attachTickToGameplayRun: jest.fn(),
+    countCompletedGameplayTurnsForRun: jest.fn(),
+    findOpenTickForRoom: jest.fn(),
     findRecentCompletedOwnerTick: jest.fn(),
     findOldestProcessableTickForRoom: jest.fn(),
     findNonStaleProcessingTickForRoom: jest.fn(),
@@ -143,6 +169,15 @@ function makeGameplayRepository(
   overrides: Partial<jest.Mocked<LocationRoomGameplayRepository>> = {}
 ): jest.Mocked<LocationRoomGameplayRepository> {
   return {
+    findActiveRunByRoomId: jest.fn(async () => null),
+    findRunById: jest.fn(async () => null),
+    listRecentRunsByRoomId: jest.fn(async () => []),
+    listActiveRunsForWorker: jest.fn(async () => []),
+    createOrReuseActiveRun: jest.fn(),
+    updateRunProgress: jest.fn(),
+    markRunCompleted: jest.fn(),
+    markRunStopped: jest.fn(),
+    markRunFailed: jest.fn(),
     findStateByRoomId: jest.fn(async () => state()),
     ensureStateForRoom: jest.fn(),
     updateState: jest.fn(async (_room, input) => ({ ...state(), ...input } as GameplayRoomState)),
@@ -170,6 +205,66 @@ function makeGameplayRepository(
 }
 
 describe('LocationRoomGameplayAdminService', () => {
+  it('includes active and recent gameplay runs when inspecting a room', async () => {
+    const roomRepository = makeRoomRepository()
+    roomRepository.getLocation.mockResolvedValue({ id: 'loc-1', name: 'The Abyss' })
+    roomRepository.findRoomByLocationId.mockResolvedValue({
+      id: 'room-1',
+      locationId: 'loc-1',
+      officialRoomId: 'official-room-1',
+      officialWorldId: 'official-world-1',
+      officialUserId: 'official-user-1',
+      channelId: 'wagdie-location-loc-1',
+      tickEnabled: true,
+      lastTickAt: null,
+      nextTickAt: null,
+      tickCount: 1,
+      lastError: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    })
+    const gameplayRepository = makeGameplayRepository({
+      findActiveRunByRoomId: jest.fn(async () => run({ id: 'run-active' })),
+      listRecentRunsByRoomId: jest.fn(async () => [
+        run({ id: 'run-active' }),
+        run({ id: 'run-stopped', status: 'stopped', stopReason: 'insufficient_participants' }),
+      ]),
+      findActiveEncounterByRoomId: jest.fn(async () => null),
+      listRecentTurnsByRoomId: jest.fn(async () => []),
+      listRewardClaims: jest.fn(async () => []),
+    })
+    const service = new LocationRoomGameplayAdminService(roomRepository, gameplayRepository)
+
+    const result = await service.inspectRoomGameplay('loc-1', 4)
+
+    expect(gameplayRepository.findActiveRunByRoomId).toHaveBeenCalledWith('room-1')
+    expect(gameplayRepository.listRecentRunsByRoomId).toHaveBeenCalledWith('room-1', 4)
+    expect(result.activeRun).toMatchObject({ id: 'run-active', status: 'active' })
+    expect(result.recentRuns).toEqual([
+      expect.objectContaining({ id: 'run-active' }),
+      expect.objectContaining({ id: 'run-stopped', status: 'stopped', stopReason: 'insufficient_participants' }),
+    ])
+  })
+
+  it('returns empty run summaries when inspecting a location without a room', async () => {
+    const roomRepository = makeRoomRepository()
+    roomRepository.getLocation.mockResolvedValue({ id: 'loc-1', name: 'The Abyss' })
+    roomRepository.findRoomByLocationId.mockResolvedValue(null)
+    const gameplayRepository = makeGameplayRepository()
+    const service = new LocationRoomGameplayAdminService(roomRepository, gameplayRepository)
+
+    const result = await service.inspectRoomGameplay('loc-1', 4)
+
+    expect(gameplayRepository.findActiveRunByRoomId).not.toHaveBeenCalled()
+    expect(result).toMatchObject({
+      room: null,
+      activeRun: null,
+      recentRuns: [],
+      turns: [],
+      rewardClaims: [],
+    })
+  })
+
   it('rejects gameplay death and restores the character to playable state', async () => {
     const gameplayRepository = makeGameplayRepository()
     const service = new LocationRoomGameplayAdminService(makeRoomRepository(), gameplayRepository)

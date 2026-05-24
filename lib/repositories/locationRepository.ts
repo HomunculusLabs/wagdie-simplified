@@ -164,6 +164,7 @@ export class LocationRepository implements ILocationRepository {
       const fetchPromise = supabase
         .from('locations')
         .select('*')
+        .eq('is_active', true)
         .order('name');
 
       const timeoutPromise = new Promise((_, reject) => {

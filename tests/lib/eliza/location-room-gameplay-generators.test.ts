@@ -19,6 +19,7 @@ import {
 } from '@/lib/eliza/locationRooms/gameplay/actionGenerator'
 import {
   buildGameplayOutcomeNarrationPrompt,
+  formatPublicGameplayRollSummary,
   normalizeGameplayEncounterProposalResponse,
   normalizeGameplayOutcomeNarrationResponse,
 } from '@/lib/eliza/locationRooms/gameplay/gameMasterGameplayGenerator'
@@ -147,6 +148,46 @@ describe('location room gameplay generators', () => {
     expect(prompt).toContain('Do not assign HP, death, XP, rewards, dice, or mechanics')
   })
 
+  it('formats backend roll summaries for public chat display', () => {
+    const summary = formatPublicGameplayRollSummary({
+      diceResults: [
+        { formula: 'd20', rolls: [{ sides: 20, value: 14 }], total: 14 },
+      ],
+      encounterStatusAfter: 'active',
+      deaths: [],
+      mechanicalDeltas: {
+        actionRoll: {
+          formula: 'd20',
+          dc: 12,
+          modifier: 5,
+          targetKind: 'monster',
+          roll: { formula: 'd20', rolls: [{ sides: 20, value: 14 }], total: 14 },
+          total: 19,
+          tier: 'success',
+        },
+        actionDamage: { monsterId: 'monster-1', amount: 6 },
+        monsterRetaliation: {
+          monsterId: 'monster-1',
+          tokenId: 7,
+          amount: 0,
+          attackRoll: {
+            formula: 'd20',
+            dc: 16,
+            modifier: 2,
+            targetKind: 'character',
+            roll: { formula: 'd20', rolls: [{ sides: 20, value: 7 }], total: 7 },
+            total: 9,
+            tier: 'failure',
+          },
+          targetAc: 16,
+          hit: false,
+        },
+      },
+    })
+
+    expect(summary).toBe('Rolls: Action d20 [14] = 14 + 5 total 19 vs DC 12 — success; Damage: 6; Retaliation d20 [7] = 7 vs AC 16 — miss')
+  })
+
   it('normalizes untrusted GM encounter proposals without accepting mechanics as authoritative', () => {
     const output = normalizeGameplayEncounterProposalResponse(JSON.stringify({
       title: ' Bell Maw ',
@@ -173,11 +214,18 @@ describe('location room gameplay generators', () => {
     })
   })
 
-  it('rejects malformed autonomous action JSON before mechanics resolve', () => {
-    expect(() => normalizeGameplayActionResponse('{ bad', {
+  it('falls back to a cautious investigate action when autonomous action output is prose', () => {
+    expect(normalizeGameplayActionResponse('I hold the line and study the room.', {
       legalMonsterIds: ['monster-1'],
       legalCharacterTokenIds: [1, 2],
-    })).toThrow('Gameplay action response did not contain a JSON object')
+    })).toMatchObject({
+      action: {
+        actionType: 'investigate',
+        target: null,
+        publicSpeech: 'I hold the line and study the room.',
+        metadata: { fallbackFromNonJsonResponse: true },
+      },
+    })
   })
 
   it('validates generated actions with legal targets and required public speech', () => {

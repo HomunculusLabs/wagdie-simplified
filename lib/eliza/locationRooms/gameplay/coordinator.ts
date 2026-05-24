@@ -1,7 +1,9 @@
 import { elizaConfig } from '@/lib/eliza/config'
 import {
   GAMEPLAY_GAME_MASTER_AUTHOR_NAME,
+  formatPublicGameplayRollSummary,
   officialGameMasterGameplayGenerator,
+  type GameplayMechanicalOutcomeSummary,
   type GameMasterGameplayGenerator,
 } from './gameMasterGameplayGenerator'
 import {
@@ -74,6 +76,10 @@ export type ProcessGameplayLocationRoomTurnInput = {
   participants: LocationRoomParticipant[]
   recentMessages: LocationRoomMessage[]
   now: Date
+  gameplayRun?: {
+    id: string
+    targetCompletedTurns: number
+  }
 }
 
 export type ProcessGameplayLocationRoomTurnResult =
@@ -98,6 +104,27 @@ type SpeakerSelector = (
   participants: LocationRoomParticipant[],
   recentMessages: LocationRoomMessage[]
 ) => LocationRoomParticipant
+
+function appendRollSummaryToNarration(
+  narration: string,
+  summary: GameplayMechanicalOutcomeSummary
+): string {
+  const rollSummary = formatPublicGameplayRollSummary(summary)
+  if (!rollSummary) return narration
+
+  const separator = '\n\n'
+  const maxLength = elizaConfig.locationRooms.narrative.publicNarrationMaxLength
+  const reserved = separator.length + rollSummary.length
+  if (narration.length + reserved <= maxLength) {
+    return `${narration}${separator}${rollSummary}`
+  }
+
+  const narrationBudget = Math.max(0, maxLength - reserved)
+  const trimmedNarration = narration.slice(0, narrationBudget).trim()
+  return trimmedNarration
+    ? `${trimmedNarration}${separator}${rollSummary}`
+    : rollSummary.slice(0, maxLength)
+}
 
 function nowIso(now: Date): string {
   return now.toISOString()
@@ -317,6 +344,9 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
   async processTurn(input: ProcessGameplayLocationRoomTurnInput): Promise<ProcessGameplayLocationRoomTurnResult> {
     const gameMasterAgentId = await this.gameMasterAgentResolver.resolveRuntimeGameMasterAgentId()
     const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room: input.room })
+    const effectiveMaxEncounterRounds = input.gameplayRun
+      ? Math.max(elizaConfig.locationRooms.gameplay.maxEncounterRounds, input.gameplayRun.targetCompletedTurns)
+      : elizaConfig.locationRooms.gameplay.maxEncounterRounds
     let gameplayState = await this.gameplayRepository.ensureStateForRoom({ room: input.room })
     const reconciled = await reconcileCharacters(gameplayState, input.participants, input.now, this.sheetResolver)
     if (reconciled.changed) {
@@ -559,7 +589,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         action,
         encounter,
         characters: filterCharactersToParticipants(gameplayState.characters, input.participants),
-        maxEncounterRounds: elizaConfig.locationRooms.gameplay.maxEncounterRounds,
+        maxEncounterRounds: effectiveMaxEncounterRounds,
         statsEnabled: elizaConfig.locationRooms.gameplay.stats.enabled,
         rng: this.rng,
       })
@@ -664,6 +694,14 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       }
     }
 
+    const mechanicalSummary: GameplayMechanicalOutcomeSummary = {
+      diceResults: mechanics.diceResults,
+      mechanicalDeltas: deltas as unknown as Record<string, unknown>,
+      encounterStatusAfter: deltas.encounterStatusAfter,
+      deaths: deltas.deaths,
+      rewardAssignments: deltas.rewardAssignments,
+    }
+
     const outcome = await this.gameMasterGenerator.generateOutcomeNarration({
       gameMasterAgentId,
       room: input.room,
@@ -677,14 +715,9 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       encounterAfter: encounter,
       turn,
       action,
-      mechanicalSummary: {
-        diceResults: mechanics.diceResults,
-        mechanicalDeltas: deltas as unknown as Record<string, unknown>,
-        encounterStatusAfter: deltas.encounterStatusAfter,
-        deaths: deltas.deaths,
-        rewardAssignments: deltas.rewardAssignments,
-      },
+      mechanicalSummary,
     })
+    const outcomeContent = appendRollSummaryToNarration(outcome.publicNarration, mechanicalSummary)
 
     const actionMessage = await this.repository.appendMessage({
       roomId: input.room.id,
@@ -716,7 +749,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       tokenId: null,
       officialAgentId: outcome.gameMasterAgentId,
       authorName: GAMEPLAY_GAME_MASTER_AUTHOR_NAME,
-      content: outcome.publicNarration,
+      content: outcomeContent,
       visibility: 'public',
       dedupeKey: 'gameplay:gm_outcome',
       metadata: {
@@ -725,6 +758,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         gameplayMessageKind: 'gm_outcome',
         gameplayTurnId: turn.id,
         encounterId: encounter.id,
+        rollSummary: formatPublicGameplayRollSummary(mechanicalSummary),
       },
     })
     messageIds = messageIdsWith(messageIds, outcomeMessage.id)

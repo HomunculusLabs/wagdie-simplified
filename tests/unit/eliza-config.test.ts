@@ -10,6 +10,9 @@ describe('elizaConfig location room settings', () => {
     delete process.env.ELIZA_LOCATION_ROOM_TRANSCRIPT_WINDOW
     delete process.env.ELIZA_LOCATION_ROOM_NARRATIVE_ENABLED
     delete process.env.ELIZA_LOCATION_ROOM_GAME_MASTER_AGENT_ID
+    delete process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_ENCOUNTER_ROUNDS
+    delete process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_TARGET_TURNS
+    delete process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_MAX_ACTIVE_RUNS_PER_WORKER
   })
 
   afterAll(() => {
@@ -28,6 +31,13 @@ describe('elizaConfig location room settings', () => {
         enabled: false,
         gameMasterAgentId: '',
       },
+      gameplay: {
+        maxEncounterRounds: 12,
+        automation: {
+          targetCompletedTurns: 100,
+          maxActiveRunsPerWorker: 10,
+        },
+      },
     })
   })
 
@@ -38,6 +48,9 @@ describe('elizaConfig location room settings', () => {
     process.env.ELIZA_LOCATION_ROOM_TRANSCRIPT_WINDOW = '12'
     process.env.ELIZA_LOCATION_ROOM_NARRATIVE_ENABLED = 'true'
     process.env.ELIZA_LOCATION_ROOM_GAME_MASTER_AGENT_ID = ' gm-agent-1 '
+    process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_ENCOUNTER_ROUNDS = '100'
+    process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_TARGET_TURNS = '150'
+    process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_MAX_ACTIVE_RUNS_PER_WORKER = '7'
 
     const { elizaConfig } = await import('@/lib/eliza/config')
 
@@ -50,6 +63,13 @@ describe('elizaConfig location room settings', () => {
         enabled: true,
         gameMasterAgentId: 'gm-agent-1',
       },
+      gameplay: {
+        maxEncounterRounds: 100,
+        automation: {
+          targetCompletedTurns: 150,
+          maxActiveRunsPerWorker: 7,
+        },
+      },
     })
   })
 
@@ -59,6 +79,9 @@ describe('elizaConfig location room settings', () => {
     process.env.ELIZA_LOCATION_ROOM_MAX_TICKS_PER_RUN = '1.5'
     process.env.ELIZA_LOCATION_ROOM_TRANSCRIPT_WINDOW = '-1'
     process.env.ELIZA_LOCATION_ROOM_NARRATIVE_ENABLED = 'not-a-boolean'
+    process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_ENCOUNTER_ROUNDS = '201'
+    process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_TARGET_TURNS = '0'
+    process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_MAX_ACTIVE_RUNS_PER_WORKER = '1.5'
 
     const { elizaConfig } = await import('@/lib/eliza/config')
 
@@ -70,6 +93,13 @@ describe('elizaConfig location room settings', () => {
       narrative: {
         enabled: false,
         gameMasterAgentId: '',
+      },
+      gameplay: {
+        maxEncounterRounds: 12,
+        automation: {
+          targetCompletedTurns: 100,
+          maxActiveRunsPerWorker: 10,
+        },
       },
     })
   })

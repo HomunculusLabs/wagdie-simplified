@@ -278,9 +278,23 @@ export const elizaConfig = {
       maxEncounterRounds:
         optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_ENCOUNTER_ROUNDS, {
           min: 1,
-          max: 50,
+          max: 200,
           integer: true,
         }) ?? 12,
+      automation: {
+        targetCompletedTurns:
+          optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_TARGET_TURNS, {
+            min: 1,
+            max: 10000,
+            integer: true,
+          }) ?? 100,
+        maxActiveRunsPerWorker:
+          optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_MAX_ACTIVE_RUNS_PER_WORKER, {
+            min: 1,
+            max: 100,
+            integer: true,
+          }) ?? 10,
+      },
       actionIntentMaxLength:
         optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_ACTION_INTENT_MAX_LENGTH, {
           min: 1,

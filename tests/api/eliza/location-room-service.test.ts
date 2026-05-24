@@ -20,12 +20,7 @@ jest.mock('@/lib/eliza/locationRooms/officialTurnGenerator', () => ({
 
 jest.mock('@/lib/eliza/gameMasterAgent/service', () => ({
   gameMasterAgentService: {
-    resolveRuntimeGameMasterAgentId: jest.fn(async () => {
-      const { elizaConfig } = jest.requireActual('@/lib/eliza/config')
-      const id = elizaConfig.locationRooms.narrative.gameMasterAgentId.trim()
-      if (!id) throw new Error('Missing GM agent')
-      return id
-    }),
+    resolveRuntimeGameMasterAgentId: jest.fn(async () => 'gm-agent-1'),
   },
 }))
 
@@ -43,6 +38,7 @@ import type { OfficialLocationRoomTurnGenerator } from '@/lib/eliza/locationRoom
 import type { LocationRoomNarrativeCoordinator } from '@/lib/eliza/locationRooms/narrativeCoordinator'
 import type { LocationRoomGameplayCoordinator } from '@/lib/eliza/locationRooms/gameplay/coordinator'
 import type { LocationRoomGameplayRepository } from '@/lib/eliza/locationRooms/gameplay/repository'
+import type { GameplayRun } from '@/lib/eliza/locationRooms/gameplay/types'
 
 const now = '2026-05-11T12:00:00.000Z'
 
@@ -101,6 +97,7 @@ function tick(overrides: Partial<LocationRoomTick> = {}): LocationRoomTick {
     id: 'tick-1',
     roomId: 'room-1',
     locationId: 'loc-1',
+    gameplayRunId: null,
     triggerType: 'scheduled',
     requestedByWallet: null,
     requestedByTokenId: null,
@@ -113,6 +110,29 @@ function tick(overrides: Partial<LocationRoomTick> = {}): LocationRoomTick {
     startedAt: now,
     completedAt: null,
     lastError: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  }
+}
+
+function gameplayRun(overrides: Partial<GameplayRun> = {}): GameplayRun {
+  return {
+    id: 'run-1',
+    roomId: 'room-1',
+    locationId: 'loc-1',
+    status: 'active',
+    targetCompletedTurns: 100,
+    completedTurns: 0,
+    startedByActor: 'admin',
+    startedByWallet: '0xadmin',
+    startedByTokenId: null,
+    lastTickId: null,
+    lastAdvancedAt: null,
+    completedAt: null,
+    stopReason: null,
+    lastError: null,
+    metadata: {},
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -141,6 +161,9 @@ function makeRepository(overrides: Partial<jest.Mocked<LocationRoomRepository>> 
     ensureRoomForLocation: jest.fn(async () => baseRoom),
     listDueRooms: jest.fn(async () => [baseRoom]),
     enqueueTick: jest.fn(async () => ({ tick: baseTick, deduped: false })),
+    attachTickToGameplayRun: jest.fn(async () => baseTick),
+    countCompletedGameplayTurnsForRun: jest.fn(async () => 0),
+    findOpenTickForRoom: jest.fn(async () => null),
     findRecentCompletedOwnerTick: jest.fn(async () => null),
     findOldestProcessableTickForRoom: jest.fn(async () => baseTick),
     findNonStaleProcessingTickForRoom: jest.fn(async () => null),
@@ -175,6 +198,15 @@ function makeGameplayRepository(
   overrides: Partial<jest.Mocked<LocationRoomGameplayRepository>> = {}
 ): jest.Mocked<LocationRoomGameplayRepository> {
   return {
+    findActiveRunByRoomId: jest.fn(async () => null),
+    findRunById: jest.fn(async () => null),
+    listRecentRunsByRoomId: jest.fn(async () => []),
+    listActiveRunsForWorker: jest.fn(async () => []),
+    createOrReuseActiveRun: jest.fn(async () => ({ run: gameplayRun(), reused: false })),
+    updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
+    markRunCompleted: jest.fn(async (_runId, input) => gameplayRun({ status: 'completed', completedTurns: input.completedTurns ?? 100, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null, completedAt: input.completedAt ?? now, stopReason: input.stopReason })),
+    markRunStopped: jest.fn(async (_runId, input) => gameplayRun({ status: 'stopped', completedTurns: input.completedTurns ?? 0, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null, completedAt: input.completedAt ?? now, stopReason: input.stopReason })),
+    markRunFailed: jest.fn(async (_runId, input) => gameplayRun({ status: 'failed', completedTurns: input.completedTurns ?? 0, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null, completedAt: input.completedAt ?? now, stopReason: input.stopReason, lastError: input.lastError ?? null })),
     findStateByRoomId: jest.fn(async () => null),
     ensureStateForRoom: jest.fn(),
     updateState: jest.fn(),
@@ -209,8 +241,9 @@ describe('location room domain service', () => {
   const originalGameMasterAgentId = elizaConfig.locationRooms.narrative.gameMasterAgentId
   const originalGameplayEnabled = elizaConfig.locationRooms.gameplay.enabled
   const originalGameplayAllowlist = [...elizaConfig.locationRooms.gameplay.locationAllowlist]
+  const originalMaxTicksPerRun = elizaConfig.locationRooms.maxTicksPerRun
   const mutableElizaConfig = elizaConfig as { mode: typeof elizaConfig.mode }
-  const mutableLocationRoomsConfig = elizaConfig.locationRooms as { enabled: boolean }
+  const mutableLocationRoomsConfig = elizaConfig.locationRooms as { enabled: boolean; maxTicksPerRun: number }
   const mutableOfficialConfig = elizaConfig.official as { baseUrl: string }
   const mutableNarrativeConfig = elizaConfig.locationRooms.narrative as {
     enabled: boolean
@@ -225,6 +258,7 @@ describe('location room domain service', () => {
     jest.clearAllMocks()
     mutableElizaConfig.mode = originalMode
     mutableLocationRoomsConfig.enabled = true
+    mutableLocationRoomsConfig.maxTicksPerRun = originalMaxTicksPerRun
     mutableOfficialConfig.baseUrl = 'https://elizaos.example'
     mutableNarrativeConfig.enabled = false
     mutableNarrativeConfig.gameMasterAgentId = ''
@@ -235,6 +269,7 @@ describe('location room domain service', () => {
   afterAll(() => {
     mutableElizaConfig.mode = originalMode
     mutableLocationRoomsConfig.enabled = originalEnabled
+    mutableLocationRoomsConfig.maxTicksPerRun = originalMaxTicksPerRun
     mutableOfficialConfig.baseUrl = originalOfficialBaseUrl
     mutableNarrativeConfig.enabled = originalNarrativeEnabled
     mutableNarrativeConfig.gameMasterAgentId = originalGameMasterAgentId
@@ -588,6 +623,43 @@ describe('location room domain service', () => {
     expect(turnGenerator.generateTurn).toHaveBeenCalled()
   })
 
+  it('manual enqueue-and-process claims a newly enqueued tick at its DB due timestamp when DB time is ahead', async () => {
+    const dbDueAt = new Date(new Date(now).getTime() + 250).toISOString()
+    const claimedTick = tick({ id: 'tick-new', status: 'processing', attempts: 1 })
+    const repository = makeRepository({
+      enqueueTick: jest.fn(async () => ({
+        tick: tick({
+          id: 'tick-new',
+          status: 'pending',
+          attempts: 0,
+          nextAttemptAt: dbDueAt,
+          lockedAt: null,
+          lockedBy: null,
+          startedAt: null,
+        }),
+        deduped: false,
+      })),
+      claimTick: jest.fn(async () => claimedTick),
+    })
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({ officialAgentId: 'agent-1', content: 'Manual room stirs.' })),
+    }
+    const service = new LocationRoomService(repository, makeMembership(), turnGenerator)
+
+    const result = await service.requestTickAndProcess('loc-1', {
+      actor: 'admin',
+      walletAddress: '0xAdmin',
+      now: new Date(now),
+    })
+
+    expect(result.processing).toMatchObject({ attempted: true, status: 'completed', tickId: 'tick-new' })
+    expect(repository.claimTick).toHaveBeenCalledWith(
+      'tick-new',
+      expect.stringMatching(/^location-room-manual-/),
+      new Date(dbDueAt)
+    )
+  })
+
   it('manual enqueue-and-process processes the oldest due room tick when enqueue dedupes', async () => {
     const pendingTick = tick({ id: 'tick-existing', status: 'pending', attempts: 0, lockedAt: null, lockedBy: null, startedAt: null })
     const repository = makeRepository({
@@ -733,7 +805,8 @@ describe('location room domain service', () => {
     mutableNarrativeConfig.enabled = true
     mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
     const repository = makeRepository()
-    const service = new LocationRoomService(repository, makeMembership(), { generateTurn: jest.fn() })
+    const gameplayRepository = makeGameplayRepository()
+    const service = new LocationRoomService(repository, makeMembership(), { generateTurn: jest.fn() }, undefined, undefined, undefined, gameplayRepository)
 
     const result = await service.requestTick('loc-1', {
       actor: 'admin',
@@ -741,15 +814,176 @@ describe('location room domain service', () => {
       now: new Date(now),
     })
 
-    expect(result).toMatchObject({ triggerType: 'admin', deduped: false })
-    expect(repository.enqueueTick).toHaveBeenCalled()
+    expect(result).toMatchObject({
+      triggerType: 'admin',
+      deduped: false,
+      gameplayRun: {
+        id: 'run-1',
+        status: 'active',
+        targetCompletedTurns: 100,
+        completedTurns: 0,
+        remainingTurns: 100,
+        reused: false,
+      },
+    })
+    expect(gameplayRepository.createOrReuseActiveRun).toHaveBeenCalledWith(expect.objectContaining({
+      room: expect.objectContaining({ id: 'room-1' }),
+      targetCompletedTurns: 100,
+      startedByActor: 'admin',
+      startedByWallet: '0xadmin',
+      startedByTokenId: null,
+    }))
+    expect(repository.enqueueTick).toHaveBeenCalledWith(expect.objectContaining({
+      gameplayRunId: 'run-1',
+    }))
+  })
+
+  it('reuses the active run on repeated manual gameplay initiation', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    const repository = makeRepository()
+    const gameplayRepository = makeGameplayRepository({
+      createOrReuseActiveRun: jest.fn()
+        .mockResolvedValueOnce({ run: gameplayRun({ id: 'run-1', completedTurns: 0 }), reused: false })
+        .mockResolvedValueOnce({ run: gameplayRun({ id: 'run-1', completedTurns: 1 }), reused: true }),
+    })
+    const service = new LocationRoomService(repository, makeMembership(), { generateTurn: jest.fn() }, undefined, undefined, undefined, gameplayRepository)
+
+    const first = await service.requestTick('loc-1', {
+      actor: 'admin',
+      walletAddress: '0xAdmin',
+      now: new Date(now),
+    })
+    const second = await service.requestTick('loc-1', {
+      actor: 'admin',
+      walletAddress: '0xAdmin',
+      now: new Date(now),
+    })
+
+    expect(gameplayRepository.createOrReuseActiveRun).toHaveBeenCalledTimes(2)
+    expect(first.gameplayRun).toMatchObject({ id: 'run-1', reused: false, completedTurns: 0 })
+    expect(second.gameplayRun).toMatchObject({ id: 'run-1', reused: true, completedTurns: 1, remainingTurns: 99 })
+  })
+
+  it('associates due scheduled gameplay ticks with an active run', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    const repository = makeRepository()
+    const gameplayRepository = makeGameplayRepository({
+      findActiveRunByRoomId: jest.fn(async () => gameplayRun({ id: 'run-active' })),
+    })
+    const service = new LocationRoomService(repository, makeMembership(), { generateTurn: jest.fn() }, undefined, undefined, undefined, gameplayRepository)
+
+    await service.enqueueDueScheduledTicks(new Date(now))
+
+    expect(repository.enqueueTick).toHaveBeenCalledWith(expect.objectContaining({
+      triggerType: 'scheduled',
+      gameplayRunId: 'run-active',
+    }))
+  })
+
+  it('attaches a deduped manual gameplay initiation to a safe existing tick', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    const existingTick = tick({ id: 'tick-existing', status: 'pending', gameplayRunId: null })
+    const attachedTick = tick({ id: 'tick-existing', status: 'pending', gameplayRunId: 'run-1' })
+    const repository = makeRepository({
+      enqueueTick: jest.fn(async () => ({ tick: null, deduped: true })),
+      findOpenTickForRoom: jest.fn(async () => existingTick),
+      attachTickToGameplayRun: jest.fn(async () => attachedTick),
+    })
+    const gameplayRepository = makeGameplayRepository({
+      createOrReuseActiveRun: jest.fn(async () => ({ run: gameplayRun({ id: 'run-1', completedTurns: 3 }), reused: true })),
+    })
+    const service = new LocationRoomService(repository, makeMembership(), { generateTurn: jest.fn() }, undefined, undefined, undefined, gameplayRepository)
+
+    const result = await service.requestTick('loc-1', {
+      actor: 'admin',
+      walletAddress: '0xAdmin',
+      now: new Date(now),
+    })
+
+    expect(repository.attachTickToGameplayRun).toHaveBeenCalledWith({
+      tickId: 'tick-existing',
+      roomId: 'room-1',
+      gameplayRunId: 'run-1',
+    })
+    expect(result).toMatchObject({
+      deduped: true,
+      tickId: 'tick-existing',
+      gameplayRun: { id: 'run-1', reused: true, completedTurns: 3, remainingTurns: 97 },
+    })
+  })
+
+  it('does not fast-forward retry backoff when attaching a deduped failed tick to a run', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    const retryAt = new Date(new Date(now).getTime() + 60_000).toISOString()
+    const failedTick = tick({ id: 'tick-failed', status: 'failed', gameplayRunId: null, nextAttemptAt: retryAt })
+    const attachedTick = tick({ id: 'tick-failed', status: 'failed', gameplayRunId: 'run-1', nextAttemptAt: retryAt })
+    const repository = makeRepository({
+      enqueueTick: jest.fn(async () => ({ tick: null, deduped: true })),
+      findOpenTickForRoom: jest.fn(async () => failedTick),
+      attachTickToGameplayRun: jest.fn(async () => attachedTick),
+      claimTick: jest.fn(async () => null),
+      findNonStaleProcessingTickForRoom: jest.fn(async () => null),
+    })
+    const service = new LocationRoomService(
+      repository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      undefined,
+      makeGameplayRepository()
+    )
+
+    const result = await service.requestTickAndProcess('loc-1', {
+      actor: 'admin',
+      walletAddress: '0xAdmin',
+      now: new Date(now),
+    })
+
+    expect(repository.claimTick).toHaveBeenCalledWith(
+      'tick-failed',
+      expect.stringMatching(/^location-room-manual-/),
+      new Date(now)
+    )
+    expect(result.processing).toMatchObject({
+      attempted: false,
+      status: 'not_claimable',
+      tickId: 'tick-failed',
+    })
   })
 
   it('requires a game-master agent id only when narrative mode is enabled', async () => {
     mutableNarrativeConfig.enabled = true
     mutableNarrativeConfig.gameMasterAgentId = ''
     const repository = makeRepository()
-    const service = new LocationRoomService(repository, makeMembership(), { generateTurn: jest.fn() })
+    const failingGameMasterResolver = {
+      resolveRuntimeGameMasterAgentId: jest.fn(async () => {
+        throw new Error('Missing GM agent')
+      }),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      undefined,
+      failingGameMasterResolver
+    )
 
     await expect(service.requestTick('loc-1', {
       actor: 'admin',
@@ -757,6 +991,7 @@ describe('location room domain service', () => {
       now: new Date(now),
     })).rejects.toMatchObject({ name: 'LocationRoomNarrativeConfigError' })
 
+    expect(failingGameMasterResolver.resolveRuntimeGameMasterAgentId).toHaveBeenCalled()
     expect(repository.getLocation).not.toHaveBeenCalled()
     expect(repository.enqueueTick).not.toHaveBeenCalled()
   })
@@ -817,7 +1052,8 @@ describe('location room domain service', () => {
       { generateTurn: jest.fn() },
       narrativeCoordinator,
       undefined,
-      gameplayCoordinator
+      gameplayCoordinator,
+      makeGameplayRepository()
     )
 
     const result = await service.runScheduledWorker(new Date(now))
@@ -832,6 +1068,359 @@ describe('location room domain service', () => {
     }))
     expect(narrativeCoordinator.processTurn).not.toHaveBeenCalled()
     expect(repository.markTickCompleted).toHaveBeenCalledWith('tick-1')
+  })
+
+  it('passes active run context into gameplay turn processing', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const runTick = tick({ id: 'tick-run', gameplayRunId: 'run-1' })
+    const repository = makeRepository({
+      claimDueTicks: jest.fn(async () => [runTick]),
+      countCompletedGameplayTurnsForRun: jest.fn(async () => 1),
+    })
+    const gameplayRepository = makeGameplayRepository({
+      findRunById: jest.fn(async () => gameplayRun({ id: 'run-1', targetCompletedTurns: 100, completedTurns: 0 })),
+      findTurnByTickId: jest.fn(async () => null),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        status: 'completed',
+        selectedTokenId: 2,
+        messageId: 'msg-gameplay-action',
+        messageIds: ['msg-gameplay-action'],
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership([participant(1, 'Ash'), participant(2, 'Bone')]),
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository
+    )
+
+    await service.runScheduledWorker(new Date(now))
+
+    expect(gameplayCoordinator.processTurn).toHaveBeenCalledWith(expect.objectContaining({
+      gameplayRun: { id: 'run-1', targetCompletedTurns: 100 },
+    }))
+    expect(gameplayRepository.updateRunProgress).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      completedTurns: 1,
+      lastTickId: 'tick-run',
+    }))
+  })
+
+  it('enqueues and drains active gameplay runs within the worker budget', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const run = gameplayRun({ id: 'run-1', targetCompletedTurns: 1, completedTurns: 0 })
+    const continuationTick = tick({ id: 'tick-run-1', gameplayRunId: 'run-1', status: 'processing' })
+    const repository = makeRepository({
+      listDueRooms: jest.fn(async () => []),
+      enqueueTick: jest.fn(async (_input) => ({ tick: tick({ id: 'tick-run-1', gameplayRunId: 'run-1', status: 'pending' }), deduped: false })),
+      claimDueTicks: jest.fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([continuationTick])
+        .mockResolvedValueOnce([]),
+      countCompletedGameplayTurnsForRun: jest.fn()
+        .mockResolvedValueOnce(0)
+        .mockResolvedValueOnce(1),
+    })
+    const membership = makeMembership()
+    membership.listEligibleLocationIds.mockResolvedValueOnce([])
+    const gameplayRepository = makeGameplayRepository({
+      listActiveRunsForWorker: jest.fn()
+        .mockResolvedValueOnce([run])
+        .mockResolvedValueOnce([]),
+      findRunById: jest.fn(async () => run),
+      updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...run, completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
+      findTurnByTickId: jest.fn(async () => null),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        status: 'completed',
+        selectedTokenId: 1,
+        messageId: 'msg-gameplay-action',
+        messageIds: ['msg-gameplay-action'],
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      membership,
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({
+      enqueued: 1,
+      processed: 1,
+      completed: 1,
+      gameplayRuns: { inspected: 1, enqueued: 1, completed: 1 },
+    })
+    expect(repository.enqueueTick).toHaveBeenCalledWith(expect.objectContaining({
+      triggerType: 'scheduled',
+      gameplayRunId: 'run-1',
+    }))
+    expect(gameplayRepository.markRunCompleted).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      stopReason: 'target_reached',
+      completedTurns: 1,
+      lastTickId: 'tick-run-1',
+    }))
+  })
+
+  it('updates run progress from durable counts without double-counting an idempotent completed turn', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const runTick = tick({ id: 'tick-run', gameplayRunId: 'run-1' })
+    const repository = makeRepository({
+      claimDueTicks: jest.fn(async () => [runTick]),
+      countCompletedGameplayTurnsForRun: jest.fn(async () => 1),
+    })
+    const activeRun = gameplayRun({ id: 'run-1', targetCompletedTurns: 100, completedTurns: 1 })
+    const gameplayRepository = makeGameplayRepository({
+      findRunById: jest.fn(async () => activeRun),
+      updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...activeRun, completedTurns: input.completedTurns })),
+      findTurnByTickId: jest.fn(async () => ({
+        id: 'turn-1',
+        roomId: 'room-1',
+        locationId: 'loc-1',
+        tickId: 'tick-run',
+        encounterId: null,
+        status: 'completed',
+        selectedTokenId: 1,
+        action: {},
+        diceResults: [],
+        mechanicalDeltas: {},
+        publicMessageIds: [],
+        outcomeSummary: null,
+        metadata: {},
+        lastError: null,
+        createdAt: now,
+        updatedAt: now,
+        completedAt: now,
+      })),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        status: 'completed',
+        selectedTokenId: 1,
+        messageId: 'msg-gameplay-action',
+        messageIds: ['msg-gameplay-action'],
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result.results[0].gameplayRun).toMatchObject({ id: 'run-1', completedTurns: 1, remainingTurns: 99 })
+    expect(repository.countCompletedGameplayTurnsForRun).toHaveBeenCalledWith('run-1')
+    expect(gameplayRepository.updateRunProgress).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      completedTurns: 1,
+      lastTickId: 'tick-run',
+    }))
+    expect(gameplayRepository.markRunCompleted).not.toHaveBeenCalled()
+  })
+
+  it('drains multiple active-run ticks only within the configured worker budget', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableLocationRoomsConfig.maxTicksPerRun = 2
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const run = gameplayRun({ id: 'run-1', targetCompletedTurns: 10, completedTurns: 0 })
+    const repository = makeRepository({
+      listDueRooms: jest.fn(async () => []),
+      enqueueTick: jest.fn(async () => ({ tick: tick({ status: 'pending', gameplayRunId: 'run-1' }), deduped: false })),
+      claimDueTicks: jest.fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([tick({ id: 'tick-run-1', gameplayRunId: 'run-1' })])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([tick({ id: 'tick-run-2', gameplayRunId: 'run-1' })]),
+      countCompletedGameplayTurnsForRun: jest.fn()
+        .mockResolvedValueOnce(0)
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(2),
+    })
+    const membership = makeMembership()
+    membership.listEligibleLocationIds.mockResolvedValueOnce([])
+    const gameplayRepository = makeGameplayRepository({
+      listActiveRunsForWorker: jest.fn(async () => [run]),
+      findRunById: jest.fn(async () => run),
+      updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...run, completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
+      findTurnByTickId: jest.fn(async () => null),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        status: 'completed',
+        selectedTokenId: 1,
+        messageId: 'msg-gameplay-action',
+        messageIds: ['msg-gameplay-action'],
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      membership,
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ enqueued: 2, processed: 2, completed: 2 })
+    expect(gameplayCoordinator.processTurn).toHaveBeenCalledTimes(2)
+    expect(repository.enqueueTick).toHaveBeenCalledTimes(2)
+    expect(repository.claimDueTicks).toHaveBeenLastCalledWith(1, expect.stringMatching(/^location-room-worker-/), new Date(now))
+  })
+
+  it('keeps a run active when its tick fails with retry remaining', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const runTick = tick({ id: 'tick-run-failed', gameplayRunId: 'run-1', attempts: 1 })
+    const repository = makeRepository({
+      claimDueTicks: jest.fn(async () => [runTick]),
+    })
+    const gameplayRepository = makeGameplayRepository({
+      findRunById: jest.fn(async () => gameplayRun({ id: 'run-1', completedTurns: 0 })),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => {
+        throw new Error('temporary gameplay outage')
+      }),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, failed: 1, dead: 0 })
+    expect(result.results[0].gameplayRun).toMatchObject({ id: 'run-1', status: 'active', completedTurns: 0 })
+    expect(repository.markTickFailed).toHaveBeenCalledWith('tick-run-failed', 'temporary gameplay outage', expect.any(String))
+    expect(gameplayRepository.markRunFailed).not.toHaveBeenCalled()
+    expect(gameplayRepository.markRunStopped).not.toHaveBeenCalled()
+    expect(repository.enqueueTick).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails a run when its tick exhausts retries and dies', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const runTick = tick({ id: 'tick-run-dead', gameplayRunId: 'run-1', attempts: 3 })
+    const repository = makeRepository({
+      claimDueTicks: jest.fn(async () => [runTick]),
+      countCompletedGameplayTurnsForRun: jest.fn(async () => 4),
+    })
+    const gameplayRepository = makeGameplayRepository({
+      findRunById: jest.fn(async () => gameplayRun({ id: 'run-1', completedTurns: 4 })),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => {
+        throw new Error('permanent gameplay outage')
+      }),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, failed: 0, dead: 1 })
+    expect(repository.markTickDead).toHaveBeenCalledWith('tick-run-dead', 'permanent gameplay outage')
+    expect(gameplayCoordinator.markTickFailed).toHaveBeenCalledWith('tick-run-dead', expect.any(Error), { dead: true })
+    expect(gameplayRepository.markRunFailed).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      stopReason: 'tick_dead',
+      completedTurns: 4,
+      lastTickId: 'tick-run-dead',
+    }))
+    expect(result.results[0].gameplayRun).toMatchObject({ id: 'run-1', status: 'failed', stopReason: 'tick_dead' })
+  })
+
+  it('stops an active run when continuation eligibility drops below two participants', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const run = gameplayRun({ id: 'run-1', targetCompletedTurns: 100, completedTurns: 5 })
+    const repository = makeRepository({
+      listDueRooms: jest.fn(async () => []),
+      claimDueTicks: jest.fn(async () => []),
+      countCompletedGameplayTurnsForRun: jest.fn(async () => 5),
+    })
+    const membership = makeMembership([participant(1, 'Ash')])
+    membership.listEligibleLocationIds.mockResolvedValueOnce([])
+    const gameplayRepository = makeGameplayRepository({
+      listActiveRunsForWorker: jest.fn(async () => [run]),
+    })
+    const service = new LocationRoomService(
+      repository,
+      membership,
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      undefined,
+      gameplayRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 0, gameplayRuns: { inspected: 1, stopped: 1 } })
+    expect(gameplayRepository.markRunStopped).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      stopReason: 'insufficient_participants',
+      completedTurns: 5,
+    }))
+    expect(repository.enqueueTick).not.toHaveBeenCalled()
   })
 
   it('marks gameplay turns failed instead of narrative beats when gameplay generation fails', async () => {
@@ -857,7 +1446,8 @@ describe('location room domain service', () => {
       { generateTurn: jest.fn() },
       narrativeCoordinator,
       undefined,
-      gameplayCoordinator
+      gameplayCoordinator,
+      makeGameplayRepository()
     )
 
     const result = await service.runScheduledWorker(new Date(now))

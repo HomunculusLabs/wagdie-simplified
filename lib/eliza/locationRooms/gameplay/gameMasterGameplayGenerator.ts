@@ -137,6 +137,81 @@ function formatNarrativeState(state: LocationRoomNarrativeState): string {
   ].join('\n')
 }
 
+function formatDiceRollResult(result: GameplayDiceRollResult): string {
+  const values = result.rolls.map((roll) => roll.value).join(' + ')
+  return `${result.formula} [${values}] = ${result.total}`
+}
+
+function formatSignedModifier(value: unknown): string | null {
+  const modifier = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(modifier) || modifier === 0) return null
+  return modifier > 0 ? `+ ${modifier}` : `- ${Math.abs(modifier)}`
+}
+
+function formatSuccessTier(value: unknown): string {
+  return String(value ?? 'unknown').replace(/_/g, ' ')
+}
+
+export function formatPublicGameplayRollSummary(summary: GameplayMechanicalOutcomeSummary): string | null {
+  const deltas = summary.mechanicalDeltas as Record<string, unknown>
+  const actionRoll = deltas.actionRoll as Record<string, unknown> | undefined
+  const actionDamage = deltas.actionDamage as Record<string, unknown> | null | undefined
+  const healing = deltas.healing as Record<string, unknown> | null | undefined
+  const retaliation = deltas.monsterRetaliation as Record<string, unknown> | null | undefined
+  const parts: string[] = []
+
+  if (actionRoll) {
+    const roll = actionRoll.roll as GameplayDiceRollResult | undefined
+    const modifier = formatSignedModifier(actionRoll.modifier)
+    const total = typeof actionRoll.total === 'number' ? actionRoll.total : Number(actionRoll.total)
+    const dc = typeof actionRoll.dc === 'number' ? actionRoll.dc : Number(actionRoll.dc)
+    const rollText = roll ? formatDiceRollResult(roll) : null
+    const totalText = Number.isFinite(total) ? `total ${total}` : null
+    const dcText = Number.isFinite(dc) ? `vs DC ${dc}` : null
+    const tierText = formatSuccessTier(actionRoll.tier)
+    parts.push([
+      'Action',
+      rollText,
+      modifier,
+      totalText,
+      dcText,
+      `— ${tierText}`,
+    ].filter(Boolean).join(' '))
+  }
+
+  if (actionDamage && typeof actionDamage.amount === 'number' && actionDamage.amount > 0) {
+    parts.push(`Damage: ${actionDamage.amount}`)
+  }
+
+  if (healing && typeof healing.amount === 'number' && healing.amount > 0) {
+    parts.push(`Healing: ${healing.amount}`)
+  }
+
+  if (retaliation) {
+    const attackRoll = retaliation.attackRoll as Record<string, unknown> | null | undefined
+    const attackDice = attackRoll?.roll as GameplayDiceRollResult | undefined
+    const targetAc = typeof retaliation.targetAc === 'number' ? retaliation.targetAc : Number(retaliation.targetAc)
+    const hit = typeof retaliation.hit === 'boolean' ? (retaliation.hit ? 'hit' : 'miss') : null
+    const amount = typeof retaliation.amount === 'number' ? retaliation.amount : Number(retaliation.amount)
+    const attackText = attackDice ? formatDiceRollResult(attackDice) : null
+    const acText = Number.isFinite(targetAc) ? `vs AC ${targetAc}` : null
+    const amountText = Number.isFinite(amount) && amount > 0 ? `damage ${amount}` : null
+    parts.push([
+      'Retaliation',
+      attackText,
+      acText,
+      hit ? `— ${hit}` : null,
+      amountText,
+    ].filter(Boolean).join(' '))
+  }
+
+  if (parts.length === 0 && summary.diceResults.length > 0) {
+    parts.push(...summary.diceResults.map((roll, index) => `Roll ${index + 1}: ${formatDiceRollResult(roll)}`))
+  }
+
+  return parts.length > 0 ? `Rolls: ${parts.join('; ')}` : null
+}
+
 function sanitizedMechanicalSummary(summary: GameplayMechanicalOutcomeSummary): Record<string, unknown> {
   const deltas = summary.mechanicalDeltas as Record<string, unknown>
   const actionRoll = deltas.actionRoll as Record<string, unknown> | undefined
@@ -375,6 +450,36 @@ export function buildGameplayOutcomeNarrationPrompt(input: GenerateGameplayOutco
   ].join('\n')
 }
 
+function buildFallbackOutcomeNarration(input: GenerateGameplayOutcomeNarrationInput, gameMasterAgentId: string): GameplayOutcomeNarrationOutput {
+  const actorName = input.participants.find((participant) => participant.tokenId === input.turn.selectedTokenId)?.name
+    ?? input.action.publicSpeech.split(' ')[0]
+    ?? 'The character'
+  const actionLabel = input.action.actionType.replace(/_/g, ' ')
+  const encounterTitle = input.encounterBefore.publicTitle ?? 'the encounter'
+  const tier = typeof input.mechanicalSummary.mechanicalDeltas?.actionRoll === 'object' && input.mechanicalSummary.mechanicalDeltas.actionRoll
+    ? String((input.mechanicalSummary.mechanicalDeltas.actionRoll as Record<string, unknown>).tier ?? '')
+    : ''
+  const outcomePhrase = tier === 'success' || tier === 'critical_success'
+    ? 'finds a useful opening'
+    : tier === 'failure' || tier === 'critical_failure'
+      ? 'is forced onto the defensive'
+      : 'keeps the pressure steady'
+  const publicNarration = `${actorName} attempts to ${actionLabel} as ${encounterTitle} presses in, and ${outcomePhrase}. The room shifts, but the encounter is not over yet.`
+
+  return {
+    gameMasterAgentId,
+    publicNarration: publicNarration.slice(0, elizaConfig.locationRooms.narrative.publicNarrationMaxLength),
+    stateAfter: {
+      stateSummary: input.narrativeState.stateSummary,
+      currentObjective: input.narrativeState.currentObjective,
+      openThreads: input.narrativeState.openThreads,
+    },
+    metadata: {
+      rawResponseLength: 0,
+    },
+  }
+}
+
 export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGenerator {
   constructor(
     private readonly messaging: OfficialElizaMessagingClient = createOfficialElizaMessagingClient({
@@ -439,25 +544,37 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
     })
 
     try {
-      const response = await this.messaging.sendSessionMessage({
-        sessionId: session.sessionId,
-        content: buildGameplayOutcomeNarrationPrompt(input),
-        metadata: {
-          source: 'wagdie-location-room-gameplay-gm-outcome',
+      try {
+        const response = await this.messaging.sendSessionMessage({
+          sessionId: session.sessionId,
+          content: buildGameplayOutcomeNarrationPrompt(input),
+          metadata: {
+            source: 'wagdie-location-room-gameplay-gm-outcome',
+            roomId: input.room.id,
+            locationId: input.room.locationId,
+            tickId: input.tick.id,
+            encounterId: input.encounterBefore.id,
+            turnId: input.turn.id,
+          },
+        })
+        const collected = await this.messaging.collectStreamedResponseText(response, {
+          conversationId: session.sessionId,
+        })
+        return normalizeGameplayOutcomeNarrationResponse(collected.text, {
+          gameMasterAgentId,
+          narrativeState: input.narrativeState,
+        })
+      } catch (error) {
+        console.warn('[Eliza Location Rooms] gameplay GM outcome stream failed; using fallback narration', {
           roomId: input.room.id,
           locationId: input.room.locationId,
           tickId: input.tick.id,
           encounterId: input.encounterBefore.id,
           turnId: input.turn.id,
-        },
-      })
-      const collected = await this.messaging.collectStreamedResponseText(response, {
-        conversationId: session.sessionId,
-      })
-      return normalizeGameplayOutcomeNarrationResponse(collected.text, {
-        gameMasterAgentId,
-        narrativeState: input.narrativeState,
-      })
+          error: error instanceof Error ? error.message : String(error),
+        })
+        return buildFallbackOutcomeNarration(input, gameMasterAgentId)
+      }
     } finally {
       await this.messaging.deleteSession(session.sessionId).catch(() => null)
     }

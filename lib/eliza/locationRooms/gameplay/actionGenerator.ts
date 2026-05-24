@@ -175,15 +175,57 @@ export function normalizeGameplayActionResponse(
   raw: string,
   validation: GameplayActionValidationContext
 ): { action: GameplayActionEnvelope; rawResponseLength: number } {
-  const parsed = extractGameMasterJsonObject(raw, 'Gameplay action response')
-  const result = validateGameplayActionEnvelope(parsed, validation)
-  if (!result.ok) {
-    throw new Error(result.error)
+  let parsed: Record<string, unknown> | null = null
+  try {
+    parsed = extractGameMasterJsonObject(raw, 'Gameplay action response')
+  } catch {
+    // Character agents sometimes answer in-character prose instead of the JSON
+    // action envelope. Keep gameplay moving by treating the prose as a cautious
+    // investigate action rather than failing the whole room tick.
   }
 
+  if (parsed) {
+    const result = validateGameplayActionEnvelope(parsed, validation)
+    if (!result.ok) {
+      throw new Error(result.error)
+    }
+
+    return {
+      action: result.action,
+      rawResponseLength: raw.length,
+    }
+  }
+
+  const publicSpeechMaxLength = validation.publicSpeechMaxLength ?? elizaConfig.locationRooms.gameplay.publicSpeechMaxLength
+  const intentSummaryMaxLength = validation.intentSummaryMaxLength ?? elizaConfig.locationRooms.gameplay.actionIntentMaxLength
+  const fallbackSpeech = raw.trim().replace(/^```(?:json)?|```$/g, '').trim().slice(0, publicSpeechMaxLength)
+
   return {
-    action: result.action,
+    action: {
+      actionType: 'investigate',
+      target: null,
+      publicSpeech: fallbackSpeech || 'I watch the room carefully and search for what changed.',
+      intentSummary: 'Fallback investigate action from non-JSON character response'.slice(0, intentSummaryMaxLength),
+      metadata: { fallbackFromNonJsonResponse: true },
+    },
     rawResponseLength: raw.length,
+  }
+}
+
+function buildFallbackActionFromOfficialError(input: GenerateGameplayActionInput, error: unknown): GameplayActionEnvelope {
+  const publicSpeechMaxLength = input.validation.publicSpeechMaxLength ?? elizaConfig.locationRooms.gameplay.publicSpeechMaxLength
+  const intentSummaryMaxLength = input.validation.intentSummaryMaxLength ?? elizaConfig.locationRooms.gameplay.actionIntentMaxLength
+  const errorName = error instanceof Error ? error.name : 'UnknownError'
+
+  return {
+    actionType: 'defend',
+    target: null,
+    publicSpeech: `${input.speaker.name} braces against the room's pressure and watches for the next opening.`.slice(0, publicSpeechMaxLength),
+    intentSummary: 'Fallback defend action after official character agent stream failure'.slice(0, intentSummaryMaxLength),
+    metadata: {
+      fallbackFromOfficialError: true,
+      errorName,
+    },
   }
 }
 
@@ -226,27 +268,42 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
     })
 
     try {
-      const response = await this.messaging.sendSessionMessage({
-        sessionId: session.sessionId,
-        content: buildGameplayActionPrompt(input),
-        metadata: {
-          source: 'wagdie-location-room-gameplay-action',
+      try {
+        const response = await this.messaging.sendSessionMessage({
+          sessionId: session.sessionId,
+          content: buildGameplayActionPrompt(input),
+          metadata: {
+            source: 'wagdie-location-room-gameplay-action',
+            roomId: input.room.id,
+            locationId: input.room.locationId,
+            tickId: input.tick.id,
+            speakerTokenId: input.speaker.tokenId,
+            officialAgentId: record.id,
+          },
+        })
+        const collected = await this.messaging.collectStreamedResponseText(response, {
+          conversationId: session.sessionId,
+        })
+        const normalized = normalizeGameplayActionResponse(collected.text, input.validation)
+
+        return {
+          officialAgentId: record.id,
+          action: normalized.action,
+          rawResponseLength: normalized.rawResponseLength,
+        }
+      } catch (error) {
+        console.warn('[Eliza Location Rooms] gameplay action stream failed; using fallback action', {
           roomId: input.room.id,
           locationId: input.room.locationId,
           tickId: input.tick.id,
           speakerTokenId: input.speaker.tokenId,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        return {
           officialAgentId: record.id,
-        },
-      })
-      const collected = await this.messaging.collectStreamedResponseText(response, {
-        conversationId: session.sessionId,
-      })
-      const normalized = normalizeGameplayActionResponse(collected.text, input.validation)
-
-      return {
-        officialAgentId: record.id,
-        action: normalized.action,
-        rawResponseLength: normalized.rawResponseLength,
+          action: buildFallbackActionFromOfficialError(input, error),
+          rawResponseLength: 0,
+        }
       }
     } finally {
       await this.messaging.deleteSession(session.sessionId).catch(() => null)
