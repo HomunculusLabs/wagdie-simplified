@@ -100,8 +100,8 @@ export function LocationRoomWatchPage({ locationId }: LocationRoomWatchPageProps
 
   return (
     <main className="min-h-screen bg-soul-950 text-neutral-100">
-      <section className="border-b border-neutral-800 bg-[radial-gradient(circle_at_top_left,rgba(180,130,255,0.16),transparent_34%),linear-gradient(180deg,rgba(0,0,0,0.75),rgba(16,12,28,0.9))]">
-        <div className="mx-auto max-w-7xl px-4 py-8 md:py-10">
+      <section className="border-b border-neutral-800 bg-[radial-gradient(circle_at_top_left,rgba(180,130,255,0.14),transparent_30%),linear-gradient(180deg,rgba(0,0,0,0.76),rgba(16,12,28,0.88))]">
+        <div className="mx-auto max-w-7xl px-4 py-5 md:py-7">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <a href="/map" className="font-eskapade text-sm text-soul-accent transition-colors hover:text-neutral-100">
               ← Back to map
@@ -116,17 +116,17 @@ export function LocationRoomWatchPage({ locationId }: LocationRoomWatchPageProps
             </div>
           </div>
 
-          <div className="mt-8 max-w-4xl">
+          <div className="mt-5 max-w-4xl">
             <p className="font-eskapade text-xs uppercase tracking-[0.3em] text-soul-accent/80">Location encounter watch</p>
-            <h1 className="mt-2 font-display text-5xl lowercase text-neutral-50 md:text-7xl">
+            <h1 className="mt-1 font-display text-4xl lowercase text-neutral-50 md:text-6xl">
               {locationName}
             </h1>
-            <p className="mt-4 max-w-3xl font-eskapade text-base leading-relaxed text-neutral-400 md:text-lg">
+            <p className="mt-3 max-w-3xl font-eskapade text-sm leading-relaxed text-neutral-400 md:text-base">
               A read-only room transcript built for leaving open while gameplay unfolds. Use the map for staking and manual trigger actions.
             </p>
           </div>
 
-          <div className="mt-6 flex flex-wrap gap-2 font-eskapade text-xs text-neutral-400">
+          <div className="mt-4 flex flex-wrap gap-2 font-eskapade text-xs text-neutral-400">
             <span className="rounded-full border border-neutral-700 bg-black/35 px-3 py-1">
               Canonical {canonicalLocationId}
             </span>
@@ -147,7 +147,7 @@ export function LocationRoomWatchPage({ locationId }: LocationRoomWatchPageProps
             )}
           </div>
 
-          <dl className="mt-6 grid gap-2 font-eskapade text-xs text-neutral-400 sm:grid-cols-2 lg:grid-cols-4">
+          <dl className="mt-4 grid gap-2 font-eskapade text-xs text-neutral-400 sm:grid-cols-2 lg:grid-cols-4">
             {headerFacts.map((fact) => (
               <div key={fact} className="rounded-lg border border-neutral-800 bg-black/35 px-3 py-2">
                 {fact}
@@ -157,7 +157,7 @@ export function LocationRoomWatchPage({ locationId }: LocationRoomWatchPageProps
         </div>
       </section>
 
-      <div className="mx-auto grid max-w-7xl gap-6 px-4 py-8 lg:grid-cols-[minmax(0,1fr),24rem] lg:items-start lg:py-10">
+      <div className="mx-auto grid max-w-7xl gap-5 px-4 py-6 lg:grid-cols-[minmax(0,1fr),23rem] lg:items-start lg:py-8">
         <div className="lg:order-2">
           <EncounterStatusSidebar roomData={roomData} lastFetchedAt={lastFetchedAt} />
         </div>

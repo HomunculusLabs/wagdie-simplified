@@ -33,16 +33,16 @@ function CharacterStatusCard({ participant, roomData }: { participant: PublicRoo
   const statsAvailable = hasStaticStats(participant);
 
   return (
-    <article className="rounded-xl border border-neutral-800 bg-neutral-950/70 p-3">
-      <div className="flex gap-3">
+    <article className="rounded-xl border border-neutral-800 bg-neutral-950/70 p-2.5">
+      <div className="flex gap-2.5">
         {participant.imageUrl ? (
           <img
             src={participant.imageUrl}
             alt={`${participant.name} portrait`}
-            className="h-14 w-14 shrink-0 rounded-lg border border-neutral-700 object-cover"
+            className="h-11 w-11 shrink-0 rounded-lg border border-neutral-700 object-cover"
           />
         ) : (
-          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-900 font-display text-xl lowercase text-neutral-400">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-neutral-700 bg-neutral-900 font-display text-lg lowercase text-neutral-400">
             {participant.name.charAt(0).toUpperCase() || '#'}
           </div>
         )}
@@ -50,7 +50,7 @@ function CharacterStatusCard({ participant, roomData }: { participant: PublicRoo
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="truncate font-eskapade text-sm text-neutral-100">{participant.name}</p>
-              <p className="font-eskapade text-xs text-neutral-500">Token #{participant.tokenId}</p>
+              <p className="font-eskapade text-[11px] text-neutral-500">#{participant.tokenId}</p>
             </div>
             {gameplayCharacter && (
               <span className={`shrink-0 rounded-full border px-2 py-0.5 font-eskapade text-[11px] ${getStatusToneClassName(gameplayCharacter.status, gameplayCharacter.hpBand)}`}>
@@ -67,30 +67,30 @@ function CharacterStatusCard({ participant, roomData }: { participant: PublicRoo
       </div>
 
       {gameplayCharacter && (
-        <p className="mt-3 font-eskapade text-xs text-neutral-400">
+        <p className="mt-2 font-eskapade text-[11px] text-neutral-500">
           Gameplay: {formatStatusLabel(gameplayCharacter.status)} · {formatStatusLabel(gameplayCharacter.hpBand)}
         </p>
       )}
 
       {statsAvailable ? (
-        <div className="mt-3 space-y-3">
-          <div className="grid grid-cols-3 gap-2 font-eskapade text-xs">
-            <div className="rounded-md border border-neutral-800 bg-black/25 p-2">
+        <div className="mt-2 space-y-2">
+          <div className="grid grid-cols-3 gap-1.5 font-eskapade text-[11px]">
+            <div className="rounded-md border border-neutral-800 bg-black/25 p-1.5">
               <p className="text-neutral-600">Max HP</p>
               <p className="text-neutral-200">{participant.maxHp ?? '—'}</p>
             </div>
-            <div className="rounded-md border border-neutral-800 bg-black/25 p-2">
+            <div className="rounded-md border border-neutral-800 bg-black/25 p-1.5">
               <p className="text-neutral-600">AC</p>
               <p className="text-neutral-200">{participant.ac ?? '—'}</p>
             </div>
-            <div className="rounded-md border border-neutral-800 bg-black/25 p-2">
+            <div className="rounded-md border border-neutral-800 bg-black/25 p-1.5">
               <p className="text-neutral-600">Speed</p>
               <p className="text-neutral-200">{participant.speed ?? '—'}</p>
             </div>
           </div>
 
           {hasCoreStats(participant) && (
-            <div className="grid grid-cols-6 gap-1.5 font-eskapade text-[11px]">
+            <div className="grid grid-cols-6 gap-1 font-eskapade text-[10px]">
               {CORE_STAT_LABELS.map(([key, label]) => (
                 <div key={key} className="rounded border border-neutral-800 bg-black/20 px-1.5 py-1 text-center">
                   <p className="text-neutral-600">{label}</p>
@@ -116,8 +116,8 @@ export function EncounterStatusSidebar({ roomData, lastFetchedAt }: EncounterSta
   const ttrpg = roomData.ttrpg;
 
   return (
-    <aside className="space-y-4 lg:sticky lg:top-4">
-      <section className="rounded-2xl border border-neutral-800 bg-black/45 p-4 shadow-2xl">
+    <aside className="space-y-3 lg:sticky lg:top-4">
+      <section className="rounded-2xl border border-neutral-800 bg-black/45 p-3.5 shadow-2xl">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="font-eskapade text-xs uppercase tracking-[0.22em] text-neutral-500">Room status</p>
@@ -130,7 +130,7 @@ export function EncounterStatusSidebar({ roomData, lastFetchedAt }: EncounterSta
           </span>
         </div>
 
-        <div className="mt-4 grid grid-cols-2 gap-2 font-eskapade text-xs text-neutral-400">
+        <div className="mt-3 grid grid-cols-2 gap-1.5 font-eskapade text-xs text-neutral-400">
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-2.5">
             <p className="text-neutral-600">Participants</p>
             <p className="text-neutral-200">{roomData.participants.length}</p>
@@ -191,7 +191,7 @@ export function EncounterStatusSidebar({ roomData, lastFetchedAt }: EncounterSta
       </section>
 
       {gameplay && (
-        <section className="rounded-2xl border border-neutral-800 bg-black/45 p-4 shadow-2xl">
+        <section className="rounded-2xl border border-neutral-800 bg-black/45 p-3.5 shadow-2xl">
           <p className="font-eskapade text-xs uppercase tracking-[0.22em] text-neutral-500">Encounter</p>
           <div className="mt-3 flex flex-wrap gap-2 font-eskapade text-xs">
             <span className="rounded-full border border-neutral-700 bg-neutral-950 px-2.5 py-1 text-neutral-300">

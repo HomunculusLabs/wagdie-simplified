@@ -10,6 +10,7 @@ interface EncounterTranscriptProps {
 
 export function EncounterTranscript({ roomData, endRef }: EncounterTranscriptProps) {
   const messages = sortMessagesChronologically(roomData.messages);
+  const latestSequence = roomData.activity?.latestSequence ?? messages.at(-1)?.sequence ?? null;
 
   if (messages.length === 0) {
     return (
@@ -31,7 +32,12 @@ export function EncounterTranscript({ roomData, endRef }: EncounterTranscriptPro
   return (
     <section aria-label="Encounter transcript" className="space-y-5">
       {messages.map((message) => (
-        <EncounterMessageCard key={message.id} message={message} roomData={roomData} />
+        <EncounterMessageCard
+          key={message.id}
+          message={message}
+          roomData={roomData}
+          isLatest={latestSequence != null && message.sequence === latestSequence}
+        />
       ))}
       <div ref={endRef} aria-hidden="true" />
     </section>

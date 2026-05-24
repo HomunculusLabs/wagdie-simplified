@@ -16,13 +16,34 @@ import {
 interface EncounterMessageCardProps {
   message: PublicRoomMessage;
   roomData: PublicLocationRoomRead;
+  isLatest?: boolean;
 }
 
 function avatarInitial(name: string): string {
   return name.trim().charAt(0).toUpperCase() || 'W';
 }
 
-export function EncounterMessageCard({ message, roomData }: EncounterMessageCardProps) {
+function splitLegacyRolls(content: string): { narration: string; legacyRolls: string | null } {
+  const match = content.match(/\n\s*Rolls:\s*/i);
+  if (match?.index != null) {
+    return {
+      narration: content.slice(0, match.index).trimEnd(),
+      legacyRolls: content.slice(match.index).trim(),
+    };
+  }
+
+  const inlineIndex = content.search(/Rolls:\s*/i);
+  if (inlineIndex > 0) {
+    return {
+      narration: content.slice(0, inlineIndex).trimEnd(),
+      legacyRolls: content.slice(inlineIndex).trim(),
+    };
+  }
+
+  return { narration: content, legacyRolls: null };
+}
+
+export function EncounterMessageCard({ message, roomData, isLatest = false }: EncounterMessageCardProps) {
   const participant = findParticipantForMessage(roomData.participants, message);
   const gameplayCharacter = findGameplayCharacter(roomData.gameplay, message.tokenId);
   const isGameMaster = message.authorKind === 'game_master';
@@ -33,10 +54,11 @@ export function EncounterMessageCard({ message, roomData }: EncounterMessageCard
   const statusCopy = gameplayCharacter
     ? `${formatStatusLabel(gameplayCharacter.status)} · ${formatStatusLabel(gameplayCharacter.hpBand)}`
     : null;
+  const { narration, legacyRolls } = splitLegacyRolls(message.content);
 
   return (
-    <article className={`rounded-2xl border p-4 md:p-5 ${getMessageToneClassName(message)}`}>
-      <div className="grid gap-4 md:grid-cols-[12rem,minmax(0,1fr)] md:gap-6">
+    <article className={`rounded-2xl border p-4 md:p-5 ${isLatest ? 'ring-1 ring-soul-accent/45' : ''} ${getMessageToneClassName(message)}`}>
+      <div className="grid gap-4 md:grid-cols-[10rem,minmax(0,1fr)] md:gap-5">
         <aside className="flex gap-3 md:block md:space-y-3">
           {isGameMaster ? (
             <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border border-soul-accent/40 bg-soul-accent/15 font-display text-2xl lowercase text-soul-accent md:h-16 md:w-16">
@@ -73,6 +95,7 @@ export function EncounterMessageCard({ message, roomData }: EncounterMessageCard
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800/70 pb-3">
             <div className="flex flex-wrap items-center gap-2 font-eskapade text-xs uppercase tracking-[0.18em] text-neutral-500">
               <span>#{message.sequence}</span>
+              {isLatest && <span className="text-soul-accent">Latest</span>}
               {domain && (
                 <span className={domain === 'combat' ? 'text-rose-300' : 'text-sky-300'}>
                   {formatStatusLabel(domain)}
@@ -87,11 +110,18 @@ export function EncounterMessageCard({ message, roomData }: EncounterMessageCard
           </header>
 
           <p className={isGameMaster
-            ? 'whitespace-pre-wrap font-serif text-xl leading-[1.8] text-neutral-200 md:text-2xl md:leading-[1.75]'
-            : 'whitespace-pre-wrap font-serif text-lg leading-[1.75] text-neutral-300 md:text-xl'}
+            ? 'whitespace-pre-wrap font-serif text-xl leading-[1.65] text-neutral-200 md:text-[1.65rem] md:leading-[1.55]'
+            : 'whitespace-pre-wrap font-serif text-lg leading-[1.65] text-neutral-300 md:text-xl'}
           >
-            {message.content}
+            {narration}
           </p>
+
+          {legacyRolls && !message.gameplayRolls && (
+            <div className="rounded-lg border border-neutral-800 bg-black/25 p-3 font-eskapade text-sm leading-relaxed text-neutral-500">
+              <p className="mb-1 text-[10px] uppercase tracking-[0.22em] text-neutral-600">Legacy roll text</p>
+              <p className="whitespace-pre-wrap">{legacyRolls}</p>
+            </div>
+          )}
 
           {message.gameplayRolls && (
             <StructuredRollPanel rolls={message.gameplayRolls} variant="roomy" />
