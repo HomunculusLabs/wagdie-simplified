@@ -331,6 +331,37 @@ export function normalizeGameplayEncounterProposalResponse(
   }
 }
 
+function buildFallbackEncounterProposal(input: GenerateGameplayEncounterProposalInput, gameMasterAgentId: string): GameplayEncounterProposalOutput {
+  const locationName = input.room.locationId ? `Location ${input.room.locationId}` : 'The room'
+  const monsterName = input.requestedDifficulty === 'deadly' ? 'Ashen Horror' : 'Restless Shade'
+  const publicSetupNarration = `${locationName} darkens as ${monsterName} manifests before the gathered characters.`
+
+  return {
+    gameMasterAgentId,
+    proposal: {
+      title: `${monsterName} Encounter`,
+      summary: `${monsterName} tests the room as the party presses forward.`,
+      difficulty: input.requestedDifficulty as GameplayEncounterProposal['difficulty'],
+      monsterCount: Math.max(1, Math.min(1, input.budget.maxMonsterCount)),
+      monsterName,
+      monsterArchetype: 'fallback apparition',
+      totalMonsterHp: Math.max(1, Math.min(12, input.budget.maxTotalMonsterHp)),
+      monsterAc: 12,
+      monsterAttackBonus: 2,
+      monsterDamageFormula: '1d6',
+      sceneDc: 12,
+      rewardXpPerCharacter: Math.max(0, Math.min(5, input.budget.maxXpPerCharacter)),
+      temporaryBoons: [],
+      narrativeRewards: [],
+      victoryText: 'The apparition fades, leaving the room changed.',
+    },
+    publicSetupNarration: publicSetupNarration.slice(0, elizaConfig.locationRooms.narrative.publicNarrationMaxLength),
+    metadata: {
+      rawResponseLength: 0,
+    },
+  }
+}
+
 export function normalizeGameplayOutcomeNarrationResponse(
   raw: string,
   input: Pick<GenerateGameplayOutcomeNarrationInput, 'gameMasterAgentId' | 'narrativeState'>
@@ -493,19 +524,22 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
     const gameMasterAgentId = input.gameMasterAgentId.trim()
     if (!gameMasterAgentId) throw new Error('Gameplay encounter proposal requires a game-master agent id')
 
-    await this.messaging.startAgent(gameMasterAgentId)
-    const session = await this.messaging.createSession({
-      agentId: gameMasterAgentId,
-      userId: input.room.officialUserId,
-      metadata: {
-        source: 'wagdie-location-room-gameplay-gm-encounter',
-        roomId: input.room.id,
-        locationId: input.room.locationId,
-        tickId: input.tick.id,
-      },
-    })
+    let sessionId: string | null = null
 
     try {
+      await this.messaging.startAgent(gameMasterAgentId)
+      const session = await this.messaging.createSession({
+        agentId: gameMasterAgentId,
+        userId: input.room.officialUserId,
+        metadata: {
+          source: 'wagdie-location-room-gameplay-gm-encounter',
+          roomId: input.room.id,
+          locationId: input.room.locationId,
+          tickId: input.tick.id,
+        },
+      })
+      sessionId = session.sessionId
+
       const response = await this.messaging.sendSessionMessage({
         sessionId: session.sessionId,
         content: buildGameplayEncounterProposalPrompt(input),
@@ -520,8 +554,18 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
         conversationId: session.sessionId,
       })
       return normalizeGameplayEncounterProposalResponse(collected.text, { gameMasterAgentId })
+    } catch (error) {
+      console.warn('[Eliza Location Rooms] gameplay GM encounter generation failed; using fallback encounter', {
+        roomId: input.room.id,
+        locationId: input.room.locationId,
+        tickId: input.tick.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return buildFallbackEncounterProposal(input, gameMasterAgentId)
     } finally {
-      await this.messaging.deleteSession(session.sessionId).catch(() => null)
+      if (sessionId) {
+        await this.messaging.deleteSession(sessionId).catch(() => null)
+      }
     }
   }
 
@@ -529,54 +573,57 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
     const gameMasterAgentId = input.gameMasterAgentId.trim()
     if (!gameMasterAgentId) throw new Error('Gameplay outcome narration requires a game-master agent id')
 
-    await this.messaging.startAgent(gameMasterAgentId)
-    const session = await this.messaging.createSession({
-      agentId: gameMasterAgentId,
-      userId: input.room.officialUserId,
-      metadata: {
-        source: 'wagdie-location-room-gameplay-gm-outcome',
-        roomId: input.room.id,
-        locationId: input.room.locationId,
-        tickId: input.tick.id,
-        encounterId: input.encounterBefore.id,
-        turnId: input.turn.id,
-      },
-    })
+    let sessionId: string | null = null
 
     try {
-      try {
-        const response = await this.messaging.sendSessionMessage({
-          sessionId: session.sessionId,
-          content: buildGameplayOutcomeNarrationPrompt(input),
-          metadata: {
-            source: 'wagdie-location-room-gameplay-gm-outcome',
-            roomId: input.room.id,
-            locationId: input.room.locationId,
-            tickId: input.tick.id,
-            encounterId: input.encounterBefore.id,
-            turnId: input.turn.id,
-          },
-        })
-        const collected = await this.messaging.collectStreamedResponseText(response, {
-          conversationId: session.sessionId,
-        })
-        return normalizeGameplayOutcomeNarrationResponse(collected.text, {
-          gameMasterAgentId,
-          narrativeState: input.narrativeState,
-        })
-      } catch (error) {
-        console.warn('[Eliza Location Rooms] gameplay GM outcome stream failed; using fallback narration', {
+      await this.messaging.startAgent(gameMasterAgentId)
+      const session = await this.messaging.createSession({
+        agentId: gameMasterAgentId,
+        userId: input.room.officialUserId,
+        metadata: {
+          source: 'wagdie-location-room-gameplay-gm-outcome',
           roomId: input.room.id,
           locationId: input.room.locationId,
           tickId: input.tick.id,
           encounterId: input.encounterBefore.id,
           turnId: input.turn.id,
-          error: error instanceof Error ? error.message : String(error),
-        })
-        return buildFallbackOutcomeNarration(input, gameMasterAgentId)
-      }
+        },
+      })
+      sessionId = session.sessionId
+
+      const response = await this.messaging.sendSessionMessage({
+        sessionId: session.sessionId,
+        content: buildGameplayOutcomeNarrationPrompt(input),
+        metadata: {
+          source: 'wagdie-location-room-gameplay-gm-outcome',
+          roomId: input.room.id,
+          locationId: input.room.locationId,
+          tickId: input.tick.id,
+          encounterId: input.encounterBefore.id,
+          turnId: input.turn.id,
+        },
+      })
+      const collected = await this.messaging.collectStreamedResponseText(response, {
+        conversationId: session.sessionId,
+      })
+      return normalizeGameplayOutcomeNarrationResponse(collected.text, {
+        gameMasterAgentId,
+        narrativeState: input.narrativeState,
+      })
+    } catch (error) {
+      console.warn('[Eliza Location Rooms] gameplay GM outcome generation failed; using fallback narration', {
+        roomId: input.room.id,
+        locationId: input.room.locationId,
+        tickId: input.tick.id,
+        encounterId: input.encounterBefore.id,
+        turnId: input.turn.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return buildFallbackOutcomeNarration(input, gameMasterAgentId)
     } finally {
-      await this.messaging.deleteSession(session.sessionId).catch(() => null)
+      if (sessionId) {
+        await this.messaging.deleteSession(sessionId).catch(() => null)
+      }
     }
   }
 }
