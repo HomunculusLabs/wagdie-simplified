@@ -16,10 +16,14 @@ type CharacterRow = {
   burned: boolean | null
 }
 
+type EligibleLocationRow = Pick<CharacterRow, 'token_id' | 'owner_address' | 'location_id' | 'burned'>
+
 type QueryResult<T> = { data: T | null; error: { message: string } | null }
 
 const CHARACTER_COLUMNS =
   'token_id, name, metadata, background_story, owner_address, staker_address, location_id, burned'
+
+const ELIGIBLE_LOCATION_COLUMNS = 'token_id, owner_address, location_id, burned'
 
 function getAdminClient() {
   const client = getSupabaseAdmin()
@@ -110,17 +114,18 @@ export class SupabaseLocationRoomMembershipRepository implements LocationRoomMem
   async listEligibleLocationIds(minParticipants: number): Promise<string[]> {
     const { data, error } = (await getAdminClient()
       .from(CHARACTERS_TABLE as never)
-      .select(CHARACTER_COLUMNS)
+      .select(ELIGIBLE_LOCATION_COLUMNS)
       .not('location_id', 'is', null)
-      .order('token_id', { ascending: true })) as QueryResult<CharacterRow[]>
+      .order('token_id', { ascending: true })) as QueryResult<EligibleLocationRow[]>
 
     if (error) throw new Error(error.message)
 
     const counts = new Map<string, number>()
     for (const row of data ?? []) {
-      const participant = rowToParticipant(row)
-      if (!participant) continue
-      counts.set(participant.locationId, (counts.get(participant.locationId) ?? 0) + 1)
+      if (!isValidTokenId(row.token_id)) continue
+      if (!row.location_id) continue
+      if (isBurnedOwner(row.owner_address, row.burned)) continue
+      counts.set(row.location_id, (counts.get(row.location_id) ?? 0) + 1)
     }
 
     return Array.from(counts.entries())
