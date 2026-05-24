@@ -623,6 +623,67 @@ describe('location room domain service', () => {
     expect(turnGenerator.generateTurn).toHaveBeenCalled()
   })
 
+  it('manual gameplay initiation kicks the automation worker after the first active turn', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const activeRun = gameplayRun({ id: 'run-1', targetCompletedTurns: 100, completedTurns: 0 })
+    const claimedTick = tick({ id: 'tick-new', status: 'processing', attempts: 1, gameplayRunId: 'run-1' })
+    const repository = makeRepository({
+      enqueueTick: jest.fn(async () => ({ tick: tick({ id: 'tick-new', status: 'pending', attempts: 0, gameplayRunId: 'run-1', lockedAt: null, lockedBy: null, startedAt: null }), deduped: false })),
+      claimTick: jest.fn(async () => claimedTick),
+      countCompletedGameplayTurnsForRun: jest.fn(async () => 1),
+    })
+    const gameplayRepository = makeGameplayRepository({
+      findRunById: jest.fn(async () => activeRun),
+      updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...activeRun, completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
+      findTurnByTickId: jest.fn(async () => null),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        status: 'completed',
+        selectedTokenId: 1,
+        messageId: 'msg-gameplay-action',
+        messageIds: ['msg-gameplay-action'],
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository
+    )
+    const automation = {
+      enabled: true,
+      enqueued: 4,
+      deduped: 0,
+      processed: 4,
+      completed: 4,
+      skipped: 0,
+      failed: 0,
+      dead: 0,
+      gameplayRuns: { inspected: 1, enqueued: 4, blocked: 0, updated: 4, completed: 0, stopped: 0, failed: 0 },
+      results: [],
+    }
+    const automationSpy = jest.spyOn(service, 'runScheduledWorker').mockResolvedValueOnce(automation)
+
+    const result = await service.requestTickAndProcess('loc-1', {
+      actor: 'admin',
+      walletAddress: '0xAdmin',
+      now: new Date(now),
+    })
+
+    expect(result.processing).toMatchObject({ attempted: true, status: 'completed', tickId: 'tick-new' })
+    expect(result.automation).toBe(automation)
+    expect(automationSpy).toHaveBeenCalledWith(new Date(now))
+  })
+
   it('manual enqueue-and-process claims a newly enqueued tick at its DB due timestamp when DB time is ahead', async () => {
     const dbDueAt = new Date(new Date(now).getTime() + 250).toISOString()
     const claimedTick = tick({ id: 'tick-new', status: 'processing', attempts: 1 })
