@@ -375,6 +375,10 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
     let setupNarration: string | null = null
     let createdEncounterThisTick = false
 
+    if (encounter && encounter.status !== 'active' && !turn) {
+      encounter = null
+    }
+
     if (!encounter) {
       const playableParticipants = livingParticipants(input.participants, gameplayState)
       if (playableParticipants.length < 2) {

@@ -898,10 +898,6 @@ export class LocationRoomService {
     if (stopReason && [
       'insufficient_participants',
       'insufficient_living_gameplay_participants',
-      'encounter_defeat',
-      'encounter_fled',
-      'encounter_abandoned',
-      'no_active_gameplay_encounter',
     ].includes(stopReason)) {
       const stoppedRun = await this.gameplayRepository.markRunStopped(run.id, {
         ...terminalBase,
@@ -920,18 +916,6 @@ export class LocationRoomService {
       updatedRun = await this.gameplayRepository.markRunCompleted(run.id, {
         ...terminalBase,
         stopReason: 'target_reached',
-      })
-      return toGameplayRunSummary(updatedRun)
-    }
-
-    const turn = await this.gameplayRepository.findTurnByTickId(tick.id)
-    const encounter = turn?.encounterId
-      ? await this.gameplayRepository.findEncounterById(turn.encounterId)
-      : null
-    if (encounter && ['defeat', 'fled', 'abandoned'].includes(encounter.status)) {
-      updatedRun = await this.gameplayRepository.markRunStopped(run.id, {
-        ...terminalBase,
-        stopReason: `encounter_${encounter.status}`,
       })
       return toGameplayRunSummary(updatedRun)
     }

@@ -1369,6 +1369,51 @@ describe('location room domain service', () => {
     expect(repository.claimDueTicks).toHaveBeenLastCalledWith(1, expect.stringMatching(/^location-room-worker-/), new Date(now))
   })
 
+  it('keeps a run active when a gameplay encounter ends before the 100-turn target', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableLocationRoomsConfig.maxTicksPerRun = 1
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const runTick = tick({ id: 'tick-run', gameplayRunId: 'run-1', attempts: 1 })
+    const activeRun = gameplayRun({ id: 'run-1', targetCompletedTurns: 100, completedTurns: 0 })
+    const repository = makeRepository({
+      claimDueTicks: jest.fn(async () => [runTick]),
+      countCompletedGameplayTurnsForRun: jest.fn(async () => 1),
+    })
+    const gameplayRepository = makeGameplayRepository({
+      findRunById: jest.fn(async () => activeRun),
+      updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...activeRun, completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
+      findTurnByTickId: jest.fn(async () => ({ encounterId: 'encounter-1' } as any)),
+      findEncounterById: jest.fn(async () => ({ status: 'abandoned' } as any)),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        status: 'completed',
+        selectedTokenId: 1,
+        messageId: 'msg-gameplay-action',
+        messageIds: ['msg-gameplay-action'],
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      undefined,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, gameplayRuns: { updated: 1, stopped: 0 } })
+    expect(result.results[0].gameplayRun).toMatchObject({ id: 'run-1', status: 'active', completedTurns: 1 })
+    expect(gameplayRepository.markRunStopped).not.toHaveBeenCalled()
+  })
+
   it('keeps a run active when its tick fails with retry remaining', async () => {
     mutableElizaConfig.mode = 'official'
     mutableNarrativeConfig.enabled = true
