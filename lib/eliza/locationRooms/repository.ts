@@ -242,7 +242,7 @@ export interface LocationRoomRepository {
   findRoomById(roomId: string): Promise<LocationRoom | null>
   findRoomByLocationId(locationId: string): Promise<LocationRoom | null>
   ensureRoomForLocation(locationId: string): Promise<LocationRoom>
-  listDueRooms(now: Date, limit: number): Promise<LocationRoom[]>
+  listDueRooms(now: Date, limit: number, locationIds?: string[]): Promise<LocationRoom[]>
   enqueueTick(input: {
     room: LocationRoom
     triggerType: LocationRoomTriggerType
@@ -260,7 +260,7 @@ export interface LocationRoomRepository {
   findOldestProcessableTickForRoom(roomId: string, now: Date): Promise<LocationRoomTick | null>
   findNonStaleProcessingTickForRoom(roomId: string, now: Date): Promise<LocationRoomTick | null>
   claimTick(tickId: string, workerId: string, now: Date): Promise<LocationRoomTick | null>
-  claimDueTicks(limit: number, workerId: string, now: Date): Promise<LocationRoomTick[]>
+  claimDueTicks(limit: number, workerId: string, now: Date, locationIds?: string[]): Promise<LocationRoomTick[]>
   listActiveTicksForRoom(roomId: string, limit: number): Promise<LocationRoomTick[]>
   listRecentTicksForRoom(roomId: string, limit: number): Promise<LocationRoomTick[]>
   getPublicMessageStats(roomId: string): Promise<LocationRoomPublicMessageStats>
@@ -349,11 +349,17 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     return mapRoom(data)
   }
 
-  async listDueRooms(now: Date, limit: number): Promise<LocationRoom[]> {
-    const { data, error } = (await table(ROOMS_TABLE)
+  async listDueRooms(now: Date, limit: number, locationIds: string[] = []): Promise<LocationRoom[]> {
+    let query = table(ROOMS_TABLE)
       .select(ROOM_COLUMNS)
       .eq('tick_enabled', true)
       .or(`next_tick_at.is.null,next_tick_at.lte.${now.toISOString()}`)
+
+    if (locationIds.length > 0) {
+      query = query.in('location_id', locationIds)
+    }
+
+    const { data, error } = (await query
       .order('next_tick_at', { ascending: true, nullsFirst: true })
       .limit(limit)) as QueryResult<RoomRow[]>
 
@@ -557,12 +563,18 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     return mapTick(updated)
   }
 
-  async claimDueTicks(limit: number, workerId: string, now: Date): Promise<LocationRoomTick[]> {
+  async claimDueTicks(limit: number, workerId: string, now: Date, locationIds: string[] = []): Promise<LocationRoomTick[]> {
     const dueAt = now.toISOString()
-    const { data: pendingData, error: pendingError } = (await table(TICKS_TABLE)
+    let pendingQuery = table(TICKS_TABLE)
       .select(TICK_COLUMNS)
       .eq('status', 'pending')
       .lte('next_attempt_at', dueAt)
+
+    if (locationIds.length > 0) {
+      pendingQuery = pendingQuery.in('location_id', locationIds)
+    }
+
+    const { data: pendingData, error: pendingError } = (await pendingQuery
       .order('created_at', { ascending: true })
       .limit(limit)) as QueryResult<TickRow[]>
 
@@ -572,10 +584,16 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     let remaining = limit - candidates.length
 
     if (remaining > 0) {
-      const { data: failedData, error: failedError } = (await table(TICKS_TABLE)
+      let failedQuery = table(TICKS_TABLE)
         .select(TICK_COLUMNS)
         .eq('status', 'failed')
         .lte('next_attempt_at', dueAt)
+
+      if (locationIds.length > 0) {
+        failedQuery = failedQuery.in('location_id', locationIds)
+      }
+
+      const { data: failedData, error: failedError } = (await failedQuery
         .order('created_at', { ascending: true })
         .limit(remaining)) as QueryResult<TickRow[]>
 
@@ -586,10 +604,16 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
 
     if (remaining > 0) {
       const staleBefore = new Date(now.getTime() - WORKER_LOCK_TTL_MS).toISOString()
-      const { data: staleData, error: staleError } = (await table(TICKS_TABLE)
+      let staleQuery = table(TICKS_TABLE)
         .select(TICK_COLUMNS)
         .eq('status', 'processing')
         .lt('locked_at', staleBefore)
+
+      if (locationIds.length > 0) {
+        staleQuery = staleQuery.in('location_id', locationIds)
+      }
+
+      const { data: staleData, error: staleError } = (await staleQuery
         .order('locked_at', { ascending: true })
         .limit(remaining)) as QueryResult<TickRow[]>
 

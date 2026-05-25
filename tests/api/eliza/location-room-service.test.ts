@@ -2216,7 +2216,7 @@ describe('location room domain service', () => {
       turnIntent: 'combat',
       nextAttemptAt: new Date(now),
     }))
-    expect(repository.claimDueTicks).toHaveBeenLastCalledWith(1, expect.stringMatching(/^location-room-worker-/), new Date(now))
+    expect(repository.claimDueTicks).toHaveBeenLastCalledWith(1, expect.stringMatching(/^location-room-worker-/), new Date(now), [])
   })
 
   it('stops a run when a gameplay encounter ends before the 100-turn target', async () => {

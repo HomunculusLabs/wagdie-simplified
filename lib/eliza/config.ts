@@ -239,6 +239,10 @@ export const elizaConfig = {
         min: 1,
         integer: true,
       }) ?? 15,
+    workerLocationAllowlist: optionalStringList(
+      process.env.ELIZA_LOCATION_ROOM_WORKER_LOCATION_ALLOWLIST ||
+        process.env.ELIZA_LOCATION_ROOM_WORKER_LOCATION_IDS
+    ) ?? [],
     maxTicksPerRun:
       optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_MAX_TICKS_PER_RUN, {
         min: 1,

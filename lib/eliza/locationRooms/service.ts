@@ -415,6 +415,20 @@ export function isLocationRoomGameplayEnabledForLocation(locationId: string): bo
   )
 }
 
+function getWorkerLocationAllowlist(): string[] {
+  return Array.from(new Set(
+    elizaConfig.locationRooms.workerLocationAllowlist
+      .map((locationId) => locationId.trim())
+      .filter(Boolean)
+  ))
+}
+
+function filterWorkerLocationIds(locationIds: string[], allowlist: string[]): string[] {
+  if (allowlist.length === 0) return locationIds
+  const allowed = new Set(allowlist.map((locationId) => locationId.trim().toLowerCase()))
+  return locationIds.filter((locationId) => allowed.has(locationId.trim().toLowerCase()))
+}
+
 async function ensureLocationRoomFeatureEnabled(
   gameMasterAgentResolver: GameMasterAgentResolver = gameMasterAgentService
 ): Promise<void> {
@@ -740,10 +754,13 @@ export class LocationRoomService {
     }
   }
 
-  async enqueueDueScheduledTicks(now = new Date()): Promise<EnqueueScheduledTicksResult> {
+  async enqueueDueScheduledTicks(now = new Date(), locationAllowlist = getWorkerLocationAllowlist()): Promise<EnqueueScheduledTicksResult> {
     await ensureLocationRoomFeatureEnabled(this.gameMasterAgentResolver)
 
-    const activeLocationIds = await this.membership.listEligibleLocationIds(MIN_ELIGIBLE_PARTICIPANTS)
+    const activeLocationIds = filterWorkerLocationIds(
+      await this.membership.listEligibleLocationIds(MIN_ELIGIBLE_PARTICIPANTS),
+      locationAllowlist
+    )
     for (const locationId of activeLocationIds) {
       const location = await this.repository.getLocation(locationId)
       if (location) {
@@ -753,7 +770,8 @@ export class LocationRoomService {
 
     const dueRooms = await this.repository.listDueRooms(
       now,
-      Math.max(elizaConfig.locationRooms.maxTicksPerRun, activeLocationIds.length, 1)
+      Math.max(elizaConfig.locationRooms.maxTicksPerRun, activeLocationIds.length, 1),
+      locationAllowlist
     )
 
     for (const room of dueRooms) {
@@ -789,7 +807,7 @@ export class LocationRoomService {
     await ensureLocationRoomFeatureEnabled(this.gameMasterAgentResolver)
 
     const workerId = `location-room-worker-${randomUUID()}`
-    const ticks = await this.repository.claimDueTicks(limit, workerId, now)
+    const ticks = await this.repository.claimDueTicks(limit, workerId, now, getWorkerLocationAllowlist())
     const results: ProcessLocationRoomTickResult[] = []
 
     for (const tick of ticks) {
@@ -803,7 +821,8 @@ export class LocationRoomService {
     await ensureLocationRoomFeatureEnabled(this.gameMasterAgentResolver)
 
     const maxTicks = Math.max(0, elizaConfig.locationRooms.maxTicksPerRun)
-    const enqueueResult = await this.enqueueDueScheduledTicks(now)
+    const workerLocationAllowlist = getWorkerLocationAllowlist()
+    const enqueueResult = await this.enqueueDueScheduledTicks(now, workerLocationAllowlist)
     const workerId = `location-room-worker-${randomUUID()}`
     const results: ProcessLocationRoomTickResult[] = []
     const processedTickIds = new Set<string>()
@@ -822,7 +841,7 @@ export class LocationRoomService {
 
     while (results.length < maxTicks) {
       const remaining = maxTicks - results.length
-      const claimedTicks = await this.repository.claimDueTicks(remaining, workerId, now)
+      const claimedTicks = await this.repository.claimDueTicks(remaining, workerId, now, workerLocationAllowlist)
       const ticks = claimedTicks.filter((tick) => !processedTickIds.has(tick.id))
 
       if (ticks.length > 0) {
