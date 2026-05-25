@@ -46,6 +46,7 @@ export type GameMasterGenerationDiagnostics = {
   status: 'accepted' | 'repaired' | 'repair_failed'
   repairAttempted: boolean
   repaired: boolean
+  fallbackUsed?: boolean
   initialErrorCategory?: string
   repairErrorCategory?: string
   initialResponseLength?: number
@@ -367,6 +368,89 @@ export function extractGameMasterJsonObject(raw: string, label = 'Game-master be
 
 function extractJsonObject(raw: string): ParsedBeat {
   return extractGameMasterJsonObject(raw) as ParsedBeat
+}
+
+function buildFallbackGameMasterBeat(
+  input: GenerateGameMasterBeatInput,
+  gameMasterAgentId: string,
+  diagnostics: GameMasterGenerationDiagnostics
+): GameMasterBeatOutput {
+  const limits = elizaConfig.locationRooms.narrative
+  const progressionContext = input.progressionContext
+  const existingThreads = input.narrativeState.openThreads
+    .map((thread) => trimToLimit(thread, limits.openThreadMaxLength))
+    .filter((thread): thread is string => Boolean(thread))
+
+  const publicNarration = progressionContext?.requirePublicNarration
+    ? trimToLimit(
+      progressionContext.requireOpeningPublicNarration
+        ? 'A cold hush settles over the Crow\'s Den as the room seems to notice the gathered dead all at once. Salt-stained boards creak under no visible foot, and a guttering lantern throws three clear choices into view: the dark stair, the watched doorway, and the table where fresh scratches mark a warning. The air offers no answer, only pressure, as if the place is waiting for someone to choose what fear is worth following. Whatever happens next should come from the characters, but the room has made it clear that standing still will not keep them safe.'
+        : 'The room shifts before anyone can mistake the silence for safety. Something in the Crow\'s Den changes position just out of sight, leaving the characters with a clear choice to investigate, withdraw, or challenge what is watching them.',
+      limits.publicNarrationMaxLength
+    )
+    : null
+
+  const stateAfter = {
+    stateSummary: trimToLimit(
+      input.narrativeState.stateSummary || 'The Crow\'s Den has opened into an unresolved scene that waits on the characters\' response.',
+      limits.stateSummaryMaxLength
+    ) ?? 'The Crow\'s Den waits on the characters\' response.',
+    currentObjective: trimToLimit(
+      input.narrativeState.currentObjective || `Let ${input.speaker.name} choose how to engage with the room's immediate danger.`,
+      limits.stateSummaryMaxLength
+    ),
+    openThreads: (existingThreads.length > 0 ? existingThreads : [
+      'What is watching from the Crow\'s Den?',
+      'Which clue or danger will the characters pursue first?',
+    ]).slice(0, limits.openThreadsMaxCount),
+  }
+
+  const ttrpgPhase: LocationRoomTtrpgPhase = progressionContext?.requireEscalationBeyondOpening ? 'exploration' : 'exploration'
+  const combatReadiness: LocationRoomCombatReadiness = progressionContext?.requireEscalationBeyondOpening ? 'foreshadow' : 'none'
+  const threatLevel = progressionContext?.requireEscalationBeyondOpening ? 1 : 0
+
+  validateGameMasterBeatProgressionContract({
+    publicNarration,
+    stateAfter,
+    ttrpgPhase,
+    combatReadiness,
+    threatLevel,
+    requestedGameplayAction: null,
+    encounterSeed: null,
+    progressionContext,
+  })
+
+  return {
+    gameMasterAgentId,
+    publicNarration,
+    speakerInstruction: trimToLimit(
+      `Respond in ${input.speaker.name}'s own voice. Choose one concrete hook to engage, reveal a reaction or intention, and leave room for the next character to answer.`,
+      limits.stateSummaryMaxLength
+    ) ?? `Respond in ${input.speaker.name}'s own voice and choose one concrete hook to engage.`,
+    stateAfter,
+    ttrpgPhase,
+    combatReadiness,
+    threatLevel,
+    requestedGameplayAction: null,
+    encounterSeed: null,
+    metadata: {
+      currentObjective: stateAfter.currentObjective,
+      featuredTokenIds: [input.speaker.tokenId],
+      selectedSpeakerTokenId: input.speaker.tokenId,
+      ttrpgPhase,
+      combatReadiness,
+      threatLevel,
+      requestedGameplayAction: null,
+      encounterSeed: null,
+      gmGeneration: {
+        ...diagnostics,
+        status: 'repaired',
+        repairAttempted: true,
+        repaired: false,
+        fallbackUsed: true,
+      },
+    },
+  }
 }
 
 export function normalizeGameMasterBeatResponse(
@@ -922,6 +1006,17 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
             repairResponseLength: repairText.length,
             repairResponseFlags: responseFlags(repairText),
           }
+
+          if ([
+            'empty_response',
+            'missing_json_object',
+            'invalid_json',
+            'missing_required_field',
+            'progression_contract',
+          ].includes(failedDiagnostics.repairErrorCategory ?? '')) {
+            return buildFallbackGameMasterBeat(input, gameMasterAgentId, failedDiagnostics)
+          }
+
           throw new GameMasterBeatGenerationError(
             `Game-master beat repair failed (initial: ${failedDiagnostics.initialErrorCategory}, repair: ${failedDiagnostics.repairErrorCategory})`,
             failedDiagnostics,

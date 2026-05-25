@@ -22,7 +22,6 @@ jest.mock('@/lib/eliza/characterResolver', () => ({
 }))
 
 import {
-  GameMasterBeatGenerationError,
   OfficialGameMasterBeatGenerator,
   buildGameMasterBeatProgressionContext,
   buildGameMasterBeatPrompt,
@@ -530,7 +529,7 @@ describe('game-master beat generator helpers', () => {
     expect(repairPrompt).not.toContain('not json')
   })
 
-  it('throws a categorized repair failure without exposing raw model text', async () => {
+  it('falls back to a safe deterministic beat when model repair still fails progression validation', async () => {
     const messaging = {
       startAgent: jest.fn(async () => undefined),
       createSession: jest.fn(async () => ({ sessionId: 'session-1' })),
@@ -545,7 +544,7 @@ describe('game-master beat generator helpers', () => {
     }
     const generator = new OfficialGameMasterBeatGenerator(messaging as never)
 
-    const thrown = await generator.generateBeat({
+    const output = await generator.generateBeat({
       gameMasterAgentId: 'gm-runtime-1',
       room: room(),
       tick: tick(),
@@ -553,22 +552,28 @@ describe('game-master beat generator helpers', () => {
       speaker: participants[0],
       recentMessages: [message()],
       narrativeState: narrativeState(),
-    }).catch((error) => error)
-
-    expect(thrown).toBeInstanceOf(GameMasterBeatGenerationError)
-    expect(thrown).toMatchObject({
-      name: 'GameMasterBeatGenerationError',
-      diagnostics: expect.objectContaining({
-        status: 'repair_failed',
-        repairAttempted: true,
-        repaired: false,
-        initialErrorCategory: 'missing_json_object',
-        repairErrorCategory: 'progression_contract',
-        initialResponseLength: 'not json'.length,
-        repairResponseLength: expect.any(Number),
-      }),
     })
-    expect(thrown.message).not.toContain('not json')
+
+    expect(output).toMatchObject({
+      gameMasterAgentId: 'gm-runtime-1',
+      ttrpgPhase: 'exploration',
+      combatReadiness: 'none',
+      requestedGameplayAction: null,
+      metadata: {
+        gmGeneration: expect.objectContaining({
+          status: 'repaired',
+          repairAttempted: true,
+          repaired: false,
+          fallbackUsed: true,
+          initialErrorCategory: 'missing_json_object',
+          repairErrorCategory: 'progression_contract',
+          initialResponseLength: 'not json'.length,
+          repairResponseLength: expect.any(Number),
+        }),
+      },
+    })
+    expect(output.speakerInstruction).toContain('Ash')
+    expect(output.stateAfter.openThreads.length).toBeGreaterThan(0)
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
   })
 
