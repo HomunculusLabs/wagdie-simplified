@@ -19,12 +19,19 @@ function rollLabel(roll: { formula: string | null; total: number | null } | null
   return roll.formula ?? 'Roll unavailable';
 }
 
+function actionCheckLabel(action: PublicLocationRoomGameplayRolls['action']): string {
+  return action.checkLabel?.trim()
+    || (action.checkType ? formatStatusLabel(action.checkType) : '')
+    || formatStatusLabel(action.actionType);
+}
+
 export function StructuredRollPanel({ rolls, variant = 'roomy' }: StructuredRollPanelProps) {
   if (!rolls) return null;
 
   const isCompact = variant === 'compact';
   const action = rolls.action;
   const target = action.target ? actorLabel(action.target) : 'No target';
+  const checkLabel = actionCheckLabel(action);
 
   return (
     <section
@@ -39,7 +46,7 @@ export function StructuredRollPanel({ rolls, variant = 'roomy' }: StructuredRoll
             Structured rolls
           </p>
           <p className={isCompact ? 'mt-1 font-eskapade text-neutral-200' : 'mt-1 font-display text-xl lowercase text-neutral-100'}>
-            {formatStatusLabel(action.actionType)}
+            {checkLabel}
           </p>
         </div>
         <div className="rounded-full border border-neutral-700 bg-neutral-950/80 px-3 py-1 font-eskapade text-xs text-neutral-300">
@@ -49,10 +56,15 @@ export function StructuredRollPanel({ rolls, variant = 'roomy' }: StructuredRoll
 
       <div className={isCompact ? 'mt-2 space-y-1.5 font-eskapade text-neutral-400' : 'mt-4 grid gap-3 font-eskapade text-neutral-300 md:grid-cols-2'}>
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
-          <p className="text-xs uppercase tracking-widest text-neutral-500">Action</p>
+          <p className="text-xs uppercase tracking-widest text-neutral-500">Check</p>
           <p className="mt-1 text-neutral-200">
             {actorLabel(action.actor)} → {target}
           </p>
+          {action.checkSource && (
+            <p className="mt-1 text-neutral-500">
+              {formatStatusLabel(action.checkSource)} check · action {formatStatusLabel(action.actionType)}
+            </p>
+          )}
           <p className="mt-1 text-neutral-400">
             {rollLabel(action.roll)}
             {action.modifier != null ? ` · modifier ${action.modifier >= 0 ? '+' : ''}${action.modifier}` : ''}

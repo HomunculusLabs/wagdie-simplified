@@ -31,6 +31,8 @@ const ENCOUNTER_STATUSES = new Set<PublicEncounterStatus>([
   'unknown',
 ])
 
+const CHECK_SOURCES = new Set(['fixed', 'contextual', 'inferred'])
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
@@ -61,6 +63,10 @@ function sanitizeOutcome(value: unknown): PublicActionOutcome {
 
 function sanitizeEncounterStatus(value: unknown): PublicEncounterStatus {
   return ENCOUNTER_STATUSES.has(value as PublicEncounterStatus) ? value as PublicEncounterStatus : 'unknown'
+}
+
+function publicCheckSource(value: unknown): string | undefined {
+  return CHECK_SOURCES.has(value as string) ? value as string : undefined
 }
 
 function publicRollDie(value: unknown): PublicLocationRoomGameplayRollDie | null {
@@ -145,8 +151,17 @@ function actionRollFromSummary(summary: GameplayMechanicalOutcomeSummary): Publi
   const actionType = publicString(deltas.actionType, 40) ?? 'unknown'
   const roll = publicRollDie(actionRoll.roll)
 
+  const checkType = publicString(actionRoll.checkType, 40)
+  const checkLabel = publicString(actionRoll.checkLabel, 80)
+  const checkSource = publicCheckSource(actionRoll.checkSource)
+  const contextualCheckId = publicString(actionRoll.contextualCheckId, 64)
+
   return {
     actionType,
+    ...(checkType ? { checkType } : {}),
+    ...(checkLabel ? { checkLabel } : {}),
+    ...(checkSource ? { checkSource } : {}),
+    ...(contextualCheckId ? { contextualCheckId } : {}),
     actor: actorFromToken(deltas.actorTokenId),
     target: inferActionTarget(deltas, actionRoll),
     roll,
@@ -280,8 +295,17 @@ function sanitizeAction(value: unknown): PublicLocationRoomGameplayActionRoll | 
   const actor = sanitizeActor(value.actor)
   if (!actor) return null
 
+  const checkType = publicString(value.checkType, 40)
+  const checkLabel = publicString(value.checkLabel, 80)
+  const checkSource = publicCheckSource(value.checkSource)
+  const contextualCheckId = publicString(value.contextualCheckId, 64)
+
   return {
     actionType: publicString(value.actionType, 40) ?? 'unknown',
+    ...(checkType ? { checkType } : {}),
+    ...(checkLabel ? { checkLabel } : {}),
+    ...(checkSource ? { checkSource } : {}),
+    ...(contextualCheckId ? { contextualCheckId } : {}),
     actor,
     target: sanitizeTarget(value.target),
     roll: publicRollDie(value.roll),

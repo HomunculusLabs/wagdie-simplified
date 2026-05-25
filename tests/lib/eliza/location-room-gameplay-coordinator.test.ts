@@ -616,7 +616,7 @@ describe('location room gameplay coordinator', () => {
       encounterTrigger: combatTrigger(),
     })
 
-    expect(result).toMatchObject({ status: 'completed', selectedTokenId: 1, messageIds: ['msg-1', 'msg-2', 'msg-3'] })
+    expect(result).toMatchObject({ status: 'completed', selectedTokenId: 1, messageIds: ['msg-1', 'msg-2', 'msg-3', 'msg-4'] })
     expect(gameplayRepository.encounters[0]).toMatchObject({
       status: 'victory',
       completedAt: now.toISOString(),
@@ -641,9 +641,11 @@ describe('location room gameplay coordinator', () => {
     expect(roomRepository.messages.map((message) => message.metadata.gameplayMessageKind)).toEqual([
       'gm_setup',
       'character_action',
+      'roll_card',
       'gm_outcome',
     ])
     expect(roomRepository.messages.map((message) => message.metadata.messageDomain)).toEqual([
+      'combat',
       'combat',
       'combat',
       'combat',
@@ -652,12 +654,11 @@ describe('location room gameplay coordinator', () => {
       'combat',
       'combat',
       'combat',
+      'combat',
     ])
-    const outcomeMessage = roomRepository.messages.find((message) => message.metadata.gameplayMessageKind === 'gm_outcome')
-    expect(outcomeMessage?.content).toBe('The backend result echoes through the room.')
-    expect(outcomeMessage?.content).not.toContain('Rolls:')
-    expect(outcomeMessage?.metadata).toEqual(expect.objectContaining({
-      rollSummary: expect.stringContaining('Rolls:'),
+    const rollCardMessage = roomRepository.messages.find((message) => message.metadata.gameplayMessageKind === 'roll_card')
+    expect(rollCardMessage?.metadata).toEqual(expect.objectContaining({
+      dedupeKey: 'gameplay:roll_card',
       publicRolls: expect.objectContaining({
         action: expect.objectContaining({
           actionType: 'attack',
@@ -668,13 +669,20 @@ describe('location room gameplay coordinator', () => {
         encounterStatusAfter: 'victory',
       }),
     }))
+    const outcomeMessage = roomRepository.messages.find((message) => message.metadata.gameplayMessageKind === 'gm_outcome')
+    expect(outcomeMessage?.content).toBe('The backend result echoes through the room.')
+    expect(outcomeMessage?.content).not.toContain('Rolls:')
+    expect(outcomeMessage?.metadata).toEqual(expect.objectContaining({
+      rollSummary: expect.stringContaining('Rolls:'),
+    }))
+    expect(outcomeMessage?.metadata).not.toHaveProperty('publicRolls')
     expect(actionGenerator.generateAction).toHaveBeenCalledWith(expect.objectContaining({
       speakerInstruction: 'Carry forward the bell threat.',
     }))
     expect(outcomeMessage?.metadata).not.toHaveProperty('mechanicalDeltas')
     expect(outcomeMessage?.metadata).not.toHaveProperty('diceResults')
-    expect(JSON.stringify(outcomeMessage?.metadata.publicRolls)).not.toContain('charactersAfter')
-    expect(JSON.stringify(outcomeMessage?.metadata.publicRolls)).not.toContain('rewardAssignments')
+    expect(JSON.stringify(rollCardMessage?.metadata.publicRolls)).not.toContain('charactersAfter')
+    expect(JSON.stringify(rollCardMessage?.metadata.publicRolls)).not.toContain('rewardAssignments')
     expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
       metadata: expect.objectContaining({
         ttrpgPhase: 'combat',
@@ -729,6 +737,39 @@ describe('location room gameplay coordinator', () => {
     })
   })
 
+  it('fails safely before mechanics when a custom action generator returns an invalid action', async () => {
+    const { coordinator, gameplayRepository, roomRepository, actionGenerator } = makeCoordinator()
+    actionGenerator.generateAction.mockResolvedValueOnce({
+      officialAgentId: 'agent-1',
+      action: {
+        actionType: 'attack',
+        target: null,
+        publicSpeech: 'I strike what is not there.',
+        intentSummary: 'Invalid attack without a target.',
+        metadata: {},
+      },
+      rawResponseLength: 42,
+    })
+
+    await expect(coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+      encounterTrigger: combatTrigger(),
+    })).rejects.toThrow('Generated gameplay action failed validation: Attack actions require a legal monster target')
+
+    expect(roomRepository.messages.map((message) => message.metadata.gameplayMessageKind)).toEqual(['gm_setup'])
+    expect(gameplayRepository.turns[0]).toMatchObject({
+      status: 'planned',
+      selectedTokenId: 1,
+      publicMessageIds: ['msg-1'],
+      diceResults: [],
+      mechanicalDeltas: {},
+    })
+  })
+
   it('returns a completed turn on retry without regenerating or duplicating messages', async () => {
     const { coordinator, roomRepository, gmGenerator, actionGenerator } = makeCoordinator()
     const input = {
@@ -743,10 +784,127 @@ describe('location room gameplay coordinator', () => {
     await coordinator.processTurn(input)
     const result = await coordinator.processTurn(input)
 
-    expect(result).toMatchObject({ status: 'completed', messageIds: ['msg-1', 'msg-2', 'msg-3'] })
-    expect(roomRepository.messages).toHaveLength(3)
+    expect(result).toMatchObject({ status: 'completed', messageIds: ['msg-1', 'msg-2', 'msg-3', 'msg-4'] })
+    expect(roomRepository.messages).toHaveLength(4)
+    expect(roomRepository.messages.map((message) => message.metadata.dedupeKey)).toEqual([
+      'gameplay:gm_setup',
+      'gameplay:character_action',
+      'gameplay:roll_card',
+      'gameplay:gm_outcome',
+    ])
     expect(gmGenerator.generateEncounterProposal).toHaveBeenCalledTimes(1)
     expect(actionGenerator.generateAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves action and roll-card messages when retrying after outcome narration fails', async () => {
+    const { coordinator, gameplayRepository, roomRepository, gmGenerator, actionGenerator } = makeCoordinator()
+    gmGenerator.generateOutcomeNarration.mockRejectedValueOnce(new Error('temporary gm failure'))
+    const input = {
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+      encounterTrigger: combatTrigger(),
+    }
+
+    await expect(coordinator.processTurn(input)).rejects.toThrow('temporary gm failure')
+
+    expect(roomRepository.messages.map((message) => message.metadata.gameplayMessageKind)).toEqual([
+      'gm_setup',
+      'character_action',
+      'roll_card',
+    ])
+    expect(gameplayRepository.turns[0]).toMatchObject({
+      status: 'resolved',
+      publicMessageIds: ['msg-1', 'msg-2', 'msg-3'],
+    })
+    expect(roomRepository.messages[2].metadata).toEqual(expect.objectContaining({
+      dedupeKey: 'gameplay:roll_card',
+      publicRolls: expect.objectContaining({ action: expect.objectContaining({ actionType: 'attack' }) }),
+    }))
+
+    const result = await coordinator.processTurn(input)
+
+    expect(result).toMatchObject({ status: 'completed', messageIds: ['msg-1', 'msg-2', 'msg-3', 'msg-4'] })
+    expect(roomRepository.messages.map((message) => message.metadata.gameplayMessageKind)).toEqual([
+      'gm_setup',
+      'character_action',
+      'roll_card',
+      'gm_outcome',
+    ])
+    expect(gameplayRepository.turns[0].publicMessageIds).toEqual(['msg-1', 'msg-2', 'msg-3', 'msg-4'])
+    expect(actionGenerator.generateAction).toHaveBeenCalledTimes(1)
+    expect(gmGenerator.generateOutcomeNarration).toHaveBeenCalledTimes(2)
+    expect(roomRepository.messages[3].metadata).toEqual(expect.objectContaining({
+      dedupeKey: 'gameplay:gm_outcome',
+      rollSummary: expect.stringContaining('Rolls:'),
+    }))
+    expect(roomRepository.messages[3].metadata).not.toHaveProperty('publicRolls')
+  })
+
+  it('dedupes an appended outcome on retry before completion and preserves no-setup ordering', async () => {
+    const { coordinator, gameplayRepository, roomRepository, narrativeRepository, gmGenerator, actionGenerator } = makeCoordinator()
+    gameplayRepository.state.status = 'active_encounter'
+    gameplayRepository.state.activeEncounterId = 'encounter-existing'
+    gameplayRepository.encounters.push({
+      id: 'encounter-existing',
+      roomId: 'room-1',
+      locationId: 'loc-1',
+      status: 'active',
+      difficulty: 'normal',
+      roundNumber: 2,
+      publicTitle: 'Existing Maw',
+      publicSummary: 'Existing summary.',
+      monsterState: [{ id: 'monster-1', name: 'Existing Maw', archetype: 'bell horror', hp: 2, maxHp: 2, ac: 12, attackBonus: 2, damageFormula: '1d6', status: 'alive' }],
+      rewardPlan: { xpPerCharacter: 5, temporaryBoons: [], narrativeRewards: [], victoryText: null, metadata: {} },
+      mechanics: {},
+      metadata: { createdByTickId: 'previous-tick' },
+      lastError: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      completedAt: null,
+    })
+    narrativeRepository.updateState.mockRejectedValueOnce(new Error('temporary state failure'))
+    const input = {
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+    }
+
+    await expect(coordinator.processTurn(input)).rejects.toThrow('temporary state failure')
+
+    expect(roomRepository.messages.map((message) => message.metadata.gameplayMessageKind)).toEqual([
+      'character_action',
+      'roll_card',
+      'gm_outcome',
+    ])
+    expect(gameplayRepository.turns[0]).toMatchObject({
+      status: 'resolved',
+      publicMessageIds: ['msg-1', 'msg-2'],
+    })
+
+    const result = await coordinator.processTurn(input)
+
+    expect(result).toMatchObject({ status: 'completed', messageIds: ['msg-1', 'msg-2', 'msg-3'] })
+    expect(roomRepository.messages).toHaveLength(3)
+    expect(roomRepository.messages.map((message) => message.metadata.dedupeKey)).toEqual([
+      'gameplay:character_action',
+      'gameplay:roll_card',
+      'gameplay:gm_outcome',
+    ])
+    expect(gameplayRepository.turns[0].publicMessageIds).toEqual(['msg-1', 'msg-2', 'msg-3'])
+    expect(actionGenerator.generateAction).toHaveBeenCalledTimes(1)
+    expect(gmGenerator.generateOutcomeNarration).toHaveBeenCalledTimes(2)
+    expect(roomRepository.messages[1].metadata).toEqual(expect.objectContaining({
+      publicRolls: expect.objectContaining({ action: expect.objectContaining({ actionType: 'attack' }) }),
+    }))
+    expect(roomRepository.messages[2].metadata).toEqual(expect.objectContaining({
+      rollSummary: expect.stringContaining('Rolls:'),
+    }))
+    expect(roomRepository.messages[2].metadata).not.toHaveProperty('publicRolls')
   })
 
   it('excludes gameplay-dead characters from speaker selection', async () => {

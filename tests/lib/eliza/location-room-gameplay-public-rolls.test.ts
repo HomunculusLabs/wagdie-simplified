@@ -57,6 +57,39 @@ describe('public gameplay roll projection', () => {
     expect(JSON.stringify(projected)).not.toContain('rolls')
   })
 
+  it('projects selected check display fields from mechanical summaries', () => {
+    const projected = projectPublicGameplayRolls(summary({
+      mechanicalDeltas: {
+        actorTokenId: 7,
+        actionType: 'investigate',
+        actionRoll: {
+          formula: 'd20',
+          dc: 13,
+          modifier: 5,
+          targetKind: 'scene',
+          roll: { formula: '1d20+5', rolls: [{ sides: 20, value: 14 }], total: 19 },
+          total: 19,
+          tier: 'success',
+          checkType: 'arcana',
+          checkLabel: 'Read the Runes',
+          checkSource: 'contextual',
+          contextualCheckId: 'read-the-runes',
+          modifierBreakdown: { private: 'not public' },
+        },
+      },
+    }))
+
+    expect(projected?.action).toEqual(expect.objectContaining({
+      actionType: 'investigate',
+      checkType: 'arcana',
+      checkLabel: 'Read the Runes',
+      checkSource: 'contextual',
+      contextualCheckId: 'read-the-runes',
+      target: { kind: 'environment', id: null, name: null },
+    }))
+    expect(JSON.stringify(projected)).not.toContain('modifierBreakdown')
+  })
+
   it('projects damage, healing, and retaliation effects', () => {
     const projected = projectPublicGameplayRolls(summary({
       mechanicalDeltas: {
@@ -139,6 +172,11 @@ describe('public gameplay roll projection', () => {
     const valid = sanitizePublicGameplayRolls({
       action: {
         actionType: 'attack',
+        checkType: 'arcana',
+        checkLabel: 'Read the Runes',
+        checkSource: 'contextual',
+        contextualCheckId: 'read-the-runes',
+        privateCheckNote: 'drop',
         actor: { kind: 'character', id: '7', tokenId: 7, name: 'Ash', private: 'drop' },
         target: { kind: 'monster', id: 'monster-1', name: 'Bell Maw' },
         roll: { formula: '1d20', rolls: [20], total: 20 },
@@ -160,6 +198,10 @@ describe('public gameplay roll projection', () => {
     expect(valid).toEqual({
       action: {
         actionType: 'attack',
+        checkType: 'arcana',
+        checkLabel: 'Read the Runes',
+        checkSource: 'contextual',
+        contextualCheckId: 'read-the-runes',
         actor: { kind: 'character', id: '7', tokenId: 7, name: 'Ash' },
         target: { kind: 'monster', id: 'monster-1', tokenId: undefined, name: 'Bell Maw' },
         roll: { formula: '1d20', total: 20 },
@@ -192,6 +234,7 @@ describe('public gameplay roll projection', () => {
       }],
       encounterStatusAfter: 'victory',
     })
+    expect(JSON.stringify(valid)).not.toContain('privateCheckNote')
     expect(isPublicGameplayRolls(valid)).toBe(true)
     expect(sanitizePublicGameplayRolls(null)).toBeNull()
     expect(sanitizePublicGameplayRolls({ action: { actor: null } })).toBeNull()

@@ -75,11 +75,13 @@ export function getGameplayMessageLabel(message: PublicRoomMessage): string | nu
 
   if (domain === 'combat' && kind === 'gm_setup') return 'Combat setup';
   if (domain === 'combat' && kind === 'character_action') return 'Combat action';
+  if (domain === 'combat' && kind === 'roll_card') return 'Roll/check result';
   if (domain === 'combat' && kind === 'gm_outcome') return 'Combat outcome';
   if (domain === 'narrative' && kind === 'gm_beat') return 'Story beat';
   if (domain === 'narrative' && kind === 'character_reaction') return 'Character reaction';
   if (kind === 'gm_setup') return 'GM setup';
   if (kind === 'character_action') return 'Character action';
+  if (kind === 'roll_card') return 'Roll/check result';
   if (kind === 'gm_outcome') return 'GM outcome';
   if (kind === 'gm_beat') return 'Story beat';
   return null;
@@ -95,6 +97,10 @@ export function getMessageToneClassName(message: PublicRoomMessage): string {
 
   if (domain === 'combat' && kind === 'character_action') {
     return 'border-amber-500/35 bg-amber-500/10 shadow-[0_0_30px_rgba(245,158,11,0.08)]';
+  }
+
+  if (domain === 'combat' && kind === 'roll_card') {
+    return 'border-cyan-400/35 bg-cyan-500/10 shadow-[0_0_30px_rgba(34,211,238,0.08)]';
   }
 
   if (domain === 'combat' && kind === 'gm_outcome') {

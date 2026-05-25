@@ -29,9 +29,11 @@ import {
 } from './rewardClaims'
 import {
   normalizeEncounterProposal,
+  parseGameplayContextualChecks,
   parseGameplayMonsters,
   resolveGameplayTurnMechanics,
   validateGameplayActionEnvelope,
+  type GameplayActionValidationContext,
   type GameplayTurnMechanicalDeltas,
   type ResolveGameplayTurnMechanicsResult,
 } from './rules'
@@ -265,15 +267,8 @@ function filterCharactersToParticipants(
   )
 }
 
-function coerceGameplayAction(value: Record<string, unknown>, context: {
-  legalMonsterIds: string[]
-  legalCharacterTokenIds: number[]
-}): GameplayActionEnvelope | null {
-  const validated = validateGameplayActionEnvelope(value, {
-    ...context,
-    publicSpeechMaxLength: elizaConfig.locationRooms.gameplay.publicSpeechMaxLength,
-    intentSummaryMaxLength: elizaConfig.locationRooms.gameplay.actionIntentMaxLength,
-  })
+function coerceGameplayAction(value: Record<string, unknown>, context: GameplayActionValidationContext): GameplayActionEnvelope | null {
+  const validated = validateGameplayActionEnvelope(value, context)
 
   return validated.ok ? validated.action : null
 }
@@ -293,6 +288,23 @@ function mechanicalDeltasFromTurn(turn: GameplayTurn): GameplayTurnMechanicalDel
 
 function messageIdsWith(existing: string[], id: string): string[] {
   return existing.includes(id) ? existing : [...existing, id]
+}
+
+function rollCardContent(publicRolls: ReturnType<typeof projectPublicGameplayRolls>): string {
+  const action = publicRolls?.action
+  const checkLabel = action?.checkLabel?.trim() || action?.checkType?.replace(/_/g, ' ') || action?.actionType?.replace(/_/g, ' ')
+  const total = typeof action?.total === 'number' ? ` total ${action.total}` : null
+  const dc = typeof action?.dc === 'number' ? ` vs DC ${action.dc}` : null
+  const outcome = action?.outcome && action.outcome !== 'unknown'
+    ? ` — ${action.outcome.replace(/_/g, ' ')}`
+    : null
+
+  return [
+    checkLabel ? `The ${checkLabel} check resolves` : 'The roll resolves',
+    total,
+    dc,
+    outcome,
+  ].filter(Boolean).join('') + '.'
 }
 
 function activeMonsterIds(encounter: GameplayEncounter): string[] {
@@ -602,7 +614,14 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       ? storedDeltas.monstersBefore.filter((monster) => monster.status === 'alive' && monster.hp > 0).map((monster) => monster.id)
       : activeMonsterIds(encounter)
     const legalCharacterTokenIds = selectableParticipants.map((participant) => participant.tokenId)
-    let action = coerceGameplayAction(turn.action, { legalMonsterIds, legalCharacterTokenIds })
+    const validationContext: GameplayActionValidationContext = {
+      legalMonsterIds,
+      legalCharacterTokenIds,
+      publicSpeechMaxLength: elizaConfig.locationRooms.gameplay.publicSpeechMaxLength,
+      intentSummaryMaxLength: elizaConfig.locationRooms.gameplay.actionIntentMaxLength,
+      contextualChecks: parseGameplayContextualChecks((encounter.mechanics as Record<string, unknown> | undefined)?.contextualChecks),
+    }
+    let action = coerceGameplayAction(turn.action, validationContext)
     let actionOfficialAgentId = typeof turn.metadata.officialAgentId === 'string' ? turn.metadata.officialAgentId : null
 
     if (!action && turnHasStoredMechanics) {
@@ -620,15 +639,15 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         gameplayState,
         characterState: gameplayState.characters[String(speaker.tokenId)],
         visibleMonsters: parseGameplayMonsters(encounter.monsterState),
-        validation: {
-          legalMonsterIds,
-          legalCharacterTokenIds,
-          publicSpeechMaxLength: elizaConfig.locationRooms.gameplay.publicSpeechMaxLength,
-          intentSummaryMaxLength: elizaConfig.locationRooms.gameplay.actionIntentMaxLength,
-        },
+        validation: validationContext,
         speakerInstruction: triggerSpeakerInstruction(input.encounterTrigger, encounter),
       })
-      action = generated.action
+      const generatedValidation = validateGameplayActionEnvelope(generated.action, validationContext)
+      if (!generatedValidation.ok) {
+        throw new Error(`Generated gameplay action failed validation: ${generatedValidation.error}`)
+      }
+
+      action = generatedValidation.action
       actionOfficialAgentId = generated.officialAgentId
       turn = await this.gameplayRepository.storeTurnOutcome(turn.id, {
         status: 'action_recorded',
@@ -768,22 +787,6 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       rewardAssignments: deltas.rewardAssignments,
     }
 
-    const outcome = await this.gameMasterGenerator.generateOutcomeNarration({
-      gameMasterAgentId,
-      room: input.room,
-      tick: input.tick,
-      participants: selectableParticipants,
-      recentMessages: input.recentMessages,
-      narrativeState,
-      gameplayStateBefore: gameplayStateBeforeOutcome,
-      gameplayStateAfter: gameplayState,
-      encounterBefore: encounterBeforeOutcome,
-      encounterAfter: encounter,
-      turn,
-      action,
-      mechanicalSummary,
-    })
-    const outcomeContent = outcome.publicNarration
     const publicRolls = projectPublicGameplayRolls(mechanicalSummary)
 
     const actionMessage = await this.repository.appendMessage({
@@ -811,6 +814,61 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
     })
     messageIds = messageIdsWith(messageIds, actionMessage.id)
 
+    const rollCardMessage = await this.repository.appendMessage({
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      tickId: input.tick.id,
+      authorKind: 'game_master',
+      tokenId: null,
+      officialAgentId: gameMasterAgentId,
+      authorName: GAMEPLAY_GAME_MASTER_AUTHOR_NAME,
+      content: rollCardContent(publicRolls),
+      visibility: 'public',
+      dedupeKey: 'gameplay:roll_card',
+      metadata: {
+        source: GAMEPLAY_SOURCE,
+        gameplay: true,
+        gameplayMessageKind: 'roll_card',
+        messageDomain: 'combat',
+        messageKind: 'roll_card',
+        ttrpgPhase: 'combat',
+        gameplayTurnId: turn.id,
+        encounterId: encounter.id,
+        ...(publicRolls ? { publicRolls } : {}),
+      },
+    })
+    messageIds = messageIdsWith(messageIds, rollCardMessage.id)
+
+    turn = await this.gameplayRepository.storeTurnOutcome(turn.id, {
+      status: 'resolved',
+      selectedTokenId: speaker.tokenId,
+      action,
+      diceResults: mechanics.diceResults,
+      mechanicalDeltas: deltas as unknown as Record<string, unknown>,
+      publicMessageIds: messageIds,
+      metadata: {
+        ...turn.metadata,
+        officialAgentId: actionOfficialAgentId ?? undefined,
+      },
+    })
+
+    const outcome = await this.gameMasterGenerator.generateOutcomeNarration({
+      gameMasterAgentId,
+      room: input.room,
+      tick: input.tick,
+      participants: selectableParticipants,
+      recentMessages: input.recentMessages,
+      narrativeState,
+      gameplayStateBefore: gameplayStateBeforeOutcome,
+      gameplayStateAfter: gameplayState,
+      encounterBefore: encounterBeforeOutcome,
+      encounterAfter: encounter,
+      turn,
+      action,
+      mechanicalSummary,
+    })
+    const outcomeContent = outcome.publicNarration
+
     const outcomeMessage = await this.repository.appendMessage({
       roomId: input.room.id,
       locationId: input.room.locationId,
@@ -831,9 +889,8 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         ttrpgPhase: 'combat',
         gameplayTurnId: turn.id,
         encounterId: encounter.id,
-        // Compatibility: keep legacy embedded roll summary metadata until every public surface renders structured publicRolls.
+        // Compatibility/debug metadata for historical consumers; structured publicRolls now live on roll_card.
         rollSummary: formatPublicGameplayRollSummary(mechanicalSummary),
-        ...(publicRolls ? { publicRolls } : {}),
       },
     })
     messageIds = messageIdsWith(messageIds, outcomeMessage.id)

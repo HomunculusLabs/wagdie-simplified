@@ -30,9 +30,9 @@ const roomFixture: PublicLocationRoomRead = {
   },
   activity: {
     generatedAt: '2026-05-24T13:05:00.000Z',
-    messageCount: 4,
-    latestSequence: 4,
-    latestMessageCreatedAt: '2026-05-24T13:04:00.000Z',
+    messageCount: 5,
+    latestSequence: 5,
+    latestMessageCreatedAt: '2026-05-24T13:05:00.000Z',
     lastTickAt: '2026-05-24T13:00:00.000Z',
     tickCount: 4,
     completedTurnCount: 3,
@@ -70,13 +70,13 @@ const roomFixture: PublicLocationRoomRead = {
   ],
   messages: [
     {
-      id: 'msg-4',
-      sequence: 4,
+      id: 'msg-5',
+      sequence: 5,
       authorKind: 'game_master',
       tokenId: null,
       authorName: 'Internal GM Agent',
       content: 'The ghoul staggers as the blade bites.',
-      createdAt: '2026-05-24T13:04:00.000Z',
+      createdAt: '2026-05-24T13:05:00.000Z',
       messageDomain: 'combat',
       messageKind: 'gm_outcome',
       ttrpgPhase: 'combat',
@@ -127,6 +127,40 @@ const roomFixture: PublicLocationRoomRead = {
       gameplayMessageKind: 'character_action',
     },
     {
+      id: 'msg-4',
+      sequence: 4,
+      authorKind: 'game_master',
+      tokenId: null,
+      authorName: 'Internal GM Agent',
+      content: 'Dice clatter against the ash.',
+      createdAt: '2026-05-24T13:04:00.000Z',
+      messageDomain: 'combat',
+      messageKind: 'roll_card',
+      ttrpgPhase: 'combat',
+      gameplayMessageKind: 'roll_card',
+      gameplayRolls: {
+        action: {
+          actionType: 'investigate',
+          checkType: 'arcana',
+          checkLabel: 'Read the Runes',
+          checkSource: 'contextual',
+          contextualCheckId: 'read-the-runes',
+          actor: { kind: 'character', id: '7', tokenId: 7, name: 'Wagdie #7' },
+          target: { kind: 'environment', id: null, name: null },
+          roll: { formula: '1d20+5', total: 19 },
+          modifier: 5,
+          total: 19,
+          dc: 13,
+          tier: 'success',
+          outcome: 'success',
+        },
+        publicEffects: [],
+        retaliation: null,
+        deaths: [],
+        encounterStatusAfter: 'active',
+      },
+    },
+    {
       id: 'msg-2',
       sequence: 2,
       authorKind: 'game_master',
@@ -173,7 +207,7 @@ const roomFixture: PublicLocationRoomRead = {
       narrativeRewards: ['A bone key'],
     },
   },
-  pagination: { page: 1, pageSize: 50, total: 4, hasMore: false },
+  pagination: { page: 1, pageSize: 50, total: 5, hasMore: false },
 };
 
 describe('LocationRoomWatchPage', () => {
@@ -208,7 +242,7 @@ describe('LocationRoomWatchPage', () => {
     expect(screen.getByRole('link', { name: /Back to map/i })).toHaveAttribute('href', '/map');
     expect(screen.getAllByText('Crows Den').length).toBeGreaterThan(0);
     expect(screen.getByText('Requested crows_den aliases to 11')).toBeInTheDocument();
-    expect(screen.getByText('4 messages')).toBeInTheDocument();
+    expect(screen.getByText('5 messages')).toBeInTheDocument();
     expect(screen.getByText('Phase Threat · Readiness Ready')).toBeInTheDocument();
     expect(screen.getByText('Phase Threat')).toBeInTheDocument();
     expect(screen.getByText('Readiness Ready')).toBeInTheDocument();
@@ -222,6 +256,7 @@ describe('LocationRoomWatchPage', () => {
     expect(screen.getByText('Story beat')).toBeInTheDocument();
     expect(screen.getByText('Character reaction')).toBeInTheDocument();
     expect(screen.getByText('Combat action')).toBeInTheDocument();
+    expect(screen.getByText('Roll/check result')).toBeInTheDocument();
     expect(screen.getByText('Combat outcome')).toBeInTheDocument();
     expect(screen.getAllByText('Wagdie #7').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Token #7').length).toBeGreaterThan(0);
@@ -233,7 +268,10 @@ describe('LocationRoomWatchPage', () => {
     expect(screen.getAllByText('Ash Ghoul').length).toBeGreaterThan(0);
     expect(screen.getByText('The shrine quiets.')).toBeInTheDocument();
 
-    expect(screen.getByLabelText('Structured GM rolls')).toBeInTheDocument();
+    expect(screen.getAllByLabelText('Structured GM rolls')).toHaveLength(2);
+    expect(screen.getByText('Read the Runes')).toBeInTheDocument();
+    expect(screen.getByText(/Contextual check · action Investigate/)).toBeInTheDocument();
+    expect(screen.getByText(/1d20\+5 → 19/)).toBeInTheDocument();
     expect(screen.getByText('The ghoul staggers as the blade bites.')).toBeInTheDocument();
     expect(screen.queryByText(/Rolls:/)).not.toBeInTheDocument();
     expect(screen.getByText(/1d20\+4 → 18/)).toBeInTheDocument();

@@ -576,21 +576,51 @@ describe('location room domain service', () => {
             },
           }),
           message({
-            id: 'msg-legacy-agent',
+            id: 'msg-roll-card',
             sequence: 4,
+            authorKind: 'game_master',
+            tokenId: null,
+            metadata: {
+              gameplayMessageKind: 'roll_card',
+              publicRolls: {
+                action: {
+                  actionType: 'investigate',
+                  checkType: 'arcana',
+                  checkLabel: 'Read the Runes',
+                  checkSource: 'contextual',
+                  contextualCheckId: 'read-the-runes',
+                  actor: { kind: 'character', id: '1', tokenId: 1, name: 'Ash', private: 'hidden' },
+                  target: { kind: 'environment', id: null, name: null },
+                  roll: { formula: '1d20+5', total: 19, rolls: [14] },
+                  modifier: 5,
+                  total: 19,
+                  dc: 13,
+                  tier: 'success',
+                  outcome: 'success',
+                },
+                publicEffects: [],
+                retaliation: null,
+                deaths: [],
+                encounterStatusAfter: 'active',
+              },
+            },
+          }),
+          message({
+            id: 'msg-legacy-agent',
+            sequence: 5,
             authorKind: 'agent',
             tokenId: 2,
             metadata: {},
           }),
           message({
             id: 'msg-wallet',
-            sequence: 5,
+            sequence: 6,
             authorKind: 'wallet',
             tokenId: null,
             metadata: { messageDomain: 'system', messageKind: 'mechanics', ttrpgPhase: 'secret' },
           }),
         ],
-        total: 5,
+        total: 6,
         page: 1,
         pageSize: 20,
         hasMore: false,
@@ -621,6 +651,21 @@ describe('location room domain service', () => {
         ttrpgPhase: 'combat',
       }),
       expect.objectContaining({
+        id: 'msg-roll-card',
+        gameplayMessageKind: 'roll_card',
+        messageDomain: 'combat',
+        messageKind: 'roll_card',
+        ttrpgPhase: 'combat',
+        gameplayRolls: expect.objectContaining({
+          action: expect.objectContaining({
+            checkType: 'arcana',
+            checkLabel: 'Read the Runes',
+            checkSource: 'contextual',
+            contextualCheckId: 'read-the-runes',
+          }),
+        }),
+      }),
+      expect.objectContaining({
         id: 'msg-legacy-agent',
         messageDomain: 'narrative',
         messageKind: 'character_reaction',
@@ -628,12 +673,13 @@ describe('location room domain service', () => {
       }),
       expect.objectContaining({ id: 'msg-wallet' }),
     ])
-    expect(result.messages[4]).not.toHaveProperty('messageDomain')
-    expect(result.messages[4]).not.toHaveProperty('messageKind')
-    expect(result.messages[4]).not.toHaveProperty('ttrpgPhase')
+    expect(result.messages[5]).not.toHaveProperty('messageDomain')
+    expect(result.messages[5]).not.toHaveProperty('messageKind')
+    expect(result.messages[5]).not.toHaveProperty('ttrpgPhase')
     expect(JSON.stringify(result.messages)).not.toContain('privateNarrativeState')
     expect(JSON.stringify(result.messages)).not.toContain('privateMechanics')
     expect(JSON.stringify(result.messages)).not.toContain('rawDc')
+    expect(JSON.stringify(result.messages)).not.toContain('private')
     expect(JSON.stringify(result.messages)).not.toContain('private_phase')
   })
 

@@ -1,4 +1,4 @@
-import type { GameplayRunStatus } from './gameplay/types'
+import type { GameplayCheckType, GameplayRollChoiceSource, GameplayRunStatus } from './gameplay/types'
 
 export type LocationRoomTriggerType = 'scheduled' | 'owner' | 'admin'
 export type LocationRoomTickStatus = 'pending' | 'processing' | 'completed' | 'skipped' | 'failed' | 'dead'
@@ -22,6 +22,7 @@ export const LOCATION_ROOM_MESSAGE_KINDS = [
   'character_reaction',
   'gm_setup',
   'character_action',
+  'roll_card',
   'gm_outcome',
 ] as const
 export type LocationRoomMessageKind = typeof LOCATION_ROOM_MESSAGE_KINDS[number]
@@ -154,8 +155,7 @@ export type PublicLocationRoomParticipant = {
   speed?: number | null
 }
 
-export type PublicLocationRoomGameplayMessageKind = 'gm_setup' | 'character_action' | 'gm_outcome'
-
+export type PublicLocationRoomGameplayMessageKind = 'gm_setup' | 'character_action' | 'roll_card' | 'gm_outcome'
 export type PublicLocationRoomGameplayRollDie = {
   formula: string | null
   total: number | null
@@ -177,6 +177,10 @@ export type PublicLocationRoomGameplayRollTarget = {
 
 export type PublicLocationRoomGameplayActionRoll = {
   actionType: string
+  checkType?: GameplayCheckType | string
+  checkLabel?: string
+  checkSource?: GameplayRollChoiceSource | string
+  contextualCheckId?: string | null
   actor: PublicLocationRoomGameplayRollActor
   target: PublicLocationRoomGameplayRollTarget | null
   roll: PublicLocationRoomGameplayRollDie | null

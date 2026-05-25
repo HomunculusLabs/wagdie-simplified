@@ -198,6 +198,7 @@ function toPublicParticipant(participant: LocationRoomParticipant): PublicLocati
 const PUBLIC_GAMEPLAY_MESSAGE_KINDS: readonly PublicLocationRoomGameplayMessageKind[] = [
   'gm_setup',
   'character_action',
+  'roll_card',
   'gm_outcome',
 ]
 

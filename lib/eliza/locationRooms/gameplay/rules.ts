@@ -2,11 +2,14 @@ import { elizaConfig, type ElizaLocationRoomGameplayDifficulty } from '@/lib/eli
 import { rollDiceFormula, type GameplayRandomSource, type SupportedDiceFormula } from './dice'
 import {
   GAMEPLAY_ACTION_TYPES,
+  GAMEPLAY_CHECK_TYPES,
   type GameplayActionEnvelope,
   type GameplayActionTarget,
   type GameplayActionType,
   type GameplayCharacterState,
   type GameplayCharacterStateMap,
+  type GameplayCheckType,
+  type GameplayContextualCheckOption,
   type GameplayCoreStatKey,
   type GameplayDiceRollResult,
   type GameplayEffectiveStats,
@@ -16,6 +19,7 @@ import {
   type GameplayMonsterState,
   type GameplayPerformanceCounterUpdate,
   type GameplayRewardPlan,
+  type GameplayRollChoice,
   type GameplayRollModifierBreakdown,
   type GameplayStatContribution,
 } from './types'
@@ -25,6 +29,7 @@ export type GameplaySuccessTier = 'critical_failure' | 'failure' | 'partial_succ
 export type GameplayActionValidationContext = {
   legalMonsterIds?: string[]
   legalCharacterTokenIds?: number[]
+  contextualChecks?: GameplayContextualCheckOption[]
   publicSpeechMaxLength?: number
   intentSummaryMaxLength?: number
 }
@@ -38,6 +43,10 @@ export type GameplayRollPlan = {
   dc: number
   modifier: number
   targetKind: 'monster' | 'character' | 'scene' | 'none'
+  checkType: GameplayCheckType
+  checkLabel: string
+  checkSource: GameplayRollChoice['source']
+  contextualCheckId?: string | null
   modifierBreakdown?: GameplayRollModifierBreakdown
 }
 
@@ -63,6 +72,7 @@ export type GameplayEncounterProposal = Partial<{
   temporaryBoons: unknown
   narrativeRewards: unknown
   victoryText: string
+  contextualChecks: unknown
 }>
 
 export type NormalizeEncounterOptions = {
@@ -85,6 +95,7 @@ export type NormalizedGameplayEncounter = {
   mechanics: {
     budget: number
     sceneDc: number
+    contextualChecks: GameplayContextualCheckOption[]
     normalizedFromProposal: boolean
   }
 }
@@ -92,7 +103,7 @@ export type NormalizedGameplayEncounter = {
 export type ResolveGameplayTurnMechanicsInput = {
   actorTokenId: number
   action: GameplayActionEnvelope
-  encounter: Pick<GameplayEncounter, 'status' | 'difficulty' | 'roundNumber' | 'monsterState' | 'rewardPlan' | 'metadata'>
+  encounter: Pick<GameplayEncounter, 'status' | 'difficulty' | 'roundNumber' | 'monsterState' | 'rewardPlan' | 'mechanics' | 'metadata'>
   characters: GameplayCharacterStateMap
   rng?: GameplayRandomSource
   maxEncounterRounds?: number
@@ -188,6 +199,35 @@ export const ACTION_PRIMARY_STAT_MAPPING: Record<GameplayActionType, GameplayCor
   rest: ['con'],
 }
 
+export type GameplayFixedCheckConfig = {
+  label: string
+  baseDc: number
+  primaryStats: GameplayCoreStatKey[]
+  legacyModifier: number
+}
+
+export const GAMEPLAY_FIXED_CHECK_CONFIG: Record<GameplayCheckType, GameplayFixedCheckConfig> = {
+  attack: { label: 'Attack', baseDc: ACTION_DCS.attack, primaryStats: ACTION_PRIMARY_STAT_MAPPING.attack, legacyModifier: ACTION_MODIFIERS.attack },
+  defend: { label: 'Defend', baseDc: ACTION_DCS.defend, primaryStats: ACTION_PRIMARY_STAT_MAPPING.defend, legacyModifier: ACTION_MODIFIERS.defend },
+  help: { label: 'Help', baseDc: ACTION_DCS.help, primaryStats: ACTION_PRIMARY_STAT_MAPPING.help, legacyModifier: ACTION_MODIFIERS.help },
+  investigate: { label: 'Investigate', baseDc: ACTION_DCS.investigate, primaryStats: ACTION_PRIMARY_STAT_MAPPING.investigate, legacyModifier: ACTION_MODIFIERS.investigate },
+  negotiate: { label: 'Negotiate', baseDc: ACTION_DCS.negotiate, primaryStats: ACTION_PRIMARY_STAT_MAPPING.negotiate, legacyModifier: ACTION_MODIFIERS.negotiate },
+  flee: { label: 'Flee', baseDc: ACTION_DCS.flee, primaryStats: ACTION_PRIMARY_STAT_MAPPING.flee, legacyModifier: ACTION_MODIFIERS.flee },
+  rest: { label: 'Rest', baseDc: ACTION_DCS.rest, primaryStats: ACTION_PRIMARY_STAT_MAPPING.rest, legacyModifier: ACTION_MODIFIERS.rest },
+  explore: { label: 'Explore', baseDc: 12, primaryStats: ['wis', 'dex'], legacyModifier: 0 },
+  arcana: { label: 'Arcana', baseDc: 13, primaryStats: ['int'], legacyModifier: 0 },
+  nature: { label: 'Nature', baseDc: 12, primaryStats: ['int', 'wis'], legacyModifier: 0 },
+  perception: { label: 'Perception', baseDc: 12, primaryStats: ['wis'], legacyModifier: 0 },
+  survival: { label: 'Survival', baseDc: 12, primaryStats: ['wis', 'con'], legacyModifier: 0 },
+  athletics: { label: 'Athletics', baseDc: 12, primaryStats: ['str'], legacyModifier: 0 },
+  stealth: { label: 'Stealth', baseDc: 12, primaryStats: ['dex'], legacyModifier: 0 },
+  persuasion: { label: 'Persuasion', baseDc: 13, primaryStats: ['cha'], legacyModifier: 0 },
+  intimidation: { label: 'Intimidation', baseDc: 13, primaryStats: ['cha', 'str'], legacyModifier: 0 },
+  medicine: { label: 'Medicine', baseDc: 12, primaryStats: ['wis', 'int'], legacyModifier: 0 },
+  history: { label: 'History', baseDc: 12, primaryStats: ['int'], legacyModifier: 0 },
+  religion: { label: 'Religion', baseDc: 13, primaryStats: ['int', 'wis'], legacyModifier: 0 },
+}
+
 const MAX_DAMAGE_STAT_BONUS = 3
 const MAX_HEALING_STAT_BONUS = 3
 
@@ -199,6 +239,11 @@ function clampInteger(value: unknown, min: number, max: number): number {
   const numeric = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(numeric)) return min
   return Math.min(max, Math.max(min, Math.round(numeric)))
+}
+
+function finiteNumber(value: unknown): number | null {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(numeric) ? numeric : null
 }
 
 function clampString(value: unknown, fallback: string, maxLength: number): string {
@@ -220,6 +265,32 @@ function isGameplayActionType(value: unknown): value is GameplayActionType {
   return typeof value === 'string' && (GAMEPLAY_ACTION_TYPES as readonly string[]).includes(value)
 }
 
+function isGameplayCheckType(value: unknown): value is GameplayCheckType {
+  return typeof value === 'string' && (GAMEPLAY_CHECK_TYPES as readonly string[]).includes(value)
+}
+
+function slugifyContextualCheckId(value: unknown, fallback: string): string {
+  const source = typeof value === 'string' && value.trim() ? value : fallback
+  const slug = source
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64)
+  return slug || fallback.slice(0, 64)
+}
+
+function uniqueContextualCheckId(baseId: string, used: Set<string>): string {
+  let id = baseId.slice(0, 64)
+  let suffix = 2
+  while (used.has(id)) {
+    const suffixText = `-${suffix}`
+    id = `${baseId.slice(0, 64 - suffixText.length)}${suffixText}`
+    suffix += 1
+  }
+  used.add(id)
+  return id
+}
+
 function shouldUseStatAwareMechanics(statsEnabled?: boolean, effectiveStats?: GameplayEffectiveStats | null): effectiveStats is GameplayEffectiveStats {
   return (statsEnabled ?? elizaConfig.locationRooms.gameplay.stats.enabled) === true && Boolean(effectiveStats)
 }
@@ -233,10 +304,10 @@ export function calculateGameplayStatModifier(statValue: number): number {
 }
 
 function selectPrimaryStat(
-  actionType: GameplayActionType,
+  checkType: GameplayCheckType,
   effectiveStats: GameplayEffectiveStats
 ): { stat: GameplayCoreStatKey; value: number; modifier: number; primaryStats: GameplayCoreStatKey[] } {
-  const primaryStats = ACTION_PRIMARY_STAT_MAPPING[actionType]
+  const primaryStats = GAMEPLAY_FIXED_CHECK_CONFIG[checkType].primaryStats
   const selected = primaryStats.reduce((best, stat) => {
     const value = effectiveStats[stat]
     return value > best.value ? { stat, value } : best
@@ -260,11 +331,15 @@ function actionModifierSources(
   return { total: boundedTotal, sources }
 }
 
-function buildLegacyModifierBreakdown(actionType: GameplayActionType): GameplayRollModifierBreakdown {
-  const legacyModifier = ACTION_MODIFIERS[actionType]
+function buildLegacyModifierBreakdown(actionType: GameplayActionType, rollChoice: GameplayRollChoice): GameplayRollModifierBreakdown {
+  const legacyModifier = GAMEPLAY_FIXED_CHECK_CONFIG[rollChoice.checkType].legacyModifier
   return {
     mode: 'legacy_fixed',
     actionType,
+    checkType: rollChoice.checkType,
+    checkLabel: rollChoice.label,
+    checkSource: rollChoice.source,
+    contextualCheckId: rollChoice.contextualCheckId ?? null,
     primaryStats: [],
     primaryStatValue: null,
     statModifier: 0,
@@ -293,6 +368,91 @@ function normalizeTarget(value: unknown): GameplayActionTarget | null {
     return { kind: 'character', tokenId: Number(value.tokenId) }
   }
   return null
+}
+
+export function inferGameplayRollChoice(actionType: GameplayActionType): GameplayRollChoice {
+  const config = GAMEPLAY_FIXED_CHECK_CONFIG[actionType]
+  return {
+    source: 'inferred',
+    checkType: actionType,
+    label: config.label,
+  }
+}
+
+export function normalizeGameplayContextualChecks(
+  value: unknown,
+  options: { sceneDc?: number; maxCount?: number } = {}
+): GameplayContextualCheckOption[] {
+  if (!Array.isArray(value)) return []
+
+  const usedIds = new Set<string>()
+  const maxCount = Math.max(0, Math.min(options.maxCount ?? 4, 4))
+  const sceneDc = finiteNumber(options.sceneDc)
+  const normalized: GameplayContextualCheckOption[] = []
+
+  for (const candidate of value) {
+    if (normalized.length >= maxCount) break
+    if (!isRecord(candidate) || !isGameplayCheckType(candidate.checkType)) continue
+
+    const config = GAMEPLAY_FIXED_CHECK_CONFIG[candidate.checkType]
+    const label = clampString(candidate.label, config.label, 80)
+    const baseId = slugifyContextualCheckId(candidate.id, `${candidate.checkType}-${normalized.length + 1}`)
+    const id = uniqueContextualCheckId(baseId, usedIds)
+    const description = typeof candidate.description === 'string'
+      ? clampString(candidate.description, '', 160) || null
+      : null
+    const dcSource = finiteNumber(candidate.dc) ?? sceneDc ?? config.baseDc
+
+    normalized.push({
+      id,
+      label,
+      description,
+      checkType: candidate.checkType,
+      dc: clampInteger(dcSource, 8, 20),
+    })
+  }
+
+  return normalized
+}
+
+export function parseGameplayContextualChecks(value: unknown): GameplayContextualCheckOption[] {
+  return normalizeGameplayContextualChecks(value)
+}
+
+function normalizeGameplayRollChoice(
+  value: unknown,
+  actionType: GameplayActionType,
+  context: GameplayActionValidationContext
+): GameplayRollChoice | { error: string } {
+  if (value == null) return inferGameplayRollChoice(actionType)
+  if (!isRecord(value)) return { error: 'Gameplay roll choice is malformed' }
+
+  const source = value.source === 'contextual' ? 'contextual' : value.source === 'inferred' ? 'inferred' : 'fixed'
+
+  if (source === 'contextual') {
+    const requestedId = typeof value.contextualCheckId === 'string' ? value.contextualCheckId.trim() : ''
+    if (!requestedId) return { error: 'Contextual gameplay roll choices require contextualCheckId' }
+
+    const option = (context.contextualChecks ?? []).find((candidate) => candidate.id === requestedId)
+    if (!option) return { error: 'Contextual gameplay roll choice is not available for this encounter' }
+
+    return {
+      source: 'contextual',
+      checkType: option.checkType,
+      contextualCheckId: option.id,
+      label: option.label,
+    }
+  }
+
+  if (!isGameplayCheckType(value.checkType)) {
+    return { error: 'Unsupported gameplay roll check type' }
+  }
+
+  return {
+    source,
+    checkType: value.checkType,
+    label: GAMEPLAY_FIXED_CHECK_CONFIG[value.checkType].label,
+  }
 }
 
 function isLegalTarget(target: GameplayActionTarget, context: GameplayActionValidationContext): boolean {
@@ -344,6 +504,11 @@ export function validateGameplayActionEnvelope(
     return { ok: false, error: 'Help actions require a legal character target' }
   }
 
+  const rollChoice = normalizeGameplayRollChoice(input.rollChoice, input.actionType, context)
+  if ('error' in rollChoice) {
+    return { ok: false, error: rollChoice.error }
+  }
+
   const intentSummary = typeof input.intentSummary === 'string'
     ? input.intentSummary.trim().slice(0, intentSummaryMaxLength)
     : null
@@ -353,6 +518,7 @@ export function validateGameplayActionEnvelope(
     action: {
       actionType: input.actionType,
       target,
+      rollChoice,
       publicSpeech,
       intentSummary,
       metadata: isRecord(input.metadata) ? input.metadata : {},
@@ -361,44 +527,79 @@ export function validateGameplayActionEnvelope(
 }
 
 export function deriveActionRollPlan(
-  action: Pick<GameplayActionEnvelope, 'actionType' | 'target'>,
+  action: Pick<GameplayActionEnvelope, 'actionType' | 'target' | 'rollChoice'>,
   difficulty: ElizaLocationRoomGameplayDifficulty = 'normal',
   options: {
     effectiveStats?: GameplayEffectiveStats | null
     modifierSources?: GameplayModifierSource[]
     statsEnabled?: boolean
+    contextualChecks?: GameplayContextualCheckOption[]
   } = {}
 ): GameplayRollPlan {
   const normalizedDifficulty = normalizeDifficulty(difficulty)
   const multiplier = DIFFICULTY_MULTIPLIERS[normalizedDifficulty]
-  const baseDc = ACTION_DCS[action.actionType]
-  const dc = clampInteger(Math.round(baseDc + (multiplier - 1) * 4), 8, 20)
+  const contextualChecks = options.contextualChecks ?? []
+  const requestedChoice = action.rollChoice ?? inferGameplayRollChoice(action.actionType)
+  const contextualOption = requestedChoice.source === 'contextual' && requestedChoice.contextualCheckId
+    ? contextualChecks.find((option) => option.id === requestedChoice.contextualCheckId)
+    : null
+
+  if (requestedChoice.source === 'contextual' && !contextualOption) {
+    throw new Error('Contextual gameplay roll choice is not available for this encounter')
+  }
+
+  const rollChoice: GameplayRollChoice = contextualOption
+    ? {
+        source: 'contextual',
+        checkType: contextualOption.checkType,
+        contextualCheckId: contextualOption.id,
+        label: contextualOption.label,
+      }
+    : {
+        source: requestedChoice.source,
+        checkType: requestedChoice.checkType,
+        label: GAMEPLAY_FIXED_CHECK_CONFIG[requestedChoice.checkType].label,
+      }
+  const baseDc = contextualOption?.dc ?? GAMEPLAY_FIXED_CHECK_CONFIG[rollChoice.checkType].baseDc
+  const dc = contextualOption
+    ? clampInteger(baseDc, 8, 20)
+    : clampInteger(Math.round(baseDc + (multiplier - 1) * 4), 8, 20)
   const targetKind = action.target?.kind ?? (action.actionType === 'rest' ? 'none' : 'scene')
   const effectiveStats = options.effectiveStats
   const useStats = shouldUseStatAwareMechanics(options.statsEnabled, effectiveStats)
 
   if (!useStats) {
-    const modifierBreakdown = buildLegacyModifierBreakdown(action.actionType)
+    const modifierBreakdown = buildLegacyModifierBreakdown(action.actionType, rollChoice)
     return {
       formula: 'd20',
       dc,
       modifier: modifierBreakdown.totalModifier,
       targetKind,
+      checkType: rollChoice.checkType,
+      checkLabel: rollChoice.label,
+      checkSource: rollChoice.source,
+      contextualCheckId: rollChoice.contextualCheckId ?? null,
       modifierBreakdown,
     }
   }
 
-  const primary = selectPrimaryStat(action.actionType, effectiveStats)
-  const nonStat = actionModifierSources(action.actionType, options.modifierSources)
+  const primary = selectPrimaryStat(rollChoice.checkType, effectiveStats)
+  const nonStat = isGameplayActionType(rollChoice.checkType)
+    ? actionModifierSources(rollChoice.checkType, options.modifierSources)
+    : { total: 0, sources: [] }
   const totalModifier = clampInteger(primary.modifier + nonStat.total, -10, 10)
   const modifierBreakdown: GameplayRollModifierBreakdown = {
     mode: 'stat_aware',
     actionType: action.actionType,
+    checkType: rollChoice.checkType,
+    checkLabel: rollChoice.label,
+    checkSource: rollChoice.source,
+    contextualCheckId: rollChoice.contextualCheckId ?? null,
     primaryStats: primary.primaryStats,
     primaryStatValue: primary.value,
     statModifier: primary.modifier,
     nonStatModifier: nonStat.total,
-    legacyModifier: ACTION_MODIFIERS[action.actionType],
+    legacyModifier: GAMEPLAY_FIXED_CHECK_CONFIG[rollChoice.checkType].legacyModifier,
     totalModifier,
     modifierSources: nonStat.sources,
   }
@@ -408,6 +609,10 @@ export function deriveActionRollPlan(
     dc,
     modifier: totalModifier,
     targetKind,
+    checkType: rollChoice.checkType,
+    checkLabel: rollChoice.label,
+    checkSource: rollChoice.source,
+    contextualCheckId: rollChoice.contextualCheckId ?? null,
     modifierBreakdown,
   }
 }
@@ -422,19 +627,21 @@ export function determineSuccessTier(naturalRoll: number, total: number, dc: num
 }
 
 export function resolveActionRoll(
-  action: Pick<GameplayActionEnvelope, 'actionType' | 'target'>,
+  action: Pick<GameplayActionEnvelope, 'actionType' | 'target' | 'rollChoice'>,
   options: {
     difficulty?: ElizaLocationRoomGameplayDifficulty
     rng?: GameplayRandomSource
     effectiveStats?: GameplayEffectiveStats | null
     modifierSources?: GameplayModifierSource[]
     statsEnabled?: boolean
+    contextualChecks?: GameplayContextualCheckOption[]
   } = {}
 ): GameplayRollResolution {
   const plan = deriveActionRollPlan(action, options.difficulty ?? 'normal', {
     effectiveStats: options.effectiveStats,
     modifierSources: options.modifierSources,
     statsEnabled: options.statsEnabled,
+    contextualChecks: options.contextualChecks,
   })
   const roll = rollDiceFormula(plan.formula, options.rng)
   const total = roll.total + plan.modifier
@@ -634,6 +841,7 @@ export function normalizeEncounterProposal(
 
   const monsterName = clampString(proposal.monsterName, 'WAGDIE horror', 80)
   const monsterArchetype = clampString(proposal.monsterArchetype, 'lurking threat', 80)
+  const sceneDc = clampInteger(proposal.sceneDc ?? 12, 8, 20)
   const monsters: GameplayMonsterState[] = Array.from({ length: monsterCount }, (_, index) => {
     const hp = baseHp + (index < remainder ? 1 : 0)
     return {
@@ -657,7 +865,8 @@ export function normalizeEncounterProposal(
     rewardPlan: normalizeRewardPlan(proposal, options),
     mechanics: {
       budget,
-      sceneDc: clampInteger(proposal.sceneDc ?? 12, 8, 20),
+      sceneDc,
+      contextualChecks: normalizeGameplayContextualChecks(proposal.contextualChecks, { sceneDc }),
       normalizedFromProposal: true,
     },
   }
@@ -736,6 +945,7 @@ export function resolveGameplayTurnMechanics(
     effectiveStats: actorEffectiveStats,
     modifierSources: actorModifierSources,
     statsEnabled,
+    contextualChecks: parseGameplayContextualChecks((input.encounter.mechanics as Record<string, unknown> | undefined)?.contextualChecks),
     rng,
   })
   diceResults.push(actionRoll.roll)
@@ -794,6 +1004,10 @@ export function resolveGameplayTurnMechanics(
           dc: targetAc,
           modifier: monster.attackBonus,
           targetKind: 'character',
+          checkType: 'attack',
+          checkLabel: 'Monster Attack',
+          checkSource: 'inferred',
+          contextualCheckId: null,
           roll: retaliationAttackRoll,
           total: retaliationTotal,
           tier: determineSuccessTier(retaliationAttackRoll.total, retaliationTotal, targetAc),

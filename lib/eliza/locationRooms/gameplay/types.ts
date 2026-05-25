@@ -13,6 +13,27 @@ export const GAMEPLAY_REWARD_CLAIM_BENEFICIARY_SOURCES = ['staker_address', 'own
 export const GAMEPLAY_RUN_STATUSES = ['active', 'completed', 'stopped', 'failed'] as const
 export const GAMEPLAY_RUN_STARTED_BY_ACTORS = ['owner', 'admin', 'scheduler', 'system'] as const
 export const GAMEPLAY_ACTION_TYPES = ['attack', 'defend', 'help', 'investigate', 'negotiate', 'flee', 'rest'] as const
+export const GAMEPLAY_CHECK_TYPES = [
+  'attack',
+  'defend',
+  'help',
+  'investigate',
+  'negotiate',
+  'flee',
+  'rest',
+  'explore',
+  'arcana',
+  'nature',
+  'perception',
+  'survival',
+  'athletics',
+  'stealth',
+  'persuasion',
+  'intimidation',
+  'medicine',
+  'history',
+  'religion',
+] as const
 
 export type GameplayRoomStatus = typeof GAMEPLAY_ROOM_STATUSES[number]
 export type GameplayEncounterStatus = typeof GAMEPLAY_ENCOUNTER_STATUSES[number]
@@ -25,6 +46,7 @@ export type GameplayRewardClaimBeneficiarySource = typeof GAMEPLAY_REWARD_CLAIM_
 export type GameplayRunStatus = typeof GAMEPLAY_RUN_STATUSES[number]
 export type GameplayRunStartedByActor = typeof GAMEPLAY_RUN_STARTED_BY_ACTORS[number]
 export type GameplayActionType = typeof GAMEPLAY_ACTION_TYPES[number]
+export type GameplayCheckType = typeof GAMEPLAY_CHECK_TYPES[number]
 export type GameplayDifficulty = ElizaLocationRoomGameplayDifficulty
 
 export type GameplayCharacterStatus = 'alive' | 'downed' | 'dead' | 'fled'
@@ -64,6 +86,10 @@ export type GameplayModifierSource = {
 export type GameplayRollModifierBreakdown = {
   mode: 'legacy_fixed' | 'stat_aware'
   actionType: GameplayActionType
+  checkType?: GameplayCheckType
+  checkLabel?: string
+  checkSource?: GameplayRollChoiceSource
+  contextualCheckId?: string | null
   primaryStats: GameplayCoreStatKey[]
   primaryStatValue: number | null
   statModifier: number
@@ -290,9 +316,27 @@ export type GameplayActionTarget =
   | { kind: 'monster'; id: string }
   | { kind: 'character'; tokenId: number }
 
+export type GameplayRollChoiceSource = 'fixed' | 'contextual' | 'inferred'
+
+export type GameplayRollChoice = {
+  source: GameplayRollChoiceSource
+  checkType: GameplayCheckType
+  contextualCheckId?: string | null
+  label: string
+}
+
+export type GameplayContextualCheckOption = {
+  id: string
+  label: string
+  description?: string | null
+  checkType: GameplayCheckType
+  dc: number
+}
+
 export type GameplayActionEnvelope = {
   actionType: GameplayActionType
   target?: GameplayActionTarget | null
+  rollChoice?: GameplayRollChoice | null
   publicSpeech: string
   intentSummary?: string | null
   metadata?: Record<string, unknown>

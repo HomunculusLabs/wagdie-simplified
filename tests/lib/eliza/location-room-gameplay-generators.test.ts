@@ -97,6 +97,11 @@ describe('location room gameplay generators', () => {
         publicTitle: 'Bell Maw',
         publicSummary: 'A maw unfolds.',
         monsterState: [{ id: 'monster-1', name: 'Maw', archetype: 'bell horror', hp: 4, maxHp: 12, ac: 12, attackBonus: 2, damageFormula: '1d6', status: 'alive' }],
+        mechanics: {
+          contextualChecks: [
+            { id: 'read-the-runes', label: 'Read the Runes', description: 'Interpret the bell wall.', checkType: 'arcana', dc: 13 },
+          ],
+        },
       },
       gameplayState: {
         characters: {
@@ -143,6 +148,12 @@ describe('location room gameplay generators', () => {
     expect(prompt).toContain('sharp-eyed')
     expect(prompt).toContain('well-guarded')
     expect(prompt).toContain('swift-footed')
+    expect(prompt).toContain('Action type is your tactical intent/effect. Roll choice is the backend mechanical check')
+    expect(prompt).toContain('- explore: Explore')
+    expect(prompt).toContain('- arcana: Arcana')
+    expect(prompt).toContain('- nature: Nature')
+    expect(prompt).toContain('- read-the-runes: Read the Runes (checkType arcana, DC 13)')
+    expect(prompt).toContain('"rollChoice": { "source": "fixed", "checkType": "explore"')
     expect(prompt).not.toContain('3/10 HP')
     expect(prompt).not.toContain('4/12 HP')
     expect(prompt).not.toContain('damageDealt')
@@ -170,10 +181,21 @@ describe('location room gameplay generators', () => {
         deaths: [],
         mechanicalDeltas: {
           actionRoll: {
+            checkType: 'arcana',
+            checkLabel: 'Read the Runes',
+            checkSource: 'contextual',
+            contextualCheckId: 'read-the-runes',
+            total: 17,
+            dc: 13,
+            tier: 'success',
             modifierBreakdown: {
               mode: 'stat_aware',
               actionType: 'attack',
-              primaryStats: ['str', 'dex'],
+              checkType: 'arcana',
+              checkLabel: 'Read the Runes',
+              checkSource: 'contextual',
+              contextualCheckId: 'read-the-runes',
+              primaryStats: ['int'],
               totalModifier: 5,
             },
           },
@@ -185,7 +207,15 @@ describe('location room gameplay generators', () => {
     } as never)
 
     expect(prompt).toContain('Backend-computed stat-aware summary:')
-    expect(prompt).toContain('Action roll used backend stat-aware attack context (str/dex); total modifier 5.')
+    expect(prompt).toContain('Backend-selected check facts:')
+    expect(prompt).toContain('Selected check type: arcana')
+    expect(prompt).toContain('Selected check label: Read the Runes')
+    expect(prompt).toContain('Selected check source: contextual')
+    expect(prompt).toContain('Contextual check id: read-the-runes')
+    expect(prompt).toContain('Roll total: 17')
+    expect(prompt).toContain('DC: 13')
+    expect(prompt).toContain('Tier: success')
+    expect(prompt).toContain('Action roll used backend stat-aware Read the Runes check (arcana, contextual; contextual id read-the-runes; primary stats int); total modifier 5.')
     expect(prompt).toContain('Backend applied a stat contribution to damage from str.')
     expect(prompt).toContain('Monster retaliation missed against the backend-computed defense context.')
     expect(prompt).toContain('private performance counters')
@@ -209,6 +239,10 @@ describe('location room gameplay generators', () => {
           modifier: 5,
           targetKind: 'monster',
           roll: { formula: 'd20', rolls: [{ sides: 20, value: 14 }], total: 14 },
+          checkType: 'arcana',
+          checkLabel: 'Read the Runes',
+          checkSource: 'contextual',
+          contextualCheckId: 'read-the-runes',
           total: 19,
           tier: 'success',
         },
@@ -232,7 +266,7 @@ describe('location room gameplay generators', () => {
       },
     })
 
-    expect(summary).toBe('Rolls: Action d20 [14] = 14 + 5 total 19 vs DC 12 — success; Damage: 6; Retaliation d20 [7] = 7 vs AC 16 — miss')
+    expect(summary).toBe('Rolls: Read the Runes d20 [14] = 14 + 5 total 19 vs DC 12 — success; Damage: 6; Retaliation d20 [7] = 7 vs AC 16 — miss')
   })
 
   it('normalizes untrusted GM encounter proposals without accepting mechanics as authoritative', () => {
@@ -247,6 +281,7 @@ describe('location room gameplay generators', () => {
       totalMonsterHp: 9999,
       rewardXpPerCharacter: 9999,
       temporaryBoons: ['ash-lit'],
+      contextualChecks: [{ id: 'read-the-runes', label: 'Read the Runes', checkType: 'arcana', dc: 13 }],
     }), { gameMasterAgentId: 'gm-1' })
 
     expect(output).toMatchObject({
@@ -257,6 +292,7 @@ describe('location room gameplay generators', () => {
         difficulty: 'deadly',
         monsterCount: 99,
         rewardXpPerCharacter: 9999,
+        contextualChecks: [{ id: 'read-the-runes', label: 'Read the Runes', checkType: 'arcana', dc: 13 }],
       },
     })
   })
@@ -269,6 +305,7 @@ describe('location room gameplay generators', () => {
       action: {
         actionType: 'investigate',
         target: null,
+        rollChoice: { source: 'inferred', checkType: 'investigate', label: 'Investigate' },
         publicSpeech: 'I hold the line and study the room.',
         metadata: { fallbackFromNonJsonResponse: true },
       },
@@ -297,6 +334,7 @@ describe('location room gameplay generators', () => {
       action: {
         actionType: 'attack',
         target: { kind: 'monster', id: 'monster-1' },
+        rollChoice: { source: 'inferred', checkType: 'attack', label: 'Attack' },
         publicSpeech: 'I strike the maw.',
       },
     })

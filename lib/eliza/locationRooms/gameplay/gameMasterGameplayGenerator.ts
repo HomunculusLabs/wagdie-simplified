@@ -19,6 +19,7 @@ import type {
   LocationRoomNarrativeState,
   LocationRoomNarrativeStateSnapshot,
 } from '../narrativeTypes'
+import { GAMEPLAY_CHECK_TYPES } from './types'
 import type {
   GameplayActionEnvelope,
   GameplayDiceRollResult,
@@ -186,8 +187,11 @@ export function formatPublicGameplayRollSummary(summary: GameplayMechanicalOutco
     const totalText = Number.isFinite(total) ? `total ${total}` : null
     const dcText = Number.isFinite(dc) ? `vs DC ${dc}` : null
     const tierText = formatSuccessTier(actionRoll.tier)
+    const checkLabel = typeof actionRoll.checkLabel === 'string' && actionRoll.checkLabel.trim()
+      ? actionRoll.checkLabel.trim()
+      : 'Action'
     parts.push([
-      'Action',
+      checkLabel,
       rollText,
       modifier,
       totalText,
@@ -246,6 +250,10 @@ function sanitizedMechanicalSummary(summary: GameplayMechanicalOutcomeSummary): 
       dc: actionRoll.dc,
       modifier: actionRoll.modifier,
       targetKind: actionRoll.targetKind,
+      checkType: actionRoll.checkType,
+      checkLabel: actionRoll.checkLabel,
+      checkSource: actionRoll.checkSource,
+      contextualCheckId: actionRoll.contextualCheckId,
       total: actionRoll.total,
       tier: actionRoll.tier,
       modifierBreakdown: actionRoll.modifierBreakdown,
@@ -283,11 +291,27 @@ function formatBackendStatAwareSummary(summary: GameplayMechanicalOutcomeSummary
     const primaryStats = Array.isArray(modifierBreakdown.primaryStats)
       ? modifierBreakdown.primaryStats.filter((item): item is string => typeof item === 'string').join('/')
       : 'unknown'
+    const checkLabel = typeof actionRoll?.checkLabel === 'string'
+      ? actionRoll.checkLabel
+      : String(modifierBreakdown.checkLabel ?? modifierBreakdown.actionType ?? 'action')
+    const checkType = String(actionRoll?.checkType ?? modifierBreakdown.checkType ?? modifierBreakdown.actionType ?? 'unknown')
+    const checkSource = String(actionRoll?.checkSource ?? modifierBreakdown.checkSource ?? 'unknown')
+    const contextualId = typeof actionRoll?.contextualCheckId === 'string' && actionRoll.contextualCheckId
+      ? ` contextual id ${actionRoll.contextualCheckId};`
+      : ''
     facts.push(
-      `Action roll used backend stat-aware ${String(modifierBreakdown.actionType ?? 'action')} context (${primaryStats}); total modifier ${String(modifierBreakdown.totalModifier ?? 'unknown')}.`
+      `Action roll used backend stat-aware ${checkLabel} check (${checkType}, ${checkSource};${contextualId} primary stats ${primaryStats}); total modifier ${String(modifierBreakdown.totalModifier ?? 'unknown')}.`
     )
   } else if (modifierBreakdown?.mode === 'legacy_fixed') {
-    facts.push('Action roll used legacy fixed backend modifiers; no stat sheet authority was delegated to the GM.')
+    const checkLabel = typeof actionRoll?.checkLabel === 'string'
+      ? actionRoll.checkLabel
+      : String(modifierBreakdown.checkLabel ?? modifierBreakdown.actionType ?? 'action')
+    const checkType = String(actionRoll?.checkType ?? modifierBreakdown.checkType ?? modifierBreakdown.actionType ?? 'unknown')
+    const checkSource = String(actionRoll?.checkSource ?? modifierBreakdown.checkSource ?? 'unknown')
+    const contextualId = typeof actionRoll?.contextualCheckId === 'string' && actionRoll.contextualCheckId
+      ? ` Contextual check id: ${actionRoll.contextualCheckId}.`
+      : ''
+    facts.push(`Action roll used backend ${checkLabel} check (${checkType}, ${checkSource}) with legacy fixed backend modifiers; no stat sheet authority was delegated to the GM.${contextualId}`)
   }
 
   const damageContribution = actionDamage?.statContribution as Record<string, unknown> | null | undefined
@@ -333,6 +357,7 @@ export function normalizeGameplayEncounterProposalResponse(
     temporaryBoons: stringArray(parsed.temporaryBoons),
     narrativeRewards: stringArray(parsed.narrativeRewards),
     victoryText: trimToLimit(parsed.victoryText, 240) ?? undefined,
+    contextualChecks: Array.isArray(parsed.contextualChecks) ? parsed.contextualChecks : undefined,
   }
 
   return {
@@ -437,6 +462,7 @@ export function buildGameplayEncounterProposalPrompt(input: GenerateGameplayEnco
     `Tick id: ${input.tick.id}`,
     `Requested difficulty: ${input.requestedDifficulty}`,
     `Budget: partySize=${input.budget.partySize}, maxMonsterCount=${input.budget.maxMonsterCount}, maxTotalMonsterHp=${input.budget.maxTotalMonsterHp}, maxXpPerCharacter=${input.budget.maxXpPerCharacter}`,
+    `Allowed contextual check types: ${GAMEPLAY_CHECK_TYPES.join(', ')}`,
     '',
     'Eligible living participants:',
     formatParticipants(input.participants),
@@ -465,17 +491,34 @@ export function buildGameplayEncounterProposalPrompt(input: GenerateGameplayEnco
     '  "monsterAttackBonus": 2,',
     '  "monsterDamageFormula": "1d6",',
     '  "sceneDc": 12,',
+    '  "contextualChecks": [{ "id": "read-the-runes", "label": "Read the Runes", "description": "Interpret the room-specific sigils.", "checkType": "arcana", "dc": 13 }],',
     '  "rewardXpPerCharacter": 10,',
     '  "temporaryBoons": ["short boon"],',
     '  "narrativeRewards": ["short reward"],',
     '  "victoryText": "public victory text"',
     '}',
     '',
+    'Contextual checks are optional public-safe scene-specific options. The backend will cap them, validate checkType, clamp DC, and ignore invented mechanics.',
     'Keep narration public-safe. Do not create canon lore or token finality.',
   ].join('\n')
 }
 
 export function buildGameplayOutcomeNarrationPrompt(input: GenerateGameplayOutcomeNarrationInput): string {
+  const actionRoll = (input.mechanicalSummary.mechanicalDeltas as Record<string, unknown>).actionRoll as Record<string, unknown> | undefined
+  const selectedCheckFacts = actionRoll
+    ? [
+        `Selected check type: ${String(actionRoll.checkType ?? 'unknown')}`,
+        `Selected check label: ${String(actionRoll.checkLabel ?? actionRoll.checkType ?? 'unknown')}`,
+        `Selected check source: ${String(actionRoll.checkSource ?? 'unknown')}`,
+        typeof actionRoll.contextualCheckId === 'string' && actionRoll.contextualCheckId
+          ? `Contextual check id: ${actionRoll.contextualCheckId}`
+          : null,
+        `Roll total: ${String(actionRoll.total ?? 'unknown')}`,
+        `DC: ${String(actionRoll.dc ?? 'unknown')}`,
+        `Tier: ${String(actionRoll.tier ?? 'unknown')}`,
+      ].filter(Boolean).join('\n')
+    : 'No selected check facts were provided.'
+
   return [
     'You are the private game master narrating a WAGDIE gameplay turn outcome.',
     'Narrate only the backend-computed result. Do not assign HP, death, XP, rewards, dice, or mechanics beyond the facts provided.',
@@ -486,6 +529,9 @@ export function buildGameplayOutcomeNarrationPrompt(input: GenerateGameplayOutco
     `Encounter: ${input.encounterBefore.publicTitle ?? 'Untitled encounter'} (${input.encounterBefore.status})`,
     `Selected action: ${input.action.actionType}`,
     `Public speech: ${input.action.publicSpeech}`,
+    '',
+    'Backend-selected check facts:',
+    selectedCheckFacts,
     '',
     'Backend-computed stat-aware summary:',
     formatBackendStatAwareSummary(input.mechanicalSummary),

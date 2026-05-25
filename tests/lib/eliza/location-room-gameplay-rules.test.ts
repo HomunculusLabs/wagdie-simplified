@@ -14,6 +14,7 @@ import { updateGameplayPerformanceCountersFromTurn } from '@/lib/eliza/locationR
 import { sanitizeGameplayStoredError } from '@/lib/eliza/locationRooms/gameplay/repository'
 import {
   GAMEPLAY_ACTION_TYPES,
+  GAMEPLAY_CHECK_TYPES,
   GAMEPLAY_DEATH_REVIEW_STATUSES,
   GAMEPLAY_TURN_STATUSES,
   type GameplayCharacterState,
@@ -22,6 +23,7 @@ import {
   applyCharacterHpDelta,
   calculateActionDamage,
   normalizeEncounterProposal,
+  normalizeGameplayContextualChecks,
   normalizeRewardPlan,
   resolveActionRoll,
   resolveGameplayTurnMechanics,
@@ -74,6 +76,7 @@ const testEncounter = {
     status: 'alive' as const,
   }],
   rewardPlan: { xpPerCharacter: 0, temporaryBoons: [], narrativeRewards: [], victoryText: null, metadata: {} },
+  mechanics: { budget: 50, sceneDc: 12, contextualChecks: [], normalizedFromProposal: true },
   metadata: {},
 }
 
@@ -301,6 +304,58 @@ describe('location room gameplay foundation rules', () => {
     })
   })
 
+  it('validates fixed, inferred, and contextual roll choices without changing target rules', () => {
+    expect(validateGameplayActionEnvelope({
+      actionType: 'investigate',
+      publicSpeech: 'I read the ash.',
+      rollChoice: { source: 'fixed', checkType: 'arcana', label: 'Fake', dc: 99 },
+    })).toMatchObject({
+      ok: true,
+      action: {
+        actionType: 'investigate',
+        rollChoice: { source: 'fixed', checkType: 'arcana', label: 'Arcana' },
+      },
+    })
+
+    expect(validateGameplayActionEnvelope({
+      actionType: 'investigate',
+      publicSpeech: 'I sniff the rot.',
+      rollChoice: { source: 'fixed', checkType: 'alchemy' },
+    })).toEqual({ ok: false, error: 'Unsupported gameplay roll check type' })
+
+    expect(validateGameplayActionEnvelope({
+      actionType: 'defend',
+      publicSpeech: 'I hold the line.',
+    })).toMatchObject({
+      ok: true,
+      action: {
+        actionType: 'defend',
+        rollChoice: { source: 'inferred', checkType: 'defend', label: 'Defend' },
+      },
+    })
+
+    const contextualChecks = normalizeGameplayContextualChecks([
+      { id: 'read-the-runes', label: 'Read the Runes', description: 'Interpret the bell sigils.', checkType: 'arcana', dc: 17 },
+    ])
+
+    expect(validateGameplayActionEnvelope({
+      actionType: 'investigate',
+      publicSpeech: 'I read the wall.',
+      rollChoice: { source: 'contextual', contextualCheckId: 'read-the-runes', label: 'Wrong', checkType: 'nature', dc: 1 },
+    }, { contextualChecks })).toMatchObject({
+      ok: true,
+      action: {
+        rollChoice: { source: 'contextual', contextualCheckId: 'read-the-runes', checkType: 'arcana', label: 'Read the Runes' },
+      },
+    })
+
+    expect(validateGameplayActionEnvelope({
+      actionType: 'attack',
+      publicSpeech: 'I strike.',
+      rollChoice: { source: 'fixed', checkType: 'nature' },
+    })).toEqual({ ok: false, error: 'Attack actions require a legal monster target' })
+  })
+
   it('derives rolls, tiers, and attack damage server-side', () => {
     const roll = resolveActionRoll(
       { actionType: 'attack', target: { kind: 'monster', id: 'monster-1' } },
@@ -353,6 +408,63 @@ describe('location room gameplay foundation rules', () => {
         legacyModifier: 2,
       }),
     })
+  })
+
+  it('derives roll plans from selected fixed and contextual checks while effects remain action-driven', () => {
+    const fixedRoll = resolveActionRoll(
+      { actionType: 'defend', target: null, rollChoice: { source: 'fixed', checkType: 'perception', label: 'Perception' } },
+      {
+        statsEnabled: true,
+        effectiveStats: { str: 8, dex: 8, con: 8, int: 8, wis: 18, cha: 8, maxHp: 10, ac: 10, speed: 30, level: 1, experience: 0 },
+        modifierSources: [{ source: 'equipment', key: 'shield', target: 'defend', value: 2, label: 'shield' }],
+        rng: () => 0.5,
+      }
+    )
+
+    expect(fixedRoll).toMatchObject({
+      dc: 12,
+      checkType: 'perception',
+      checkLabel: 'Perception',
+      checkSource: 'fixed',
+      modifier: 4,
+      modifierBreakdown: expect.objectContaining({
+        primaryStats: ['wis'],
+        primaryStatValue: 18,
+        nonStatModifier: 0,
+      }),
+    })
+
+    const contextualChecks = normalizeGameplayContextualChecks([
+      { id: 'read-the-runes', label: 'Read the Runes', checkType: 'arcana', dc: 16 },
+    ])
+    const contextualRoll = resolveActionRoll(
+      { actionType: 'investigate', target: null, rollChoice: { source: 'contextual', checkType: 'nature', contextualCheckId: 'read-the-runes', label: 'Wrong' } },
+      {
+        statsEnabled: true,
+        contextualChecks,
+        effectiveStats: { str: 8, dex: 8, con: 8, int: 16, wis: 8, cha: 8, maxHp: 10, ac: 10, speed: 30, level: 1, experience: 0 },
+        rng: () => 0.5,
+      }
+    )
+
+    expect(contextualRoll).toMatchObject({
+      dc: 16,
+      checkType: 'arcana',
+      checkLabel: 'Read the Runes',
+      checkSource: 'contextual',
+      contextualCheckId: 'read-the-runes',
+      modifier: 3,
+    })
+
+    expect(() => resolveActionRoll(
+      { actionType: 'investigate', target: null, rollChoice: { source: 'contextual', checkType: 'nature', contextualCheckId: 'missing-check', label: 'Missing' } },
+      {
+        statsEnabled: true,
+        contextualChecks,
+        effectiveStats: { str: 8, dex: 8, con: 8, int: 16, wis: 8, cha: 8, maxHp: 10, ac: 10, speed: 30, level: 1, experience: 0 },
+        rng: () => 0.5,
+      }
+    )).toThrow('Contextual gameplay roll choice is not available for this encounter')
   })
 
   it('rolls monster retaliation against effective AC instead of automatic damage', () => {
@@ -459,6 +571,14 @@ describe('location room gameplay foundation rules', () => {
       monsterAttackBonus: 99,
       monsterDamageFormula: '99d99',
       sceneDc: 99,
+      contextualChecks: [
+        { id: ' read the runes! ', label: ' Read the Runes ', description: ' Interpret the bell wall. ', checkType: 'arcana', dc: 99 },
+        { id: 'follow-rot', label: 'Follow Rot', checkType: 'nature' },
+        { id: 'bad', label: 'Bad', checkType: 'alchemy', dc: 12 },
+        { id: 'listen', label: 'Listen', checkType: 'perception', dc: 7 },
+        { id: 'hide', label: 'Hide', checkType: 'stealth', dc: 14 },
+        { id: 'extra', label: 'Extra', checkType: 'history', dc: 14 },
+      ],
       rewardXpPerCharacter: 9999,
       temporaryBoons: ['first', 'second', 'third'],
       narrativeRewards: ['ash-key', 'bell-memory', 'bone-map', 'extra'],
@@ -478,6 +598,12 @@ describe('location room gameplay foundation rules', () => {
     expect(encounter.monsters.reduce((sum, monster) => sum + monster.maxHp, 0)).toBe(40)
     expect(encounter.monsters[0]).toMatchObject({ ac: 18, attackBonus: 8, damageFormula: '1d6' })
     expect(encounter.mechanics.sceneDc).toBe(20)
+    expect(encounter.mechanics.contextualChecks).toEqual([
+      { id: 'read-the-runes', label: 'Read the Runes', description: 'Interpret the bell wall.', checkType: 'arcana', dc: 20 },
+      { id: 'follow-rot', label: 'Follow Rot', description: null, checkType: 'nature', dc: 20 },
+      { id: 'listen', label: 'Listen', description: null, checkType: 'perception', dc: 8 },
+      { id: 'hide', label: 'Hide', description: null, checkType: 'stealth', dc: 14 },
+    ])
     expect(encounter.rewardPlan).toMatchObject({
       xpPerCharacter: 30,
       temporaryBoons: ['first'],
@@ -493,6 +619,26 @@ describe('location room gameplay foundation rules', () => {
 
     expect(encounter.difficulty).toBe('normal')
     expect(encounter.mechanics.budget).toBe(50)
+  })
+
+  it('normalizes contextual checks with stable ids, valid check types, caps, and DC fallbacks', () => {
+    expect(normalizeGameplayContextualChecks([
+      null,
+      { id: 'one', label: 'One', checkType: 'explore' },
+      { id: 'one', label: '', checkType: 'arcana', dc: 21 },
+      { id: 'hard', label: 'Hard', checkType: 'nature', dc: 'hard' },
+      { id: 'bad', label: 'Bad', checkType: 'unknown', dc: 12 },
+    ], { sceneDc: 13 })).toEqual([
+      { id: 'one', label: 'One', description: null, checkType: 'explore', dc: 13 },
+      { id: 'one-2', label: 'Arcana', description: null, checkType: 'arcana', dc: 20 },
+      { id: 'hard', label: 'Hard', description: null, checkType: 'nature', dc: 13 },
+    ])
+
+    expect(normalizeGameplayContextualChecks([
+      { id: 'hard-arcana', label: 'Hard Arcana', checkType: 'arcana', dc: 'hard' },
+    ])).toEqual([
+      { id: 'hard-arcana', label: 'Hard Arcana', description: null, checkType: 'arcana', dc: 13 },
+    ])
   })
 
   it('keeps rewards gameplay-local and bounded', () => {
@@ -529,6 +675,7 @@ describe('location room gameplay foundation rules', () => {
 
   it('exposes explicit repository-backed gameplay shapes and bounded stored errors', () => {
     expect(GAMEPLAY_ACTION_TYPES).toEqual(['attack', 'defend', 'help', 'investigate', 'negotiate', 'flee', 'rest'])
+    expect(GAMEPLAY_CHECK_TYPES).toEqual(expect.arrayContaining(['explore', 'investigate', 'arcana', 'nature']))
     expect(GAMEPLAY_TURN_STATUSES).toContain('resolved')
     expect(GAMEPLAY_DEATH_REVIEW_STATUSES).toContain('pending')
     expect(sanitizeGameplayStoredError(new Error('  bad gameplay turn  '))).toBe('bad gameplay turn')

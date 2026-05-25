@@ -12,6 +12,7 @@ import type {
 } from '../types'
 import {
   GAMEPLAY_ACTION_TYPES,
+  GAMEPLAY_CHECK_TYPES,
   type GameplayActionEnvelope,
   type GameplayCharacterState,
   type GameplayEncounter,
@@ -19,6 +20,9 @@ import {
   type GameplayRoomState,
 } from './types'
 import {
+  GAMEPLAY_FIXED_CHECK_CONFIG,
+  inferGameplayRollChoice,
+  parseGameplayContextualChecks,
   parseGameplayMonsters,
   validateGameplayActionEnvelope,
   type GameplayActionValidationContext,
@@ -130,6 +134,26 @@ function formatMonsters(monsters: GameplayMonsterState[]): string {
   }).join('\n')
 }
 
+function formatFixedChecks(): string {
+  return GAMEPLAY_CHECK_TYPES.map((checkType) => {
+    const config = GAMEPLAY_FIXED_CHECK_CONFIG[checkType]
+    return `- ${checkType}: ${config.label} (primary stats ${config.primaryStats.join('/')}, base DC ${config.baseDc})`
+  }).join('\n')
+}
+
+function formatContextualChecks(encounter: GameplayEncounter): string {
+  const contextualChecks = parseGameplayContextualChecks(
+    (encounter.mechanics as Record<string, unknown> | undefined)?.contextualChecks
+  )
+  if (contextualChecks.length === 0) return 'No contextual checks are currently offered.'
+
+  return contextualChecks.map((check) => [
+    `- ${check.id}: ${check.label}`,
+    `(checkType ${check.checkType}, DC ${check.dc})`,
+    check.description ? `— ${check.description}` : null,
+  ].filter(Boolean).join(' ')).join('\n')
+}
+
 export function buildGameplayActionPrompt(input: GenerateGameplayActionInput): string {
   const monsters = input.visibleMonsters ?? parseGameplayMonsters(input.encounter.monsterState)
 
@@ -156,16 +180,27 @@ export function buildGameplayActionPrompt(input: GenerateGameplayActionInput): s
     input.speakerInstruction ? `Private GM instruction: ${input.speakerInstruction}` : 'No private GM instruction for this turn.',
     '',
     `Available action types: ${GAMEPLAY_ACTION_TYPES.join(', ')}`,
+    'Action type is your tactical intent/effect. Roll choice is the backend mechanical check you want resolved for that action.',
+    '',
+    'Available fixed roll checks:',
+    formatFixedChecks(),
+    '',
+    'Available contextual roll checks from this encounter:',
+    formatContextualChecks(input.encounter),
+    'If you choose a contextual roll check, use exactly one offered contextualCheckId. Do not invent contextual ids, labels, DCs, or mechanics.',
     'Return only JSON with this exact contract:',
     '{',
     '  "actionType": "attack|defend|help|investigate|negotiate|flee|rest",',
     '  "target": { "kind": "monster", "id": "monster-1" },',
+    '  "rollChoice": { "source": "fixed", "checkType": "explore" },',
     '  "publicSpeech": "short public in-character speech",',
     '  "intentSummary": "short private intent"',
     '}',
     '',
     'Rules:',
     '- Attack requires a legal monster target. Help requires a legal character target.',
+    '- Fixed rollChoice checkType must be one of the listed fixed checks, such as explore, investigate, arcana, or nature.',
+    '- Contextual rollChoice must use an offered contextualCheckId; the server ignores any agent-supplied contextual label/DC/check type.',
     '- publicSpeech is required and must be suitable for public display.',
     '- Do not include markdown, speaker labels, or out-of-world explanations.',
   ].filter((line): line is string => line !== null).join('\n')
@@ -204,6 +239,7 @@ export function normalizeGameplayActionResponse(
     action: {
       actionType: 'investigate',
       target: null,
+      rollChoice: inferGameplayRollChoice('investigate'),
       publicSpeech: fallbackSpeech || 'I watch the room carefully and search for what changed.',
       intentSummary: 'Fallback investigate action from non-JSON character response'.slice(0, intentSummaryMaxLength),
       metadata: { fallbackFromNonJsonResponse: true },
@@ -218,10 +254,11 @@ function buildFallbackActionFromOfficialError(input: GenerateGameplayActionInput
   const errorName = error instanceof Error ? error.name : 'UnknownError'
 
   return {
-    actionType: 'defend',
+    actionType: 'investigate',
     target: null,
+    rollChoice: inferGameplayRollChoice('investigate'),
     publicSpeech: `${input.speaker.name} braces against the room's pressure and watches for the next opening.`.slice(0, publicSpeechMaxLength),
-    intentSummary: 'Fallback defend action after official character agent stream failure'.slice(0, intentSummaryMaxLength),
+    intentSummary: 'Fallback investigate action after official character agent stream failure'.slice(0, intentSummaryMaxLength),
     metadata: {
       fallbackFromOfficialError: true,
       errorName,
