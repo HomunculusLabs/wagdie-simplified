@@ -1,4 +1,5 @@
 import { elizaConfig } from '@/lib/eliza/config'
+import { normalizeLocationAdventureCatalog } from '@/lib/domain/location/metadata'
 import {
   createOfficialElizaMessagingClient,
   normalizeOfficialResponseText,
@@ -28,10 +29,14 @@ import {
 import {
   normalizeCombatReadiness,
   normalizeEncounterSeed,
+  normalizeAdventureMemory,
+  normalizeAdventurePatch,
   normalizeNarrativeTtrpgMetadata,
   normalizeRequestedGameplayAction,
   normalizeThreatLevel,
   normalizeTtrpgPhase,
+  retrieveAdventureCatalogEntries,
+  type LocationRoomAdventurePatch,
   type LocationRoomNarrativeState,
   type LocationRoomNarrativeStateSnapshot,
 } from './narrativeTypes'
@@ -74,6 +79,7 @@ export type GameMasterBeatOutput = {
   requestedGameplayAction: LocationRoomRequestedGameplayAction | null
   encounterSeed: LocationRoomEncounterSeed | null
   sceneCheckRequest: NormalizedSceneCheckRequest | null
+  adventurePatch: LocationRoomAdventurePatch
   metadata: {
     currentObjective?: string | null
     featuredTokenIds?: number[]
@@ -90,6 +96,7 @@ export type GameMasterBeatOutput = {
       proposal?: unknown
       proposalError?: unknown
     }
+    adventurePatch?: LocationRoomAdventurePatch
     gmGeneration?: GameMasterGenerationDiagnostics
   }
 }
@@ -123,9 +130,11 @@ export type GameMasterSceneCheckOutcomeOutput = {
   gameMasterAgentId: string
   publicNarration: string
   stateAfter: LocationRoomNarrativeStateSnapshot
+  adventurePatch: LocationRoomAdventurePatch
   metadata: {
     rawResponseLength?: number
     fallbackUsed?: boolean
+    adventurePatch?: LocationRoomAdventurePatch
   }
 }
 
@@ -333,6 +342,7 @@ export function validateGameMasterBeatProgressionContract(output: {
   requestedGameplayAction: LocationRoomRequestedGameplayAction | null
   encounterSeed: LocationRoomEncounterSeed | null
   sceneCheckRequest?: NormalizedSceneCheckRequest | null
+  adventurePatch?: LocationRoomAdventurePatch | null
   progressionContext?: GameMasterBeatProgressionContext
 }): void {
   if (output.progressionContext?.requirePublicNarration && !output.publicNarration?.trim()) {
@@ -362,6 +372,20 @@ export function validateGameMasterBeatProgressionContract(output: {
     }
     if (output.stateAfter.openThreads.length === 0) {
       throw new Error('Game-master beat response missing openThreads for non-aftermath progression')
+    }
+
+    const adventurePatch = output.adventurePatch ?? {}
+    const hasStoryPressure = Boolean(
+      adventurePatch.activeDecision ||
+      adventurePatch.currentStakes ||
+      (adventurePatch.consequenceLedger?.length ?? 0) > 0 ||
+      (adventurePatch.discoveries?.length ?? 0) > 0 ||
+      (adventurePatch.clocks?.length ?? 0) > 0 ||
+      output.sceneCheckRequest ||
+      output.requestedGameplayAction === 'start_combat'
+    )
+    if (!hasStoryPressure) {
+      throw new Error('Game-master beat response missing adventurePatch story pressure for non-aftermath progression')
     }
   }
 
@@ -462,6 +486,18 @@ function buildFallbackGameMasterBeat(
   const ttrpgPhase: LocationRoomTtrpgPhase = progressionContext?.requireEscalationBeyondOpening ? 'exploration' : 'exploration'
   const combatReadiness: LocationRoomCombatReadiness = progressionContext?.requireEscalationBeyondOpening ? 'foreshadow' : 'none'
   const threatLevel = progressionContext?.requireEscalationBeyondOpening ? 1 : 0
+  const adventurePatch = normalizeAdventurePatch({
+    currentStakes: 'The room will answer delay with a sharper omen.',
+    activeDecision: {
+      id: 'fallback-immediate-choice',
+      prompt: `How does ${input.speaker.name} answer the room's immediate pressure?`,
+      options: [
+        { id: 'investigate', label: 'Investigate the nearest clue', summary: 'Study the most visible sign before moving deeper.' },
+        { id: 'confront', label: 'Confront the watcher', summary: 'Call out or challenge what seems to be observing the room.' },
+        { id: 'withdraw', label: 'Withdraw carefully', summary: 'Create distance while keeping the mystery in view.' },
+      ],
+    },
+  })
 
   validateGameMasterBeatProgressionContract({
     publicNarration,
@@ -472,6 +508,7 @@ function buildFallbackGameMasterBeat(
     requestedGameplayAction: null,
     encounterSeed: null,
     sceneCheckRequest: null,
+    adventurePatch,
     progressionContext,
   })
 
@@ -489,6 +526,7 @@ function buildFallbackGameMasterBeat(
     requestedGameplayAction: null,
     encounterSeed: null,
     sceneCheckRequest: null,
+    adventurePatch,
     metadata: {
       currentObjective: stateAfter.currentObjective,
       featuredTokenIds: [input.speaker.tokenId],
@@ -504,6 +542,7 @@ function buildFallbackGameMasterBeat(
         proposal: null,
         proposalError: null,
       },
+      adventurePatch,
       gmGeneration: {
         ...diagnostics,
         status: 'repaired',
@@ -569,6 +608,7 @@ export function normalizeGameMasterBeatResponse(
   )
   const encounterSeed = parseEncounterSeed(parsed.encounterSeed ?? parsed.encounter_seed)
   const sceneCheckRequest = parseSceneCheckRequest(parsed.sceneCheckRequest ?? parsed.scene_check_request)
+  const adventurePatch = normalizeAdventurePatch(parsed.adventurePatch ?? parsed.adventure_patch)
   const publicNarration = parseOptionalString(
     parsed.publicNarration ?? parsed.public_narration,
     limits.publicNarrationMaxLength
@@ -588,6 +628,7 @@ export function normalizeGameMasterBeatResponse(
     requestedGameplayAction,
     encounterSeed,
     sceneCheckRequest,
+    adventurePatch,
     progressionContext: options.progressionContext,
   })
 
@@ -602,6 +643,7 @@ export function normalizeGameMasterBeatResponse(
     requestedGameplayAction,
     encounterSeed,
     sceneCheckRequest,
+    adventurePatch,
     metadata: {
       currentObjective,
       featuredTokenIds,
@@ -618,6 +660,7 @@ export function normalizeGameMasterBeatResponse(
         proposal: null,
         proposalError: null,
       },
+      adventurePatch,
     },
   }
 }
@@ -742,7 +785,6 @@ function buildSceneCheckContractLines(): string[] {
     `- actionIntent options: ${SCENE_CHECK_ACTION_INTENTS.join(', ')}.`,
     `- fixed rollChoice.checkType options: ${GAMEPLAY_CHECK_TYPES.join(', ')}.`,
     '- contextualChecks may include public-safe id, label, checkType, dc, description; backend sanitizes mechanics.',
-    '- Never include dice results, HP, damage, rewards, death/finality, wallets, or private chain data.',
     '- requestedGameplayAction is combat-only; do not combine start_combat with sceneCheckRequest.',
   ]
 }
@@ -756,26 +798,26 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     'Return only a JSON object with this exact contract:',
     '{',
     `  "publicNarration": ${publicNarrationContract},`,
-    '  "speakerInstruction": "private direction for only the selected speaker",',
-    '  "stateSummary": "updated private continuity summary after this beat",',
-    '  "currentObjective": "concrete current objective, or null only when ttrpgPhase is aftermath",',
-    '  "openThreads": ["short unresolved thread"],',
+    '  "speakerInstruction": "speaker-only direction",',
+    '  "stateSummary": "updated continuity",',
+    '  "currentObjective": "objective or null in aftermath",',
+    '  "openThreads": ["thread"],',
     '  "ttrpgPhase": "story | exploration | threat | aftermath",',
     '  "combatReadiness": "none | foreshadow | ready",',
     '  "threatLevel": 0,',
     '  "requestedGameplayAction": null,',
     '  "encounterSeed": null,',
     '  "sceneCheckRequest": null,',
+    '  "adventurePatch": {"currentStakes":"risk","activeDecision":{"id":"id","prompt":"choice","options":[{"id":"id","label":"option"}]},"consequence":{"summary":"aftermath","status":"open","tier":"unknown"},"discoveries":["clue"],"clockUpdates":[{"id":"id","label":"clock","value":1,"max":6,"summary":"pressure"}]},',
     '  "featuredTokenIds": [123],',
     `  "selectedSpeakerTokenId": ${input.speaker.tokenId}`,
     '}',
     '',
     'Rules:',
-    '- Output JSON only: no markdown fences, no commentary, no prose outside the object.',
-    '- speakerInstruction and stateSummary are required and must be non-empty.',
-    '- Reference only eligible current participant token ids.',
+    '- Output JSON only; no markdown/prose outside object.',
+    '- speakerInstruction/stateSummary required; use eligible token ids.',
     `- selectedSpeakerTokenId must be ${input.speaker.tokenId}; do not select another speaker.`,
-    '- Keep public narration suitable for public display and avoid markdown.',
+    '- Keep public narration public-safe and avoid markdown.',
     ...(input.progressionContext?.requireOpeningPublicNarration
       ? [
         '- Opening publicNarration must be a rich table-setting GM beat: 4-6 sentences and roughly 300-650 characters.',
@@ -785,24 +827,73 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
       ]
       : []),
     '- Non-aftermath beats must include a concrete currentObjective and at least one unresolved openThreads entry.',
+    '- Non-aftermath beats must also include story pressure: adventurePatch choice/stakes/consequence/discovery/clock, sceneCheckRequest, or combat.',
+    '- Use adventurePatch for durable story memory; activeDecision is visible with 2-4 options and clockUpdates use absolute values.',
     ...(input.progressionContext?.requirePublicNarration
       ? ['- publicNarration is required and must be non-empty for this beat.']
       : ['- publicNarration may be null only when this beat is character-focused and no public GM narration is required.']),
     ...(input.progressionContext?.requireEscalationBeyondOpening
       ? ['- Do not leave repeated activity in flat story/none/0 state; visibly escalate without forcing start_combat.']
       : []),
-    '- Preserve or refine the current objective/thread, and advance the scene with a decision, clue, complication, changed threat/readiness, or explicit consequence.',
-    '- Do not spawn combat by default. Most beats should keep requestedGameplayAction null.',
-    '- Use ttrpgPhase "threat" and combatReadiness "foreshadow" with threatLevel at least 1 to hint at danger without starting combat.',
-    '- Use combatReadiness "ready" only with ttrpgPhase "threat" and threatLevel at least 3.',
-    '- Use requestedGameplayAction "start_combat" only when the fiction clearly escalates to a fight.',
-    '- start_combat requires ttrpgPhase "threat", combatReadiness "ready", and a non-null public-safe encounterSeed.',
-    '- encounterSeed may include only title, summary, and stakes; never include mechanics, DCs, HP, rewards, wallets, or private chain data.',
+    '- Use catalog entries as inspiration; do not reveal gated facts.',
+    '- Do not spawn combat by default. Most beats keep requestedGameplayAction null.',
+    '- Use requestedGameplayAction "start_combat" only for clear fights; it requires threat/ready/threatLevel >= 3 and encounterSeed.',
     ...buildSceneCheckContractLines(),
   ]
 }
 
-function buildNarrativeStateLines(input: Pick<GenerateGameMasterBeatInput, 'narrativeState'>): string[] {
+function formatAdventureDecision(decision: ReturnType<typeof normalizeAdventureMemory>['activeDecision']): string {
+  if (!decision) return 'None.'
+  const options = decision.options
+    .map((option) => `${option.id}: ${option.label}${option.summary ? ` — ${option.summary}` : ''}`)
+    .join(' | ')
+  const selected = decision.selectedOptionId ? ` | selected: ${decision.selectedOptionId}` : ''
+  return truncatePromptValue(`${decision.id}: ${decision.prompt} | options: ${options}${selected}`, 240)
+}
+
+function formatAdventureMemoryLines(input: Pick<GenerateGameMasterBeatInput, 'narrativeState' | 'speaker'>): string[] {
+  const adventure = normalizeAdventureMemory(input.narrativeState.metadata)
+  const rawCatalog = input.narrativeState.metadata.adventureCatalog ??
+    (typeof input.narrativeState.metadata.locationMetadata === 'object' && input.narrativeState.metadata.locationMetadata !== null && !Array.isArray(input.narrativeState.metadata.locationMetadata)
+      ? (input.narrativeState.metadata.locationMetadata as Record<string, unknown>).adventureCatalog
+      : undefined)
+  const catalog = normalizeLocationAdventureCatalog(rawCatalog)
+  const catalogEntries = retrieveAdventureCatalogEntries(catalog, {
+    currentObjective: input.narrativeState.currentObjective,
+    activeDecision: adventure.activeDecision,
+    openThreads: input.narrativeState.openThreads,
+    recentOutcomeSummary: adventure.lastOutcome?.summary,
+    selectedTokenId: input.speaker.tokenId,
+  })
+
+  return [
+    'Adventure memory:',
+    `Arc summary: ${truncatePromptValue(adventure.arcSummary || 'None.', 500)}`,
+    `Current stakes: ${truncatePromptValue(adventure.currentStakes || 'None.', 300)}`,
+    'Relevant location adventure catalog:',
+    catalogEntries.length > 0
+      ? catalogEntries.map((entry) => `- [${entry.section}] ${entry.id}${entry.title ? ` ${entry.title}` : ''}: ${truncatePromptValue(entry.summary, 120)}${entry.tags.length ? ` (tags: ${entry.tags.join(', ')})` : ''}`).join('\n')
+      : 'None available.',
+    `Active decision: ${formatAdventureDecision(adventure.activeDecision)}`,
+    adventure.consequenceLedger.length > 0
+      ? `Consequence ledger: ${truncatePromptValue(adventure.consequenceLedger.map((entry) => `${entry.id} [${entry.status}${entry.tier ? `/${entry.tier}` : ''}]: ${entry.summary}`).join(' | '), 360)}`
+      : 'Consequence ledger: None.',
+    adventure.discoveries.length > 0
+      ? `Discoveries: ${truncatePromptValue(adventure.discoveries.join(' | '), 520)}`
+      : 'Discoveries: None.',
+    adventure.clocks.length > 0
+      ? `Clocks: ${truncatePromptValue(adventure.clocks.map((clock) => `${clock.id} ${clock.label} ${clock.value}/${clock.max}: ${clock.summary}`).join(' | '), 560)}`
+      : 'Clocks: None.',
+    adventure.lastDeclaredAction
+      ? `Last declared action: #${adventure.lastDeclaredAction.tokenId} ${truncatePromptValue(adventure.lastDeclaredAction.summary, 240)}${adventure.lastDeclaredAction.chosenOptionId ? ` (option ${adventure.lastDeclaredAction.chosenOptionId})` : ''}`
+      : 'Last declared action: None.',
+    adventure.lastOutcome
+      ? `Last outcome: ${adventure.lastOutcome.kind} ${adventure.lastOutcome.sourceId}${adventure.lastOutcome.tier ? `/${adventure.lastOutcome.tier}` : ''}: ${truncatePromptValue(adventure.lastOutcome.summary, 260)}`
+      : 'Last outcome: None.',
+  ]
+}
+
+function buildNarrativeStateLines(input: Pick<GenerateGameMasterBeatInput, 'narrativeState' | 'speaker'>): string[] {
   const ttrpg = normalizeNarrativeTtrpgMetadata(input.narrativeState.metadata)
   return [
     'Current private narrative state:',
@@ -815,6 +906,7 @@ function buildNarrativeStateLines(input: Pick<GenerateGameMasterBeatInput, 'narr
     `Threat level: ${ttrpg.threatLevel ?? 'None.'}`,
     `Requested gameplay action: ${ttrpg.requestedGameplayAction ?? 'None.'}`,
     `Last encounter seed: ${formatEncounterSeed(ttrpg.lastEncounterSeed)}`,
+    ...formatAdventureMemoryLines(input),
   ]
 }
 
@@ -869,7 +961,14 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '  "publicNarration": "public GM consequence of the resolved scene check",',
     '  "stateSummary": "updated private continuity summary after the roll",',
     '  "currentObjective": "updated objective after the roll",',
-    '  "openThreads": ["short unresolved thread"]',
+    '  "openThreads": ["short unresolved thread"],',
+    '  "adventurePatch": {',
+    '    "currentStakes": "updated stakes, or omit",',
+    '    "activeDecision": {"id":"decision-id","prompt":"visible choice prompt","options":[{"id":"option-id","label":"visible option"}]},',
+    '    "consequence": {"id":"scene-check-consequence","summary":"tier-appropriate durable consequence","status":"open | resolved | advantage | complication","tier":"success"},',
+    '    "discoveries": ["durable clue or reveal"],',
+    '    "clockUpdates": [{"id":"clock-id","label":"clock label","value":1,"max":6,"summary":"absolute pressure after the roll"}]',
+    '  }',
     '}',
     '',
     'Rules:',
@@ -877,7 +976,13 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '- Use only the backend roll facts above for dice, modifier, total, DC, and outcome tier.',
     '- Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality, wallets, or private chain data.',
     '- Narrate a consequence that fits the outcome tier and preserves future player agency.',
-    '- publicNarration, stateSummary, currentObjective, and at least one openThreads entry are required.',
+    '- Tier rules for adventurePatch:',
+    '  - critical_success: major discovery, advantage, opened route, or reduced pressure.',
+    '  - success: progress with low/no cost; include a discovery, advantage, clarified decision, stakes update, or clock change.',
+    '  - partial_success: progress plus complication, clock pressure, or harder choice; consequence is required.',
+    '  - failure: fail-forward complication, lost opportunity, or increased pressure; consequence is required.',
+    '  - critical_failure: hard setback, danger escalation, major complication, or clock advance; consequence is required.',
+    '- publicNarration, stateSummary, currentObjective, openThreads, and tier-appropriate adventurePatch are required.',
   ]
 }
 
@@ -913,9 +1018,34 @@ export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMaster
   ].join('\n'))
 }
 
+function validateSceneCheckOutcomeAdventurePatch(
+  tier: SceneCheckResolution['roll']['tier'],
+  adventurePatch: LocationRoomAdventurePatch
+): void {
+  const hasConsequence = (adventurePatch.consequenceLedger?.length ?? 0) > 0
+  const hasOutcomeSignal = Boolean(
+    hasConsequence ||
+    adventurePatch.activeDecision ||
+    adventurePatch.currentStakes ||
+    (adventurePatch.discoveries?.length ?? 0) > 0 ||
+    (adventurePatch.clocks?.length ?? 0) > 0
+  )
+
+  if (tier === 'partial_success' || tier === 'failure' || tier === 'critical_failure') {
+    if (!hasConsequence) {
+      throw new Error(`Game-master scene-check outcome response missing adventurePatch consequence for ${tier}`)
+    }
+    return
+  }
+
+  if (!hasOutcomeSignal) {
+    throw new Error(`Game-master scene-check outcome response missing adventurePatch outcome signal for ${tier}`)
+  }
+}
+
 export function normalizeGameMasterSceneCheckOutcomeResponse(
   raw: string,
-  _input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'narrativeState'>,
+  input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'narrativeState' | 'resolution' | 'sceneCheckId'>,
   options: { gameMasterAgentId: string; limits?: GameMasterBeatLimits }
 ): GameMasterSceneCheckOutcomeOutput {
   const limits = options.limits ?? elizaConfig.locationRooms.narrative
@@ -931,6 +1061,10 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
   if (openThreads.length === 0) {
     throw new Error('Game-master scene-check outcome response missing openThreads')
   }
+  const adventurePatch = normalizeAdventurePatch(parsed.adventurePatch ?? parsed.adventure_patch, {
+    sourceId: input.sceneCheckId,
+  })
+  validateSceneCheckOutcomeAdventurePatch(input.resolution.roll.tier, adventurePatch)
 
   return {
     gameMasterAgentId: options.gameMasterAgentId,
@@ -940,10 +1074,42 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
       currentObjective,
       openThreads,
     },
+    adventurePatch,
     metadata: {
       rawResponseLength: raw.length,
+      adventurePatch,
     },
   }
+}
+
+function fallbackSceneCheckAdventurePatch(input: GenerateGameMasterSceneCheckOutcomeInput): LocationRoomAdventurePatch {
+  const roll = input.resolution.roll
+  const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
+  const outcome = roll.tier.replace(/_/g, ' ')
+  const baseSummary = `${actor}'s ${roll.checkLabel.toLowerCase()} check resolved as ${outcome}; the room must now answer that result.`
+  const status = roll.tier === 'critical_success' || roll.tier === 'success' ? 'advantage' : 'complication'
+  const consequenceSummary = roll.tier === 'critical_success'
+    ? `${actor}'s attempt opens a strong advantage or clear route for the next choice.`
+    : roll.tier === 'success'
+      ? `${actor}'s attempt creates progress with a clean clue or safer position.`
+      : roll.tier === 'partial_success'
+        ? `${actor}'s attempt makes progress, but it also adds pressure the room cannot ignore.`
+        : roll.tier === 'failure'
+          ? `${actor}'s attempt fails forward into a complication that changes the next choice.`
+          : `${actor}'s attempt triggers a hard setback that escalates the room's danger.`
+
+  return normalizeAdventurePatch({
+    currentStakes: 'The room is now shaped by the resolved scene check.',
+    consequence: {
+      id: 'scene-check-outcome',
+      summary: consequenceSummary,
+      status,
+      tier: roll.tier,
+    },
+    discoveries: roll.tier === 'critical_success' || roll.tier === 'success'
+      ? [baseSummary]
+      : [],
+  }, { sourceId: input.sceneCheckId })
 }
 
 function buildFallbackGameMasterSceneCheckOutcome(
@@ -954,6 +1120,7 @@ function buildFallbackGameMasterSceneCheckOutcome(
   const roll = input.resolution.roll
   const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
   const outcome = roll.tier.replace(/_/g, ' ')
+  const adventurePatch = fallbackSceneCheckAdventurePatch(input)
   const publicNarration = trimToLimit(
     `${actor}'s ${roll.checkLabel.toLowerCase()} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The scene answers the attempt without changing the roll: the result becomes the next clear pressure for the room to address.`,
     limits.publicNarrationMaxLength
@@ -976,8 +1143,10 @@ function buildFallbackGameMasterSceneCheckOutcome(
         : ['How will the room respond to the scene-check result?']
       ).slice(0, limits.openThreadsMaxCount),
     },
+    adventurePatch,
     metadata: {
       fallbackUsed: true,
+      adventurePatch,
     },
   }
 }
@@ -999,7 +1168,7 @@ function categorizeBeatResponseError(error: unknown): string {
   if (/invalid JSON/i.test(message)) return 'invalid_json'
   if (/selectedSpeakerTokenId|selected speaker/i.test(message)) return 'speaker_constraint'
   if (/token id|featuredTokenIds/i.test(message)) return 'token_constraint'
-  if (/currentObjective|openThreads|start_combat|combatReadiness|ttrpgPhase|threatLevel|encounterSeed|requestedGameplayAction|sceneCheckRequest|publicNarration|flat opening|visibly escalate/i.test(message)) {
+  if (/currentObjective|openThreads|start_combat|combatReadiness|ttrpgPhase|threatLevel|encounterSeed|requestedGameplayAction|sceneCheckRequest|adventurePatch|story pressure|publicNarration|flat opening|visibly escalate/i.test(message)) {
     return 'progression_contract'
   }
   if (/missing .*speakerInstruction|missing .*stateSummary/i.test(message)) return 'missing_required_field'

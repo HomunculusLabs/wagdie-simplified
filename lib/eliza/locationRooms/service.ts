@@ -70,6 +70,7 @@ import {
 } from './gameplay/repository'
 import { parseGameplayMonsters, parseGameplayRewardPlan } from './gameplay/rules'
 import { sanitizePublicGameplayRolls } from './gameplay/publicRolls'
+import { sanitizePublicLocationRoomAdventure } from './publicAdventure'
 import type { GameplayCharacterState, GameplayEncounter, GameplayRoomState, GameplayRun } from './gameplay/types'
 import { selectLocationRoomSpeaker as selectLocationRoomSpeakerInternal } from './speakerSelection'
 
@@ -262,6 +263,7 @@ function toPublicMessage(message: LocationRoomMessage): PublicLocationRoomMessag
   const messageKind = toPublicMessageKind(message, gameplayMessageKind)
   const ttrpgPhase = toPublicMessagePhase(message.metadata, messageDomain)
   const gameplayRolls = sanitizePublicGameplayRolls(message.metadata.publicRolls)
+  const adventure = sanitizePublicLocationRoomAdventure(message.metadata.publicAdventure)
 
   return {
     id: message.id,
@@ -276,6 +278,7 @@ function toPublicMessage(message: LocationRoomMessage): PublicLocationRoomMessag
     ...(ttrpgPhase ? { ttrpgPhase } : {}),
     ...(gameplayMessageKind ? { gameplayMessageKind } : {}),
     ...(gameplayRolls ? { gameplayRolls } : {}),
+    ...(adventure ? { adventure } : {}),
   }
 }
 

@@ -281,6 +281,7 @@ describe('location room narrative coordinator', () => {
         requestedGameplayAction: 'start_combat',
         encounterSeed: { title: 'The Bell Horror', summary: 'A bell-born horror steps from the gate.', stakes: 'Silence the toll.' },
         sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'Silence the toll.' },
         metadata: { featuredTokenIds: [1] },
       })),
     }
@@ -362,6 +363,135 @@ describe('location room narrative coordinator', () => {
     expect(narrativeRepository.markBeatCompleted).toHaveBeenCalledWith('beat-1')
   })
 
+  it('persists adventure memory and public metadata for a normal narrative beat', async () => {
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    const narrativeRepository = makeNarrativeRepository()
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: 'A brass door waits under the bell.',
+        speakerInstruction: 'Choose how to answer the door.',
+        stateAfter: {
+          stateSummary: 'The party has found a bell-marked brass door.',
+          currentObjective: 'Decide how to open the brass door.',
+          openThreads: ['What waits behind the brass door?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 1,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: null,
+        adventurePatch: {
+          currentStakes: 'Opening the brass door may wake what listens beyond it.',
+          activeDecision: {
+            id: 'brass-door',
+            prompt: 'How should Ash approach the brass door?',
+            options: [
+              { id: 'listen', label: 'Listen first' },
+              { id: 'force', label: 'Force it open' },
+            ],
+          },
+          consequenceLedger: [{
+            id: 'door-wakes',
+            source: 'model-source',
+            summary: 'The bell mark begins to hum when approached.',
+            status: 'open' as const,
+          }],
+          clocks: [{ id: 'bell-pressure', label: 'Bell pressure', value: 1, max: 4, summary: 'The bell grows more insistent.' }],
+        },
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I shoulder the door before it can think.',
+        declaredAction: {
+          summary: 'Ash chooses to force the brass door open.',
+          chosenOptionId: 'force',
+          actionIntent: 'force_entry',
+        },
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })
+
+    expect(narrativeRepository.storeBeatGameMasterOutput).toHaveBeenCalledWith('beat-1', expect.objectContaining({
+      metadata: expect.objectContaining({
+        adventurePatch: expect.objectContaining({
+          currentStakes: 'Opening the brass door may wake what listens beyond it.',
+          consequenceLedger: [expect.objectContaining({
+            source: 'beat:beat-1',
+            id: 'beat:beat-1:consequence:1',
+          })],
+        }),
+      }),
+    }))
+    expect(narrativeRepository.patchBeatMetadata).toHaveBeenCalledWith('beat-1', expect.objectContaining({
+      declaredAction: expect.objectContaining({
+        summary: 'Ash chooses to force the brass door open.',
+        chosenOptionId: 'force',
+      }),
+    }))
+    expect(repository.appendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      authorKind: 'game_master',
+      metadata: expect.objectContaining({
+        publicAdventure: expect.objectContaining({
+          stakes: 'Opening the brass door may wake what listens beyond it.',
+          activeDecision: expect.objectContaining({ id: 'brass-door' }),
+        }),
+      }),
+    }))
+    expect(repository.appendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      authorKind: 'agent',
+      metadata: expect.objectContaining({
+        publicAdventure: expect.objectContaining({
+          declaredAction: expect.objectContaining({
+            summary: 'Ash chooses to force the brass door open.',
+            chosenOptionId: 'force',
+            chosenOptionLabel: 'Force it open',
+          }),
+        }),
+      }),
+    }))
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        adventure: expect.objectContaining({
+          currentStakes: 'Opening the brass door may wake what listens beyond it.',
+          activeDecision: expect.objectContaining({
+            selectedOptionId: 'force',
+            selectedOptionLabel: 'Force it open',
+          }),
+          lastDeclaredAction: expect.objectContaining({
+            tokenId: 1,
+            beatId: 'beat-1',
+            chosenOptionId: 'force',
+          }),
+          lastOutcome: expect.objectContaining({
+            kind: 'beat',
+            sourceId: 'beat:beat-1',
+          }),
+          consequenceLedger: [expect.objectContaining({ source: 'beat:beat-1' })],
+        }),
+      }),
+    }))
+  })
+
   it('reuses a previously appended game-master beat on retry without regenerating it', async () => {
     const repository = makeRepository()
     usePriorGameMasterMessage(repository)
@@ -403,6 +533,92 @@ describe('location room narrative coordinator', () => {
     expect(repository.appendMessage).toHaveBeenCalledWith(expect.objectContaining({
       authorKind: 'agent',
       content: 'Still I hear it.',
+    }))
+  })
+
+  it('reuses stored character action metadata on retry without regenerating the character turn', async () => {
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    const narrativeRepository = makeNarrativeRepository(beat({
+      status: 'game_master_message_appended',
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'The stored door waits.',
+      speakerInstruction: 'Use the stored character action.',
+      stateAfter: {
+        stateSummary: 'A stored choice waits at the door.',
+        currentObjective: 'Resolve the stored choice.',
+        openThreads: ['What opens?'],
+      },
+      metadata: {
+        adventurePatch: {
+          currentStakes: 'The stored door may still wake.',
+          activeDecision: {
+            id: 'stored-door',
+            prompt: 'How does Ash handle the stored door?',
+            options: [
+              { id: 'listen', label: 'Listen first' },
+              { id: 'force', label: 'Force it open' },
+            ],
+          },
+        },
+        characterAction: {
+          content: 'Stored Ash forces the door.',
+          officialAgentId: 'agent-1',
+          authorName: 'Ash',
+        },
+        declaredAction: {
+          summary: 'Ash follows the stored choice to force the door.',
+          chosenOptionId: 'force',
+          actionIntent: 'force_entry',
+        },
+      },
+    }))
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    await coordinator.processTurn({
+      room: room(),
+      tick: tick({ attempts: 2 }),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })
+
+    expect(gameMasterGenerator.generateBeat).not.toHaveBeenCalled()
+    expect(turnGenerator.generateTurn).not.toHaveBeenCalled()
+    expect(repository.appendMessage).toHaveBeenCalledTimes(1)
+    expect(repository.appendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      authorKind: 'agent',
+      content: 'Stored Ash forces the door.',
+      dedupeKey: 'narrative:beat-1:character_reaction',
+      metadata: expect.objectContaining({
+        publicAdventure: expect.objectContaining({
+          declaredAction: expect.objectContaining({
+            summary: 'Ash follows the stored choice to force the door.',
+            chosenOptionId: 'force',
+            chosenOptionLabel: 'Force it open',
+          }),
+        }),
+      }),
+    }))
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        adventure: expect.objectContaining({
+          activeDecision: expect.objectContaining({ selectedOptionId: 'force' }),
+          lastDeclaredAction: expect.objectContaining({ summary: 'Ash follows the stored choice to force the door.' }),
+        }),
+      }),
     }))
   })
 
@@ -474,6 +690,7 @@ describe('location room narrative coordinator', () => {
         requestedGameplayAction: null,
         encounterSeed: null,
         sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'Find the bell.' },
         metadata: {},
       })),
     }
@@ -724,6 +941,7 @@ describe('location room narrative coordinator', () => {
         requestedGameplayAction: null,
         encounterSeed: null,
         sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'Find the bell.' },
         metadata: {},
       })),
     }
@@ -800,6 +1018,7 @@ describe('location room narrative coordinator', () => {
         requestedGameplayAction: null,
         encounterSeed: null,
         sceneCheckRequest: request.value,
+        adventurePatch: { currentStakes: 'Search the ash marks.' },
         metadata: { sceneCheck: { request: request.value, proposal: null, proposalError: null } },
       })),
       generateSceneCheckOutcome: jest.fn(async ({ resolution }) => ({
@@ -810,11 +1029,21 @@ describe('location room narrative coordinator', () => {
           currentObjective: 'Choose whether to follow the revealed sign.',
           openThreads: ['What follows the sign?'],
         },
+        adventurePatch: {
+          consequenceLedger: [{ id: 'revealed-sign', source: 'scene', summary: 'The ash reveals a sign worth following.', status: 'advantage' as const, tier: resolution.roll.tier }],
+        },
         metadata: { rawResponseLength: 42 },
       })),
     }
     const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
-      generateTurn: jest.fn(async () => ({ officialAgentId: 'agent-1', content: 'I search the ash for a hidden sign.' })),
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I search the ash for a hidden sign.',
+        declaredAction: {
+          summary: 'Ash searches the ash for a hidden sign.',
+          actionIntent: 'search',
+        },
+      })),
     }
     const coordinator = new DefaultLocationRoomNarrativeCoordinator(
       repository,
@@ -848,9 +1077,18 @@ describe('location room narrative coordinator', () => {
       'narrative',
       'narrative',
     ])
+    expect(repository.appendMessage.mock.calls[0][0].metadata?.publicAdventure).toEqual(expect.objectContaining({
+      declaredAction: expect.objectContaining({ summary: 'Ash searches the ash for a hidden sign.' }),
+    }))
     expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
       rollContext: 'scene_check',
       sceneCheck: expect.objectContaining({ sceneCheckId: 'scene_check:beat-1:ash-marks' }),
+    }))
+    expect(repository.appendMessage.mock.calls[2][0].metadata?.publicAdventure).toEqual(expect.objectContaining({
+      consequence: expect.objectContaining({
+        summary: 'The ash reveals a sign worth following.',
+        status: 'advantage',
+      }),
     }))
     expect(events.indexOf('patch:resolution')).toBeLessThan(events.indexOf('append:roll_card'))
     expect(gameMasterGenerator.generateSceneCheckOutcome).toHaveBeenCalledWith(expect.objectContaining({
@@ -865,6 +1103,18 @@ describe('location room narrative coordinator', () => {
       metadata: expect.objectContaining({
         source: 'location-room-scene-check',
         lastSceneCheckId: 'scene_check:beat-1:ash-marks',
+        adventure: expect.objectContaining({
+          lastDeclaredAction: expect.objectContaining({
+            summary: 'Ash searches the ash for a hidden sign.',
+          }),
+          lastOutcome: expect.objectContaining({
+            kind: 'scene_check',
+            sourceId: 'scene_check:scene_check:beat-1:ash-marks',
+          }),
+          consequenceLedger: [expect.objectContaining({
+            source: 'scene_check:scene_check:beat-1:ash-marks',
+          })],
+        }),
       }),
     }))
   })
@@ -946,6 +1196,7 @@ describe('location room narrative coordinator', () => {
           currentObjective: 'Follow it.',
           openThreads: ['What follows?'],
         },
+        adventurePatch: { currentStakes: 'Follow what the stored roll revealed.' },
         metadata: {},
       })),
     }

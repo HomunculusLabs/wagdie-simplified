@@ -688,6 +688,119 @@ describe('location room domain service', () => {
     expect(JSON.stringify(result.messages)).not.toContain('private_phase')
   })
 
+  it('projects sanitized public adventure metadata without exposing raw adventure state', async () => {
+    const repository = makeRepository({
+      listPublicMessages: jest.fn(async () => ({
+        messages: [
+          message({
+            id: 'msg-adventure',
+            sequence: 1,
+            authorKind: 'game_master',
+            tokenId: null,
+            metadata: {
+              publicAdventure: {
+                stakes: 'The bell market closes at moonrise.',
+                activeDecision: {
+                  id: 'market-choice',
+                  prompt: 'Who do you approach?',
+                  options: [
+                    { id: 'merchant', label: 'Bell merchant', summary: 'Ask about the hush-map.' },
+                    { id: 'guard', label: 'Ash guard' },
+                    { id: 'well', label: 'Old well' },
+                    { id: 'roof', label: 'Roofline' },
+                    { id: 'extra', label: 'Too many options' },
+                  ],
+                  selectedOptionId: 'guard',
+                },
+                declaredAction: {
+                  tokenId: 1,
+                  summary: 'Ash questions the guard.',
+                  chosenOptionId: 'guard',
+                  chosenOptionLabel: 'Forged label',
+                  actionIntent: 'parley',
+                  privatePrompt: 'hidden',
+                },
+                consequence: {
+                  summary: 'The guard demands a name before opening the stair.',
+                  status: 'complication',
+                  tier: 'partial_success',
+                  rawDc: 99,
+                },
+                clocks: [
+                  { id: 'market-close', label: 'Market close', value: 2, max: 6, summary: 'The third bell approaches.', private: true },
+                  { id: 'unsafe', label: 'HP clock', value: 1, max: 6, summary: 'HP hidden.' },
+                ],
+              },
+              adventure: { currentStakes: 'private durable state' },
+              adventurePatch: { currentStakes: 'raw patch' },
+              adjudication: { hidden: true },
+              privateNarrativeState: 'do not expose',
+            },
+          }),
+          message({
+            id: 'msg-unsafe-adventure',
+            sequence: 2,
+            metadata: {
+              publicAdventure: {
+                stakes: 'Wallet 0x1234567890123456789012345678901234567890 wins rewards.',
+                consequence: { summary: 'Gain reward XP.', status: 'advantage' },
+              },
+            },
+          }),
+        ],
+        total: 2,
+        page: 1,
+        pageSize: 20,
+        hasMore: false,
+      })),
+    })
+    const service = new LocationRoomService(repository, makeMembership())
+
+    const result = await service.getPublicRoom('loc-1')
+
+    expect(result.messages[0]).toMatchObject({
+      id: 'msg-adventure',
+      adventure: {
+        stakes: 'The bell market closes at moonrise.',
+        activeDecision: {
+          id: 'market-choice',
+          prompt: 'Who do you approach?',
+          options: [
+            { id: 'merchant', label: 'Bell merchant', summary: 'Ask about the hush-map.' },
+            { id: 'guard', label: 'Ash guard' },
+            { id: 'well', label: 'Old well' },
+            { id: 'roof', label: 'Roofline' },
+          ],
+          selectedOptionId: 'guard',
+          selectedOptionLabel: 'Ash guard',
+        },
+        declaredAction: {
+          tokenId: 1,
+          summary: 'Ash questions the guard.',
+          chosenOptionId: 'guard',
+          chosenOptionLabel: 'Ash guard',
+          actionIntent: 'parley',
+        },
+        consequence: {
+          summary: 'The guard demands a name before opening the stair.',
+          status: 'complication',
+          tier: 'partial_success',
+        },
+        clocks: [{ id: 'market-close', label: 'Market close', value: 2, max: 6, summary: 'The third bell approaches.' }],
+      },
+    })
+    expect(result.messages[1]).not.toHaveProperty('adventure')
+    expect(JSON.stringify(result.messages)).not.toContain('private durable state')
+    expect(JSON.stringify(result.messages)).not.toContain('raw patch')
+    expect(JSON.stringify(result.messages)).not.toContain('adjudication')
+    expect(JSON.stringify(result.messages)).not.toContain('privateNarrativeState')
+    expect(JSON.stringify(result.messages)).not.toContain('privatePrompt')
+    expect(JSON.stringify(result.messages)).not.toContain('rawDc')
+    expect(JSON.stringify(result.messages)).not.toContain('Wallet')
+    expect(JSON.stringify(result.messages)).not.toContain('reward')
+    expect(JSON.stringify(result.messages)).not.toContain('HP')
+  })
+
   it('adds safe public gameplay summaries and message classification without raw mechanics metadata', async () => {
     mutableGameplayConfig.enabled = true
     mutableGameplayConfig.locationAllowlist = ['loc-1']

@@ -171,6 +171,25 @@ const roomFixture: PublicLocationRoomRead = {
       messageDomain: 'narrative',
       messageKind: 'gm_beat',
       ttrpgPhase: 'threat',
+      adventure: {
+        stakes: 'If no one answers the bell, the buried choir will wake hungry.',
+        activeDecision: {
+          id: 'bell-choice',
+          prompt: 'How will the room answer the buried bell?',
+          options: [
+            {
+              id: 'silence-bell',
+              label: 'Muffle the bell',
+              summary: 'Smother its sound before the choir stirs.',
+            },
+            {
+              id: 'follow-bell',
+              label: 'Follow the ringing',
+              summary: 'Trace the tolling into the ash-choked stair.',
+            },
+          ],
+        },
+      },
     },
     {
       id: 'msg-3',
@@ -183,6 +202,15 @@ const roomFixture: PublicLocationRoomRead = {
       messageDomain: 'narrative',
       messageKind: 'character_reaction',
       ttrpgPhase: 'threat',
+      adventure: {
+        declaredAction: {
+          tokenId: 7,
+          summary: 'Wagdie #7 wraps the bell in a torn cloak to choke its ringing.',
+          chosenOptionId: 'silence-bell',
+          chosenOptionLabel: 'Muffle the bell',
+          actionIntent: 'sabotage',
+        },
+      },
     },
   ],
   gameplay: {
@@ -255,6 +283,18 @@ describe('LocationRoomWatchPage', () => {
     expect(screen.getByText('The bell wants blood. I can hear it laughing.')).toBeInTheDocument();
     expect(screen.getByText('Story beat')).toBeInTheDocument();
     expect(screen.getByText('Character reaction')).toBeInTheDocument();
+    expect(screen.getAllByLabelText('Adventure signals')).toHaveLength(2);
+    expect(screen.getByText('Stakes')).toBeInTheDocument();
+    expect(screen.getByText('If no one answers the bell, the buried choir will wake hungry.')).toBeInTheDocument();
+    expect(screen.getByText('Decision options')).toBeInTheDocument();
+    expect(screen.getByText('How will the room answer the buried bell?')).toBeInTheDocument();
+    expect(screen.getByText('Muffle the bell')).toBeInTheDocument();
+    expect(screen.getByText('Follow the ringing')).toBeInTheDocument();
+    expect(screen.getByText('Declared action')).toBeInTheDocument();
+    expect(screen.getByText('Wagdie #7 wraps the bell in a torn cloak to choke its ringing.')).toBeInTheDocument();
+    expect(screen.getByText('Choice: Muffle the bell')).toBeInTheDocument();
+    expect(screen.getByText('Intent: Sabotage')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Muffle the bell/i })).not.toBeInTheDocument();
     expect(screen.getByText('Combat action')).toBeInTheDocument();
     expect(screen.getByText('Roll/check result')).toBeInTheDocument();
     expect(screen.getByText('Combat outcome')).toBeInTheDocument();
@@ -367,6 +407,22 @@ describe('LocationRoomWatchPage', () => {
           messageDomain: 'narrative',
           messageKind: 'gm_outcome',
           ttrpgPhase: 'exploration',
+          adventure: {
+            consequence: {
+              summary: 'The safe path is clear, but the ash sloughs toward the stairwell.',
+              status: 'complication',
+              tier: 'partial_success',
+            },
+            clocks: [
+              {
+                id: 'ash-collapse',
+                label: 'Ash Collapse',
+                value: 2,
+                max: 6,
+                summary: 'The ruin is closer to sealing the route behind them.',
+              },
+            ],
+          },
         },
       ],
       gameplay: undefined,
@@ -385,6 +441,14 @@ describe('LocationRoomWatchPage', () => {
     expect(screen.getByText('Scene action')).toBeInTheDocument();
     expect(screen.getAllByText('Scene check').length).toBeGreaterThan(0);
     expect(screen.getByText('Scene outcome')).toBeInTheDocument();
+    expect(screen.getByLabelText('Adventure signals')).toBeInTheDocument();
+    expect(screen.getByText('Consequence')).toBeInTheDocument();
+    expect(screen.getByText('The safe path is clear, but the ash sloughs toward the stairwell.')).toBeInTheDocument();
+    expect(screen.getByText('Complication · Partial Success')).toBeInTheDocument();
+    expect(screen.getByText('Clock pressure')).toBeInTheDocument();
+    expect(screen.getByText('Ash Collapse')).toBeInTheDocument();
+    expect(screen.getByText('2 / 6')).toBeInTheDocument();
+    expect(screen.getByText('The ruin is closer to sealing the route behind them.')).toBeInTheDocument();
     expect(screen.getByLabelText('Structured scene check roll')).toBeInTheDocument();
     expect(screen.getByText('Scene check roll')).toBeInTheDocument();
     expect(screen.getByText('Search the Ash Marks')).toBeInTheDocument();

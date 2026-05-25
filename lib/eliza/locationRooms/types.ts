@@ -1,4 +1,8 @@
 import type {
+  LocationRoomAdventureDecision,
+  LocationRoomDeclaredAction,
+} from './narrativeTypes'
+import type {
   GameplayCheckType,
   GameplayContextualCheckOption,
   GameplayRollChoiceSource,
@@ -249,6 +253,50 @@ export type PublicLocationRoomGameplayRolls = {
   encounterStatusAfter: 'active' | 'victory' | 'defeat' | 'fled' | 'abandoned' | 'unknown'
 }
 
+export type PublicLocationRoomAdventureDecisionOption = {
+  id: string
+  label: string
+  summary?: string | null
+}
+
+export type PublicLocationRoomAdventureDecision = {
+  id: string
+  prompt: string
+  options: PublicLocationRoomAdventureDecisionOption[]
+  selectedOptionId?: string | null
+  selectedOptionLabel?: string | null
+}
+
+export type PublicLocationRoomAdventureDeclaredAction = {
+  tokenId?: number | null
+  summary: string
+  chosenOptionId?: string | null
+  chosenOptionLabel?: string | null
+  actionIntent?: string | null
+}
+
+export type PublicLocationRoomAdventureConsequence = {
+  summary: string
+  status?: 'open' | 'resolved' | 'advantage' | 'complication'
+  tier?: 'critical_success' | 'success' | 'partial_success' | 'failure' | 'critical_failure' | 'unknown' | null
+}
+
+export type PublicLocationRoomAdventureClock = {
+  id: string
+  label: string
+  value: number
+  max: number
+  summary: string
+}
+
+export type PublicLocationRoomAdventure = {
+  stakes?: string | null
+  activeDecision?: PublicLocationRoomAdventureDecision | null
+  declaredAction?: PublicLocationRoomAdventureDeclaredAction | null
+  consequence?: PublicLocationRoomAdventureConsequence | null
+  clocks?: PublicLocationRoomAdventureClock[]
+}
+
 export type PublicLocationRoomMessage = {
   id: string
   sequence: number
@@ -262,6 +310,7 @@ export type PublicLocationRoomMessage = {
   ttrpgPhase?: LocationRoomTtrpgPhase
   gameplayMessageKind?: PublicLocationRoomGameplayMessageKind
   gameplayRolls?: PublicLocationRoomGameplayRolls
+  adventure?: PublicLocationRoomAdventure
 }
 
 export type PublicGameplayStatusBand = 'healthy' | 'injured' | 'critical' | 'down' | 'dead' | 'fled' | 'unknown'
@@ -464,6 +513,7 @@ export type LocationRoomNarrativeTurnContext = {
   openThreads: string[]
   speakerInstruction: string
   publicNarration?: string | null
+  activeDecision?: LocationRoomAdventureDecision | null
   sceneCheck?: LocationRoomNarrativeTurnSceneCheckContext | null
 }
 
@@ -478,6 +528,7 @@ export type GenerateOfficialLocationRoomTurnInput = {
 export type GenerateOfficialLocationRoomTurnResult = {
   officialAgentId: string
   content: string
+  declaredAction?: LocationRoomDeclaredAction | null
   sceneCheckProposal?: NormalizedSceneCheckProposal | null
   sceneCheckProposalError?: string | null
 }

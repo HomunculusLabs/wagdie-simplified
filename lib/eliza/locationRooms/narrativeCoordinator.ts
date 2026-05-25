@@ -17,11 +17,19 @@ import {
   type LocationRoomNarrativeRepository,
 } from './narrativeRepository'
 import {
+  mergeAdventureMetadata,
   mergeNarrativeSceneCheckMetadata,
   mergeNarrativeTtrpgMetadata,
+  normalizeAdventureMemory,
+  normalizeAdventurePatch,
+  normalizeDeclaredAction,
   normalizeNarrativeSceneCheckMetadata,
   normalizeNarrativeTtrpgMetadata,
+  recordAdventureDeclaredAction,
   toNarrativeStateSnapshot,
+  type LocationRoomAdventureMemory,
+  type LocationRoomAdventurePatch,
+  type LocationRoomDeclaredAction,
   type LocationRoomNarrativeBeat,
   type LocationRoomNarrativeStateSnapshot,
 } from './narrativeTypes'
@@ -39,6 +47,7 @@ import {
   resolveSceneCheck,
 } from './sceneChecks/rules'
 import { projectPublicSceneCheckRolls } from './sceneChecks/publicRolls'
+import { sanitizePublicLocationRoomAdventure } from './publicAdventure'
 import type {
   SceneCheckAdjudication,
   SceneCheckResolution,
@@ -145,6 +154,9 @@ function beatToOutput(
     requestedGameplayAction: ttrpg.requestedGameplayAction,
     encounterSeed: ttrpg.lastEncounterSeed,
     sceneCheckRequest: sceneCheck.request,
+    adventurePatch: normalizeAdventurePatch(beat.metadata.adventurePatch ?? {
+      currentStakes: stateAfter.currentObjective ?? 'The scene carries unresolved pressure.',
+    }),
     metadata: mergeNarrativeSceneCheckMetadata(beat.metadata, { request: sceneCheck.request }),
   }
 
@@ -168,7 +180,135 @@ function toGameMasterBeatMetadata(output: GameMasterBeatOutput): Record<string, 
       ...output.metadata.sceneCheck,
       request: output.sceneCheckRequest,
     },
+    adventurePatch: output.adventurePatch,
   }
+}
+
+function adventureSourceIdForBeat(beatId: string): string {
+  return `beat:${beatId}`
+}
+
+function adventureSourceIdForSceneCheck(sceneCheckId: string): string {
+  return `scene_check:${sceneCheckId}`
+}
+
+function withAdventurePatchSource(value: unknown, sourceId: string): LocationRoomAdventurePatch {
+  const patch = normalizeAdventurePatch(value, { sourceId })
+  return normalizeAdventurePatch({
+    ...patch,
+    consequenceLedger: patch.consequenceLedger?.map((consequence, index) => ({
+      ...consequence,
+      source: sourceId,
+      id: `${sourceId}:consequence:${index + 1}`,
+    })),
+  }, { sourceId })
+}
+
+function withSourcedGameMasterPatch(output: GameMasterBeatOutput, sourceId: string): GameMasterBeatOutput {
+  const adventurePatch = withAdventurePatchSource(output.adventurePatch, sourceId)
+  return {
+    ...output,
+    adventurePatch,
+    metadata: {
+      ...output.metadata,
+      adventurePatch,
+    },
+  }
+}
+
+function publicAdventureMetadata(value: unknown): Record<string, unknown> {
+  const publicAdventure = sanitizePublicLocationRoomAdventure(value)
+  return publicAdventure ? { publicAdventure } : {}
+}
+
+function latestAdventureConsequence(memory: LocationRoomAdventureMemory): unknown {
+  return memory.consequenceLedger[memory.consequenceLedger.length - 1] ?? memory.lastOutcome ?? null
+}
+
+function buildLastBeatOutcome(output: GameMasterBeatOutput, sourceId: string): LocationRoomAdventurePatch {
+  const summary = output.publicNarration || output.stateAfter.currentObjective || output.stateAfter.stateSummary
+  return normalizeAdventurePatch({
+    lastOutcome: {
+      kind: 'beat',
+      sourceId,
+      summary,
+    },
+  }, { sourceId })
+}
+
+function buildLastSceneCheckOutcome(input: {
+  sceneSourceId: string
+  tier: string
+  summary: string
+}): LocationRoomAdventurePatch {
+  return normalizeAdventurePatch({
+    lastOutcome: {
+      kind: 'scene_check',
+      sourceId: input.sceneSourceId,
+      tier: input.tier,
+      summary: input.summary,
+    },
+  }, { sourceId: input.sceneSourceId })
+}
+
+function storeableDeclaredAction(
+  action: LocationRoomDeclaredAction | null | undefined,
+  content: string,
+  activeDecision: LocationRoomAdventureMemory['activeDecision']
+): LocationRoomDeclaredAction | null {
+  return normalizeDeclaredAction(action ?? { summary: content }, { activeDecision })
+}
+
+type StoredBeatCharacterAction = {
+  content: string
+  officialAgentId: string | null
+  authorName: string | null
+}
+
+function normalizeStoredBeatCharacterAction(value: unknown): StoredBeatCharacterAction | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const source = value as Record<string, unknown>
+  const content = typeof source.content === 'string' ? source.content.replace(/\s+/g, ' ').trim() : ''
+  if (!content) return null
+  return {
+    content: content.slice(0, 500).trim(),
+    officialAgentId: typeof source.officialAgentId === 'string' && source.officialAgentId.trim()
+      ? source.officialAgentId.trim()
+      : null,
+    authorName: typeof source.authorName === 'string' && source.authorName.trim()
+      ? source.authorName.trim().slice(0, 120)
+      : null,
+  }
+}
+
+function storeableCharacterAction(input: {
+  content: string
+  officialAgentId: string | null
+  authorName: string
+}): StoredBeatCharacterAction {
+  return {
+    content: input.content,
+    officialAgentId: input.officialAgentId,
+    authorName: input.authorName,
+  }
+}
+
+function mergeNormalAdventureMetadata(input: {
+  metadata: Record<string, unknown>
+  gmPatch: LocationRoomAdventurePatch
+  declaredAction: LocationRoomDeclaredAction | null
+  tokenId: number
+  beatId: string
+  output: GameMasterBeatOutput
+}): Record<string, unknown> {
+  const beatSourceId = adventureSourceIdForBeat(input.beatId)
+  let metadata = mergeAdventureMetadata(input.metadata, input.gmPatch, { sourceId: beatSourceId })
+  metadata = recordAdventureDeclaredAction(metadata, input.declaredAction, {
+    tokenId: input.tokenId,
+    beatId: input.beatId,
+  })
+  metadata = mergeAdventureMetadata(metadata, buildLastBeatOutcome(input.output, beatSourceId), { sourceId: beatSourceId })
+  return metadata
 }
 
 const SAFE_GM_GENERATION_ERROR_CATEGORIES = new Set([
@@ -250,13 +390,17 @@ function shouldAppendGameMasterMessage(beat: LocationRoomNarrativeBeat, output: 
   return !['game_master_message_appended', 'character_appended', 'completed'].includes(beat.status)
 }
 
-function toCharacterNarrativeContext(output: GameMasterBeatOutput): LocationRoomNarrativeTurnContext {
+function toCharacterNarrativeContext(
+  output: GameMasterBeatOutput,
+  activeDecision: LocationRoomAdventureMemory['activeDecision']
+): LocationRoomNarrativeTurnContext {
   return {
     stateSummary: output.stateAfter.stateSummary,
     currentObjective: output.stateAfter.currentObjective,
     openThreads: output.stateAfter.openThreads,
     speakerInstruction: output.speakerInstruction,
     publicNarration: output.publicNarration,
+    activeDecision,
     sceneCheck: output.sceneCheckRequest
       ? {
         mode: 'requested',
@@ -319,6 +463,14 @@ function fallbackSceneCheckOutcome(input: {
         ? input.narrativeState.openThreads
         : ['How will the room respond to the scene-check result?'],
     },
+    adventurePatch: normalizeAdventurePatch({
+      currentStakes: 'The room is now shaped by the resolved scene check.',
+      consequence: {
+        summary: `${actor}'s check leaves a durable consequence for the next choice.`,
+        status: roll.tier === 'success' || roll.tier === 'critical_success' ? 'advantage' : 'complication',
+        tier: roll.tier,
+      },
+    }),
     metadata: { fallbackUsed: true },
   }
 }
@@ -355,10 +507,14 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       },
     })
     const beatGameMasterAgentId = beat.gameMasterAgentId ?? resolvedGameMasterAgentId
+    const beatAdventureSourceId = adventureSourceIdForBeat(beat.id)
 
     let gameMasterOutput: GameMasterBeatOutput
     if (isUsableGeneratedBeat(beat)) {
-      gameMasterOutput = beatToOutput(beat, beatGameMasterAgentId, progressionContext)
+      gameMasterOutput = withSourcedGameMasterPatch(
+        beatToOutput(beat, beatGameMasterAgentId, progressionContext),
+        beatAdventureSourceId
+      )
     } else {
       try {
         gameMasterOutput = await this.gameMasterGenerator.generateBeat({
@@ -375,6 +531,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           ...gameMasterOutput,
           progressionContext,
         })
+        gameMasterOutput = withSourcedGameMasterPatch(gameMasterOutput, beatAdventureSourceId)
       } catch (error) {
         const gmGeneration = getGameMasterGenerationDiagnostics(error)
         if (gmGeneration) {
@@ -396,6 +553,10 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         metadata: toGameMasterBeatMetadata(gameMasterOutput),
       })
     }
+
+    const adventureAfterGameMasterPatch = normalizeAdventureMemory(
+      mergeAdventureMetadata(narrativeState.metadata, gameMasterOutput.adventurePatch, { sourceId: beatAdventureSourceId })
+    )
 
     if (shouldAppendGameMasterMessage(beat, gameMasterOutput)) {
       const publicNarration = gameMasterOutput.publicNarration
@@ -420,6 +581,12 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           messageDomain: 'narrative',
           messageKind: 'gm_beat',
           ttrpgPhase: gameMasterOutput.ttrpgPhase,
+          ...publicAdventureMetadata({
+            currentStakes: gameMasterOutput.adventurePatch.currentStakes ?? adventureAfterGameMasterPatch.currentStakes,
+            activeDecision: adventureAfterGameMasterPatch.activeDecision,
+            consequenceLedger: gameMasterOutput.adventurePatch.consequenceLedger,
+            clocks: adventureAfterGameMasterPatch.clocks,
+          }),
         },
       })
 
@@ -437,10 +604,14 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
     }
 
     let storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
-    let content = storedSceneCheck.characterAction?.content ?? null
-    let officialAgentId = storedSceneCheck.characterAction?.officialAgentId ?? null
+    const storedCharacterAction = normalizeStoredBeatCharacterAction(beat.metadata.characterAction)
+    let content = storedSceneCheck.characterAction?.content ?? storedCharacterAction?.content ?? null
+    let officialAgentId = storedSceneCheck.characterAction?.officialAgentId ?? storedCharacterAction?.officialAgentId ?? null
     let sceneCheckProposal = storedSceneCheck.proposal
     let sceneCheckProposalError = storedSceneCheck.proposalError
+    let declaredAction = normalizeDeclaredAction(beat.metadata.declaredAction, {
+      activeDecision: adventureAfterGameMasterPatch.activeDecision,
+    })
 
     if (!content) {
       const generated = await this.turnGenerator.generateTurn({
@@ -448,10 +619,11 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         speaker: input.speaker,
         participants: input.participants,
         recentMessages: input.recentMessages,
-        narrativeContext: toCharacterNarrativeContext(gameMasterOutput),
+        narrativeContext: toCharacterNarrativeContext(gameMasterOutput, adventureAfterGameMasterPatch.activeDecision),
       })
       content = normalizeLocationRoomGeneratedContent(generated.content)
       officialAgentId = generated.officialAgentId
+      declaredAction = storeableDeclaredAction(generated.declaredAction, content ?? '', adventureAfterGameMasterPatch.activeDecision)
       sceneCheckProposal = generated.sceneCheckProposal ?? null
       sceneCheckProposalError = generated.sceneCheckProposalError ?? null
     }
@@ -460,8 +632,14 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       throw new Error('Official ElizaOS generated an empty location-room turn')
     }
 
+    declaredAction = declaredAction ?? storeableDeclaredAction(null, content, adventureAfterGameMasterPatch.activeDecision)
+
     let sceneCheckMetadata = (gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || storedSceneCheck.resolution)
-      ? mergeNarrativeSceneCheckMetadata(toGameMasterBeatMetadata(gameMasterOutput), {
+      ? mergeNarrativeSceneCheckMetadata({
+        ...toGameMasterBeatMetadata(gameMasterOutput),
+        declaredAction,
+        characterAction: storeableCharacterAction({ content, officialAgentId, authorName: input.speaker.name }),
+      }, {
         id: storedSceneCheck.id,
         proposal: sceneCheckProposal ?? null,
         proposalError: sceneCheckProposalError ?? null,
@@ -472,7 +650,11 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         characterAction: storedSceneCheck.characterAction,
         gmOutcome: storedSceneCheck.gmOutcome,
       })
-      : toGameMasterBeatMetadata(gameMasterOutput)
+      : {
+        ...toGameMasterBeatMetadata(gameMasterOutput),
+        declaredAction,
+        characterAction: storeableCharacterAction({ content, officialAgentId, authorName: input.speaker.name }),
+      }
 
     if (gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || storedSceneCheck.resolution) {
       try {
@@ -480,6 +662,12 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
       } catch (error) {
         console.warn('[Location Room Narrative] Failed to patch scene-check proposal metadata:', error)
+      }
+    } else if (declaredAction && !beat.metadata.declaredAction) {
+      try {
+        beat = await this.narrativeRepository.patchBeatMetadata(beat.id, sceneCheckMetadata)
+      } catch (error) {
+        console.warn('[Location Room Narrative] Failed to patch declared-action metadata:', error)
       }
     }
 
@@ -491,6 +679,16 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
     })
 
     if (adjudication.decision === 'skip') {
+      const normalAdventureMetadata = mergeNormalAdventureMetadata({
+        metadata: narrativeState.metadata,
+        gmPatch: gameMasterOutput.adventurePatch,
+        declaredAction,
+        tokenId: input.speaker.tokenId,
+        beatId: beat.id,
+        output: gameMasterOutput,
+      })
+      const normalAdventureMemory = normalizeAdventureMemory(normalAdventureMetadata)
+
       const message = await this.repository.appendMessage({
         roomId: input.room.id,
         locationId: input.room.locationId,
@@ -501,6 +699,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         authorName: input.speaker.name,
         content,
         visibility: 'public',
+        dedupeKey: `narrative:${beat.id}:character_reaction`,
         metadata: {
           source: 'scheduled-location-room-tick',
           triggerType: input.tick.triggerType,
@@ -509,6 +708,13 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           messageDomain: 'narrative',
           messageKind: 'character_reaction',
           ttrpgPhase: gameMasterOutput.ttrpgPhase,
+          ...publicAdventureMetadata({
+            currentStakes: normalAdventureMemory.currentStakes,
+            activeDecision: normalAdventureMemory.activeDecision,
+            declaredAction: normalAdventureMemory.lastDeclaredAction ?? declaredAction,
+            consequence: latestAdventureConsequence(normalAdventureMemory),
+            clocks: normalAdventureMemory.clocks,
+          }),
           ...(gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError
             ? {
               sceneCheck: {
@@ -536,7 +742,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           stateSummary: gameMasterOutput.stateAfter.stateSummary,
           currentObjective: gameMasterOutput.stateAfter.currentObjective,
           openThreads: gameMasterOutput.stateAfter.openThreads,
-          metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+          metadata: mergeNarrativeTtrpgMetadata(normalAdventureMetadata, {
             ttrpgPhase: gameMasterOutput.ttrpgPhase,
             combatReadiness: gameMasterOutput.combatReadiness,
             threatLevel: gameMasterOutput.threatLevel,
@@ -577,6 +783,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
 
     let messageIds: string[] = []
     const sceneCheckId = sceneCheckIdForBeat(beat, storedSceneCheck.id, adjudication)
+    const sceneAdventureSourceId = adventureSourceIdForSceneCheck(sceneCheckId)
     sceneCheckMetadata = mergeNarrativeSceneCheckMetadata(sceneCheckMetadata, {
       id: sceneCheckId,
       adjudication,
@@ -588,6 +795,14 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
     })
     beat = await this.narrativeRepository.patchBeatMetadata(beat.id, sceneCheckMetadata)
     storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
+    let actionAdventureMetadata = mergeAdventureMetadata(narrativeState.metadata, gameMasterOutput.adventurePatch, {
+      sourceId: beatAdventureSourceId,
+    })
+    actionAdventureMetadata = recordAdventureDeclaredAction(actionAdventureMetadata, declaredAction, {
+      tokenId: input.speaker.tokenId,
+      beatId: beat.id,
+    })
+    const actionAdventureMemory = normalizeAdventureMemory(actionAdventureMetadata)
 
     const actionMessage = await this.repository.appendMessage({
       roomId: input.room.id,
@@ -614,6 +829,12 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         sceneCheckRequest: storedSceneCheck.request,
         sceneCheckProposal: storedSceneCheck.proposal,
         sceneCheckProposalError: storedSceneCheck.proposalError,
+        ...publicAdventureMetadata({
+          currentStakes: actionAdventureMemory.currentStakes,
+          activeDecision: actionAdventureMemory.activeDecision,
+          declaredAction: actionAdventureMemory.lastDeclaredAction ?? declaredAction,
+          clocks: actionAdventureMemory.clocks,
+        }),
       },
     })
     messageIds = messageIdsWith(messageIds, actionMessage.id)
@@ -702,17 +923,36 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           resolution,
         })
 
+      const outcomeAdventurePatch = withAdventurePatchSource(
+        generatedOutcome.adventurePatch ?? generatedOutcome.metadata?.adventurePatch,
+        sceneAdventureSourceId
+      )
       outcome = {
         gameMasterAgentId: generatedOutcome.gameMasterAgentId,
         publicNarration: generatedOutcome.publicNarration,
         stateAfter: generatedOutcome.stateAfter,
-        metadata: generatedOutcome.metadata,
+        metadata: {
+          ...generatedOutcome.metadata,
+          adventurePatch: outcomeAdventurePatch,
+        },
       }
       beat = await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(beat.metadata, {
         gmOutcome: outcome,
       }))
       storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
     }
+
+    const outcomeAdventurePatch = withAdventurePatchSource(outcome.metadata?.adventurePatch, sceneAdventureSourceId)
+    let sceneAdventureMetadata = actionAdventureMetadata
+    sceneAdventureMetadata = mergeAdventureMetadata(sceneAdventureMetadata, outcomeAdventurePatch, {
+      sourceId: sceneAdventureSourceId,
+    })
+    sceneAdventureMetadata = mergeAdventureMetadata(sceneAdventureMetadata, buildLastSceneCheckOutcome({
+      sceneSourceId: sceneAdventureSourceId,
+      tier: resolution.roll.tier,
+      summary: outcome.publicNarration,
+    }), { sourceId: sceneAdventureSourceId })
+    const sceneAdventureMemory = normalizeAdventureMemory(sceneAdventureMetadata)
 
     const outcomeMessage = await this.repository.appendMessage({
       roomId: input.room.id,
@@ -735,6 +975,12 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         messageDomain: 'narrative',
         messageKind: 'gm_outcome',
         ttrpgPhase: gameMasterOutput.ttrpgPhase,
+        ...publicAdventureMetadata({
+          currentStakes: sceneAdventureMemory.currentStakes,
+          activeDecision: sceneAdventureMemory.activeDecision,
+          consequence: latestAdventureConsequence(sceneAdventureMemory),
+          clocks: sceneAdventureMemory.clocks,
+        }),
         rollFacts: {
           actorTokenId: resolution.actorTokenId,
           actionIntent: resolution.actionIntent,
@@ -764,7 +1010,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         stateSummary: outcome.stateAfter.stateSummary,
         currentObjective: outcome.stateAfter.currentObjective,
         openThreads: outcome.stateAfter.openThreads,
-        metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+        metadata: mergeNarrativeTtrpgMetadata(sceneAdventureMetadata, {
           ttrpgPhase: gameMasterOutput.ttrpgPhase,
           combatReadiness: gameMasterOutput.combatReadiness,
           threatLevel: gameMasterOutput.threatLevel,

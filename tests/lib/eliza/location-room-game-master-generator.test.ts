@@ -143,6 +143,30 @@ function narrativeState(): LocationRoomNarrativeState {
       threatLevel: 1,
       requestedGameplayAction: null,
       lastEncounterSeed: { title: 'Old Bell', summary: 'A prior seed.', stakes: 'Do not wake it.' },
+      adventure: {
+        arcSummary: 'The ash bell tests anyone who follows it.',
+        currentStakes: 'The bell may wake the thing below.',
+        activeDecision: {
+          id: 'bell-choice',
+          prompt: 'How do you answer the ash bell?',
+          options: [
+            { id: 'pull-rope', label: 'Pull the rope', summary: 'Ring first and seize the omen.' },
+            { id: 'search-ash', label: 'Search the ash', summary: 'Look for the bell ringer.' },
+          ],
+        },
+        consequenceLedger: [{ id: 'beat-old', source: 'beat:old', summary: 'The bell has already noticed Ash.', status: 'open' }],
+        discoveries: ['The ash falls upward near the rope.'],
+        clocks: [{ id: 'third-toll', label: 'Third toll', value: 1, max: 6, summary: 'The bell nears a third toll.' }],
+        lastDeclaredAction: { tokenId: 1, beatId: 'beat-old', summary: 'Ash listened at the rope.', actionIntent: 'listen' },
+        lastOutcome: { kind: 'beat', sourceId: 'beat:old', summary: 'The first toll named the room.' },
+      },
+      adventureCatalog: {
+        defaults: {},
+        sections: {
+          '20_characters': [{ id: '20.10.bell-keeper', summary: 'A quiet keeper counts each toll.', tags: ['bell', 'keeper'] }],
+          '50_items': [{ id: '50.10.ash-rope', summary: 'A rope dusted in upward-falling ash.', tags: ['bell', 'rope'] }],
+        },
+      },
     },
     createdAt: now,
     updatedAt: now,
@@ -173,8 +197,14 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Combat readiness: foreshadow')
     expect(prompt).toContain('Threat level: 1')
     expect(prompt).toContain('Last encounter seed: Title: Old Bell')
+    expect(prompt).toContain('Adventure memory:')
+    expect(prompt).toContain('Arc summary: The ash bell tests anyone who follows it.')
+    expect(prompt).toContain('Active decision: bell-choice')
+    expect(prompt).toContain('Relevant location adventure catalog:')
+    expect(prompt).toContain('[50_items] 50.10.ash-rope')
     expect(prompt).toContain('Return only a JSON object')
     expect(prompt).toContain('"ttrpgPhase"')
+    expect(prompt).toContain('"adventurePatch"')
     expect(prompt).toContain('Non-aftermath beats must include a concrete currentObjective')
     expect(prompt).toContain('Do not spawn combat by default')
     expect(prompt).toContain('requestedGameplayAction "start_combat"')
@@ -250,6 +280,11 @@ describe('game-master beat generator helpers', () => {
         rollChoice: { source: 'contextual', contextualCheckId: 'ash-marks' },
         difficulty: 'hard',
       },
+      adventurePatch: {
+        currentStakes: 'The ash may reveal a route before the watcher moves.',
+        discoveries: ['The ash marks point below the stair.'],
+        clockUpdates: [{ id: 'watcher', label: 'Watcher attention', value: 2, max: 6, summary: 'The watcher notices careful searches.' }],
+      },
       selectedSpeakerTokenId: 1,
     }), { participants, speaker: participants[0] }, { gameMasterAgentId: 'gm-1', limits })
 
@@ -266,6 +301,12 @@ describe('game-master beat generator helpers', () => {
       proposal: null,
       proposalError: null,
     }))
+    expect(output.adventurePatch).toEqual(expect.objectContaining({
+      currentStakes: 'The ash may reveal a route before the watcher moves.',
+      discoveries: ['The ash marks point below the stair.'],
+      clocks: [expect.objectContaining({ id: 'watcher', value: 2, max: 6 })],
+    }))
+    expect(output.metadata.adventurePatch).toEqual(output.adventurePatch)
 
     expect(() => normalizeGameMasterBeatResponse(JSON.stringify({
       speakerInstruction: 'Search.',
@@ -445,7 +486,7 @@ describe('game-master beat generator helpers', () => {
     )).toThrow('visibly escalate')
 
     const escalated = normalizeGameMasterBeatResponse(
-      '{"publicNarration":"The ash parts around a hidden stair.","speakerInstruction":"Choose whether to descend.","stateSummary":"A hidden stair opens.","currentObjective":"Explore the stair","openThreads":["What waits?"],"ttrpgPhase":"exploration","combatReadiness":"none","threatLevel":0,"requestedGameplayAction":null}',
+      '{"publicNarration":"The ash parts around a hidden stair.","speakerInstruction":"Choose whether to descend.","stateSummary":"A hidden stair opens.","currentObjective":"Explore the stair","openThreads":["What waits?"],"ttrpgPhase":"exploration","combatReadiness":"none","threatLevel":0,"requestedGameplayAction":null,"adventurePatch":{"currentStakes":"The stair may close if ignored."}}',
       { participants, speaker: participants[0] },
       { gameMasterAgentId: 'gm-1', limits, progressionContext: repeatedFlatContext }
     )
@@ -467,7 +508,7 @@ describe('game-master beat generator helpers', () => {
       },
     })
     const optional = normalizeGameMasterBeatResponse(
-      '{"speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"exploration"}',
+      '{"speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"exploration","adventurePatch":{"discoveries":["The bell answers only careful movement."]}}',
       { participants, speaker: participants[0] },
       { gameMasterAgentId: 'gm-1', limits, progressionContext: optionalNarrationContext }
     )
@@ -486,6 +527,12 @@ describe('game-master beat generator helpers', () => {
       { participants, speaker: participants[0] },
       { gameMasterAgentId: 'gm-1', limits }
     )).toThrow('openThreads')
+
+    expect(() => normalizeGameMasterBeatResponse(
+      '{"speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"exploration"}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits }
+    )).toThrow('story pressure')
 
     expect(() => normalizeGameMasterBeatResponse(
       '{"speakerInstruction":"Fight","stateSummary":"State","currentObjective":"Survive","openThreads":["What answers?"],"ttrpgPhase":"exploration","combatReadiness":"ready","threatLevel":2,"requestedGameplayAction":"start_combat"}',
@@ -507,7 +554,7 @@ describe('game-master beat generator helpers', () => {
       sendSessionMessage: jest.fn(async () => ({} as Response)),
       collectStreamedResponseText: jest.fn(async () => ({
         message: null,
-        text: '{"publicNarration":"The bell tolls.","speakerInstruction":"Speak with dread.","stateSummary":"The bell has called Ash.","currentObjective":"Answer the toll.","openThreads":["Who answers the bell?"],"selectedSpeakerTokenId":1}',
+        text: '{"publicNarration":"The bell tolls.","speakerInstruction":"Speak with dread.","stateSummary":"The bell has called Ash.","currentObjective":"Answer the toll.","openThreads":["Who answers the bell?"],"adventurePatch":{"currentStakes":"The toll is choosing who answers."},"selectedSpeakerTokenId":1}',
       })),
       deleteSession: jest.fn(async () => undefined),
     }
@@ -563,7 +610,7 @@ describe('game-master beat generator helpers', () => {
         .mockResolvedValueOnce({ message: null, text: 'not json' })
         .mockResolvedValueOnce({
           message: null,
-          text: JSON.stringify({ publicNarration: richOpeningNarration, speakerInstruction: 'Speak with dread, choose one of the three hooks, and leave the mystery unresolved.', stateSummary: 'The bell has called Ash.', currentObjective: 'Answer the toll.', openThreads: ['Who answers the bell?'], ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 0, requestedGameplayAction: null, encounterSeed: null, selectedSpeakerTokenId: 1 }),
+          text: JSON.stringify({ publicNarration: richOpeningNarration, speakerInstruction: 'Speak with dread, choose one of the three hooks, and leave the mystery unresolved.', stateSummary: 'The bell has called Ash.', currentObjective: 'Answer the toll.', openThreads: ['Who answers the bell?'], ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 0, requestedGameplayAction: null, encounterSeed: null, adventurePatch: { currentStakes: 'The toll demands an answer before the room quiets.' }, selectedSpeakerTokenId: 1 }),
         }),
       deleteSession: jest.fn(async () => undefined),
     }
@@ -609,6 +656,8 @@ describe('game-master beat generator helpers', () => {
     expect(repairPrompt).toContain('selectedSpeakerTokenId must be 1')
     expect(repairPrompt).toContain('Non-aftermath beats must include a concrete currentObjective')
     expect(repairPrompt).toContain('"publicNarration": "required public narration for observers"')
+    expect(repairPrompt).toContain('"adventurePatch"')
+    expect(repairPrompt).toContain('story pressure')
     expect(repairPrompt).toContain('publicNarration is required and must be non-empty')
     expect(repairPrompt).not.toContain('not json')
   })
@@ -658,6 +707,13 @@ describe('game-master beat generator helpers', () => {
     })
     expect(output.speakerInstruction).toContain('Ash')
     expect(output.stateAfter.openThreads.length).toBeGreaterThan(0)
+    expect(output.adventurePatch).toEqual(expect.objectContaining({
+      currentStakes: expect.any(String),
+      activeDecision: expect.objectContaining({
+        options: expect.arrayContaining([expect.objectContaining({ id: 'investigate' })]),
+      }),
+    }))
+    expect(output.metadata.adventurePatch).toEqual(output.adventurePatch)
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
   })
 
@@ -715,8 +771,9 @@ describe('game-master beat generator helpers', () => {
     }
 
     const prompt = buildOfficialLocationRoomPrompt(baseInput)
-    expect(prompt).toContain('When scene-check context exists, return JSON only')
+    expect(prompt).toContain('Return JSON only with this contract')
     expect(prompt).toContain('"publicSpeech"')
+    expect(prompt).toContain('"declaredAction"')
     expect(prompt).toContain('"sceneCheckProposal": null')
     expect(prompt).toContain('ash-marks: Read the Ash Marks')
 
@@ -725,12 +782,14 @@ describe('game-master beat generator helpers', () => {
     })
     expect(prose).toEqual({
       content: 'I kneel beside the ash and listen before touching it.',
+      declaredAction: { summary: 'I kneel beside the ash and listen before touching it.' },
       sceneCheckProposal: null,
       sceneCheckProposalError: null,
     })
 
     const valid = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
       publicSpeech: 'These marks remember a path beneath us.',
+      declaredAction: { summary: 'Interpret the ash marks without disturbing them.', actionIntent: 'recall_lore' },
       sceneCheckProposal: {
         actionIntent: 'recall_lore',
         intentSummary: 'Interpret the ash marks without disturbing them.',
@@ -738,6 +797,10 @@ describe('game-master beat generator helpers', () => {
       },
     }), { sceneCheckContext })
     expect(valid.content).toBe('These marks remember a path beneath us.')
+    expect(valid.declaredAction).toEqual({
+      summary: 'Interpret the ash marks without disturbing them.',
+      actionIntent: 'recall_lore',
+    })
     expect(valid.sceneCheckProposal).toEqual(expect.objectContaining({
       actionIntent: 'recall_lore',
       rollChoice: expect.objectContaining({ source: 'contextual', contextualCheckId: 'ash-marks', checkType: 'history' }),
@@ -753,6 +816,7 @@ describe('game-master beat generator helpers', () => {
     }), { sceneCheckContext })
     expect(invalid).toEqual({
       content: 'I force the ash to answer.',
+      declaredAction: { summary: 'I force the ash to answer.' },
       sceneCheckProposal: null,
       sceneCheckProposalError: 'Unsupported scene-check action intent',
     })
@@ -764,6 +828,7 @@ describe('game-master beat generator helpers', () => {
       },
     }), { sceneCheckContext })
     expect(missingSpeech.content).toBe('')
+    expect(missingSpeech.declaredAction).toBeNull()
     expect(missingSpeech.sceneCheckProposal).toEqual(expect.objectContaining({
       actionIntent: 'search',
     }))
@@ -795,8 +860,7 @@ describe('game-master beat generator helpers', () => {
       rng: () => 0.69,
     })
     const publicRolls = projectPublicSceneCheckRolls(resolution, { sceneCheckId: 'scene_check:beat-1' })
-
-    const prompt = buildGameMasterSceneCheckOutcomePrompt({
+    const outcomeInput = {
       gameMasterAgentId: 'gm-1',
       room: room(),
       tick: tick(),
@@ -808,13 +872,17 @@ describe('game-master beat generator helpers', () => {
       sceneCheckId: 'scene_check:beat-1',
       resolution,
       publicRolls,
-    })
+    }
+
+    const prompt = buildGameMasterSceneCheckOutcomePrompt(outcomeInput)
 
     expect(prompt).toContain('Backend-computed roll facts')
     expect(prompt).toContain('Total:')
     expect(prompt).toContain('DC:')
     expect(prompt).toContain('Outcome tier:')
     expect(prompt).toContain('Use only the backend roll facts')
+    expect(prompt).toContain('Tier rules for adventurePatch')
+    expect(prompt).toContain('partial_success: progress plus complication')
     expect(prompt).toContain('Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality')
 
     const output = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
@@ -822,7 +890,16 @@ describe('game-master beat generator helpers', () => {
       stateSummary: 'Ash found a hidden stair under the ash marks.',
       currentObjective: 'Decide whether to descend the stair.',
       openThreads: ['What heard Ash below?'],
-    }), { narrativeState: narrativeState() }, { gameMasterAgentId: 'gm-1', limits })
+      adventurePatch: {
+        consequence: {
+          id: 'ash-stair-result',
+          summary: 'The hidden stair opens, but the sound below has noticed Ash.',
+          status: 'complication',
+          tier: resolution.roll.tier,
+        },
+        discoveries: ['A hidden stair lies under the ash marks.'],
+      },
+    }), outcomeInput, { gameMasterAgentId: 'gm-1', limits })
 
     expect(output).toEqual(expect.objectContaining({
       gameMasterAgentId: 'gm-1',
@@ -832,14 +909,56 @@ describe('game-master beat generator helpers', () => {
         currentObjective: 'Decide whether to descend the stair.',
         openThreads: ['What heard A'],
       }),
+      adventurePatch: expect.objectContaining({
+        consequenceLedger: [expect.objectContaining({
+          id: 'ash-stair-result',
+          source: 'scene_check:beat-1',
+          tier: resolution.roll.tier,
+        })],
+      }),
     }))
+    expect(output.metadata.adventurePatch).toEqual(output.adventurePatch)
 
     expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
       publicNarration: 'It changes.',
       stateSummary: 'State.',
       currentObjective: 'Continue.',
       openThreads: [],
-    }), { narrativeState: narrativeState() }, { gameMasterAgentId: 'gm-1', limits })).toThrow('openThreads')
+    }), outcomeInput, { gameMasterAgentId: 'gm-1', limits })).toThrow('openThreads')
+
+    const tiers = ['critical_success', 'success', 'partial_success', 'failure', 'critical_failure'] as const
+    for (const tier of tiers) {
+      const tierInput = {
+        ...outcomeInput,
+        resolution: {
+          ...resolution,
+          roll: { ...resolution.roll, tier },
+        },
+      }
+      const tierPatch = tier === 'critical_success' || tier === 'success'
+        ? { discoveries: [`${tier} reveals the safer route.`] }
+        : { consequence: { summary: `${tier} leaves a durable complication.`, status: 'complication', tier } }
+      const tierOutput = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+        publicNarration: 'The roll result changes the room.',
+        stateSummary: 'The room changed after the roll.',
+        currentObjective: 'Answer the changed room.',
+        openThreads: ['What changes next?'],
+        adventurePatch: tierPatch,
+      }), tierInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 120 } })
+      expect(tierOutput.adventurePatch).toBeTruthy()
+    }
+
+    const failureInput = {
+      ...outcomeInput,
+      resolution: { ...resolution, roll: { ...resolution.roll, tier: 'failure' as const } },
+    }
+    expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'The roll result changes the room.',
+      stateSummary: 'The room changed after the roll.',
+      currentObjective: 'Answer the changed room.',
+      openThreads: ['What changes next?'],
+      adventurePatch: { discoveries: ['A clue appears without a cost.'] },
+    }), failureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 120 } })).toThrow('consequence')
   })
 
   it('keeps the character prompt unchanged unless narrative context is provided', () => {
@@ -851,6 +970,14 @@ describe('game-master beat generator helpers', () => {
     }
 
     const withoutContext = buildOfficialLocationRoomPrompt(baseInput)
+    const activeDecision = {
+      id: 'bell-choice',
+      prompt: 'How do you answer the ash bell?',
+      options: [
+        { id: 'pull-rope', label: 'Pull the rope' },
+        { id: 'search-ash', label: 'Search the ash' },
+      ],
+    }
     const withContext = buildOfficialLocationRoomPrompt({
       ...baseInput,
       narrativeContext: {
@@ -859,11 +986,53 @@ describe('game-master beat generator helpers', () => {
         openThreads: ['Who first heard it?'],
         speakerInstruction: 'Resist the call, but reveal fear.',
         publicNarration: 'The bell tolls once.',
+        activeDecision,
       },
     })
 
     expect(withoutContext).not.toContain('Private game-master narrative context')
+    expect(withoutContext).toContain('Write exactly one short in-world utterance')
     expect(withContext).toContain('Private game-master narrative context')
     expect(withContext).toContain('Private instruction for this utterance: Resist the call, but reveal fear.')
+    expect(withContext).toContain('Active visible decision:')
+    expect(withContext).toContain('pull-rope: Pull the rope')
+    expect(withContext).toContain('"declaredAction"')
+    expect(withContext).toContain('Do not include sceneCheckProposal because there is no scene-check context.')
+
+    expect(normalizeOfficialLocationRoomTurnResponse('Plain speech.')).toEqual({
+      content: 'Plain speech.',
+      declaredAction: null,
+      sceneCheckProposal: null,
+      sceneCheckProposalError: null,
+    })
+
+    const structured = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
+      publicSpeech: 'The rope knows my hand.',
+      declaredAction: { summary: 'Pull the rope before the third toll.', chosenOptionId: 'pull-rope', actionIntent: 'choose' },
+      sceneCheckProposal: { actionIntent: 'search', rollChoice: { source: 'fixed', checkType: 'perception' } },
+    }), { narrativeContext: true, activeDecision })
+    expect(structured).toEqual({
+      content: 'The rope knows my hand.',
+      declaredAction: { summary: 'Pull the rope before the third toll.', chosenOptionId: 'pull-rope', chosenOptionLabel: 'Pull the rope', actionIntent: 'choose' },
+      sceneCheckProposal: null,
+      sceneCheckProposalError: null,
+    })
+
+    const proseFallback = normalizeOfficialLocationRoomTurnResponse('I watch the rope but do not touch it yet.', {
+      narrativeContext: true,
+      activeDecision,
+    })
+    expect(proseFallback.declaredAction).toEqual({ summary: 'I watch the rope but do not touch it yet.' })
+
+    const invalidDeclaredAction = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
+      publicSpeech: 'I will not name the chain.',
+      declaredAction: { summary: 'Track wallet 0x1234567890123456789012345678901234567890', chosenOptionId: 'secret' },
+    }), { narrativeContext: true, activeDecision })
+    expect(invalidDeclaredAction).toEqual({
+      content: 'I will not name the chain.',
+      declaredAction: { summary: 'I will not name the chain.' },
+      sceneCheckProposal: null,
+      sceneCheckProposalError: null,
+    })
   })
 })

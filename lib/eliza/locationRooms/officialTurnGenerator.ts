@@ -10,6 +10,8 @@ import { extractGameMasterJsonObject } from './gameMasterGenerator'
 import { GAMEPLAY_CHECK_TYPES } from './gameplay/types'
 import { normalizeSceneCheckProposal } from './sceneChecks/rules'
 import { SCENE_CHECK_ACTION_INTENTS } from './sceneChecks/types'
+import { normalizeDeclaredAction } from './narrativeTypes'
+import type { LocationRoomAdventureDecision } from './narrativeTypes'
 import type {
   GenerateOfficialLocationRoomTurnInput,
   GenerateOfficialLocationRoomTurnResult,
@@ -25,6 +27,7 @@ const CHARACTER_PROMPT_OBJECTIVE_MAX_CHARS = 240
 const CHARACTER_PROMPT_OPEN_THREADS_MAX_CHARS = 400
 const CHARACTER_PROMPT_NARRATION_MAX_CHARS = 650
 const CHARACTER_PROMPT_INSTRUCTION_MAX_CHARS = 450
+const CHARACTER_PROMPT_DECISION_MAX_CHARS = 520
 const OFFICIAL_ELIZA_MESSAGE_MAX_CHARS = 3900
 
 function truncatePromptValue(value: string, limit: number): string {
@@ -90,15 +93,44 @@ function formatSceneCheckContext(context: LocationRoomNarrativeTurnSceneCheckCon
     contextualChecks.length > 0
       ? contextualChecks.map((check) => `- ${check.id}: ${check.label} (checkType ${check.checkType}, DC ${check.dc})${check.description ? ` — ${check.description}` : ''}`).join('\n')
       : 'None.',
-    'When scene-check context exists, return JSON only with this contract:',
-    '{',
-    '  "publicSpeech": "short public in-character utterance",',
-    '  "sceneCheckProposal": null',
-    '}',
     'Use sceneCheckProposal only when your action is roll-worthy. Shape: {"actionIntent":"investigate","intentSummary":"what you try","rollChoice":{"source":"fixed","checkType":"perception"}}.',
     'For contextual checks, use {"rollChoice":{"source":"contextual","contextualCheckId":"offered-id"}} and do not invent ids, labels, DCs, dice, or mechanics.',
-    'If you only speak/react normally, set sceneCheckProposal to null. Prose-only fallback is accepted but yields no proposal.',
+    'If you only speak/react normally, set sceneCheckProposal to null.',
   ]
+}
+
+function formatActiveDecision(decision: LocationRoomAdventureDecision | null | undefined): string[] {
+  if (!decision) return ['Active visible decision: None.']
+  const options = decision.options
+    .map((option) => `- ${option.id}: ${option.label}${option.summary ? ` — ${option.summary}` : ''}`)
+    .join('\n')
+  return [
+    'Active visible decision:',
+    truncatePromptValue(`${decision.id}: ${decision.prompt}`, CHARACTER_PROMPT_DECISION_MAX_CHARS),
+    'Valid chosenOptionId values:',
+    truncatePromptValue(options, CHARACTER_PROMPT_DECISION_MAX_CHARS),
+  ]
+}
+
+function formatNarrativeTurnContract(context: GenerateOfficialLocationRoomTurnInput['narrativeContext']): string[] {
+  if (!context) return []
+  const allowsSceneCheck = Boolean(context.sceneCheck)
+  return [
+    '',
+    'Return JSON only with this contract:',
+    '{',
+    '  "publicSpeech": "short public in-character utterance",',
+    '  "declaredAction": {"summary":"what you intend to do next in the fiction","chosenOptionId":null,"actionIntent":"brief narrative intent"}',
+    allowsSceneCheck ? '  ,"sceneCheckProposal": null' : '',
+    '}',
+    '- declaredAction.summary is required and should be narrative intent only; it does not trigger dice by itself.',
+    context.activeDecision
+      ? '- chosenOptionId may be one of the listed active decision option ids, or null if you choose a different freeform action.'
+      : '- No active decision is available, so chosenOptionId must be null or omitted.',
+    allowsSceneCheck
+      ? '- sceneCheckProposal is allowed only for clearly roll-worthy actions in the scene-check context; otherwise set it to null.'
+      : '- Do not include sceneCheckProposal because there is no scene-check context.',
+  ].filter((line): line is string => Boolean(line))
 }
 
 function formatNarrativeContext(input: GenerateOfficialLocationRoomTurnInput): string[] {
@@ -118,7 +150,9 @@ function formatNarrativeContext(input: GenerateOfficialLocationRoomTurnInput): s
     context.publicNarration
       ? `Public game-master narration just posted: ${truncatePromptValue(context.publicNarration, CHARACTER_PROMPT_NARRATION_MAX_CHARS)}`
       : 'No public game-master narration was posted for this beat.',
+    ...formatActiveDecision(context.activeDecision),
     ...formatSceneCheckContext(context.sceneCheck),
+    ...formatNarrativeTurnContract(context),
   ]
 }
 
@@ -135,10 +169,10 @@ export function buildOfficialLocationRoomPrompt(input: GenerateOfficialLocationR
     formatTranscript(input.recentMessages),
     ...formatNarrativeContext(input),
     '',
-    input.narrativeContext?.sceneCheck
-      ? 'Return the requested JSON object with publicSpeech and optional sceneCheckProposal.'
+    input.narrativeContext
+      ? 'Return the requested JSON object with publicSpeech and declaredAction.'
       : 'Write exactly one short in-world utterance as your character.',
-    input.narrativeContext?.sceneCheck
+    input.narrativeContext
       ? 'Keep publicSpeech under two sentences. Do not include markdown, speaker labels, stage directions, out-of-world explanations, dice results, DCs, HP, rewards, death, or finality.'
       : 'Keep it under two sentences. Do not use markdown, speaker labels, JSON, stage directions, or out-of-world explanations.',
   ].join('\n'))
@@ -158,12 +192,20 @@ export function normalizeLocationRoomGeneratedContent(content: string): string |
 
 export function normalizeOfficialLocationRoomTurnResponse(
   raw: string,
-  options: { sceneCheckContext?: LocationRoomNarrativeTurnSceneCheckContext | null } = {}
+  options: {
+    sceneCheckContext?: LocationRoomNarrativeTurnSceneCheckContext | null
+    narrativeContext?: boolean
+    activeDecision?: LocationRoomAdventureDecision | null
+  } = {}
 ): Omit<GenerateOfficialLocationRoomTurnResult, 'officialAgentId'> {
   const sceneCheckContext = options.sceneCheckContext ?? null
-  if (!sceneCheckContext) {
+  const activeDecision = options.activeDecision ?? null
+  const requiresStructured = options.narrativeContext === true || Boolean(sceneCheckContext)
+
+  if (!requiresStructured) {
     return {
       content: normalizeLocationRoomGeneratedContent(raw) ?? '',
+      declaredAction: null,
       sceneCheckProposal: null,
       sceneCheckProposalError: null,
     }
@@ -173,8 +215,10 @@ export function normalizeOfficialLocationRoomTurnResponse(
   try {
     parsed = extractGameMasterJsonObject(raw, 'Location-room character turn response')
   } catch {
+    const content = normalizeLocationRoomGeneratedContent(raw) ?? ''
     return {
-      content: normalizeLocationRoomGeneratedContent(raw) ?? '',
+      content,
+      declaredAction: content ? normalizeDeclaredAction({ summary: content }, { activeDecision }) : null,
       sceneCheckProposal: null,
       sceneCheckProposalError: null,
     }
@@ -183,11 +227,24 @@ export function normalizeOfficialLocationRoomTurnResponse(
   const content = typeof parsed.publicSpeech === 'string'
     ? normalizeLocationRoomGeneratedContent(parsed.publicSpeech) ?? ''
     : ''
+  const declaredAction = normalizeDeclaredAction(parsed.declaredAction ?? parsed.declared_action, { activeDecision }) ??
+    (content ? normalizeDeclaredAction({ summary: content }, { activeDecision }) : null)
+
+  if (!sceneCheckContext) {
+    return {
+      content,
+      declaredAction,
+      sceneCheckProposal: null,
+      sceneCheckProposalError: null,
+    }
+  }
+
   const rawProposal = parsed.sceneCheckProposal ?? parsed.scene_check_proposal
 
   if (rawProposal == null || rawProposal === '') {
     return {
       content,
+      declaredAction,
       sceneCheckProposal: null,
       sceneCheckProposalError: null,
     }
@@ -200,6 +257,7 @@ export function normalizeOfficialLocationRoomTurnResponse(
   if (!proposal.ok) {
     return {
       content,
+      declaredAction,
       sceneCheckProposal: null,
       sceneCheckProposalError: proposal.error,
     }
@@ -207,6 +265,7 @@ export function normalizeOfficialLocationRoomTurnResponse(
 
   return {
     content,
+    declaredAction,
     sceneCheckProposal: proposal.value,
     sceneCheckProposalError: null,
   }
@@ -287,6 +346,8 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
         conversationId: session.sessionId,
       })
       const normalized = normalizeOfficialLocationRoomTurnResponse(collected.text, {
+        narrativeContext: Boolean(input.narrativeContext),
+        activeDecision: input.narrativeContext?.activeDecision ?? null,
         sceneCheckContext: input.narrativeContext?.sceneCheck ?? null,
       })
 
