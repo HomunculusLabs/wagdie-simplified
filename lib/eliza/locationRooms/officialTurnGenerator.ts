@@ -14,11 +14,27 @@ import type {
 } from './types'
 
 const MAX_ROOM_UTTERANCE_CHARS = 500
+const CHARACTER_PROMPT_TRANSCRIPT_MAX_CHARS = 900
+const CHARACTER_PROMPT_STATE_SUMMARY_MAX_CHARS = 450
+const CHARACTER_PROMPT_OBJECTIVE_MAX_CHARS = 240
+const CHARACTER_PROMPT_OPEN_THREADS_MAX_CHARS = 400
+const CHARACTER_PROMPT_NARRATION_MAX_CHARS = 650
+const CHARACTER_PROMPT_INSTRUCTION_MAX_CHARS = 450
+
+function truncatePromptValue(value: string, limit: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= limit) return normalized
+  return `${normalized.slice(0, Math.max(0, limit - 1)).trim()}…`
+}
 
 function formatParticipants(participants: LocationRoomParticipant[]): string {
-  return participants
-    .map((participant) => `- ${participant.name} (#${participant.tokenId})`)
-    .join('\n')
+  const maxParticipants = 12
+  const visible = participants.slice(0, maxParticipants)
+  const lines = visible.map((participant) => `- ${truncatePromptValue(participant.name, 80)} (#${participant.tokenId})`)
+  if (participants.length > visible.length) {
+    lines.push(`- …${participants.length - visible.length} additional eligible participants omitted for prompt size.`)
+  }
+  return lines.join('\n')
 }
 
 function formatTranscript(messages: LocationRoomMessage[]): string {
@@ -26,9 +42,23 @@ function formatTranscript(messages: LocationRoomMessage[]): string {
     return 'No public room messages yet.'
   }
 
-  return messages
-    .map((message) => `${message.authorName}: ${message.content}`)
-    .join('\n')
+  const lines: string[] = []
+  let total = 0
+
+  for (const message of [...messages].reverse()) {
+    const line = `${message.authorName}: ${truncatePromptValue(message.content, 360)}`
+    if (lines.length > 0 && total + line.length + 1 > CHARACTER_PROMPT_TRANSCRIPT_MAX_CHARS) {
+      break
+    }
+    lines.unshift(line)
+    total += line.length + 1
+  }
+
+  if (lines.length < messages.length) {
+    lines.unshift(`Earlier transcript omitted for prompt size; showing latest ${lines.length} public message(s).`)
+  }
+
+  return lines.join('\n')
 }
 
 function formatNarrativeContext(input: GenerateOfficialLocationRoomTurnInput): string[] {
@@ -38,15 +68,15 @@ function formatNarrativeContext(input: GenerateOfficialLocationRoomTurnInput): s
   return [
     '',
     'Private game-master narrative context:',
-    `Continuity summary: ${context.stateSummary || 'No established continuity yet.'}`,
-    `Current objective: ${context.currentObjective || 'None.'}`,
+    `Continuity summary: ${truncatePromptValue(context.stateSummary || 'No established continuity yet.', CHARACTER_PROMPT_STATE_SUMMARY_MAX_CHARS)}`,
+    `Current objective: ${truncatePromptValue(context.currentObjective || 'None.', CHARACTER_PROMPT_OBJECTIVE_MAX_CHARS)}`,
     'Open threads:',
     context.openThreads.length > 0
-      ? context.openThreads.map((thread) => `- ${thread}`).join('\n')
+      ? truncatePromptValue(context.openThreads.map((thread) => `- ${thread}`).join('\n'), CHARACTER_PROMPT_OPEN_THREADS_MAX_CHARS)
       : 'None.',
-    `Private instruction for this utterance: ${context.speakerInstruction}`,
+    `Private instruction for this utterance: ${truncatePromptValue(context.speakerInstruction, CHARACTER_PROMPT_INSTRUCTION_MAX_CHARS)}`,
     context.publicNarration
-      ? `Public game-master narration just posted: ${context.publicNarration}`
+      ? `Public game-master narration just posted: ${truncatePromptValue(context.publicNarration, CHARACTER_PROMPT_NARRATION_MAX_CHARS)}`
       : 'No public game-master narration was posted for this beat.',
   ]
 }

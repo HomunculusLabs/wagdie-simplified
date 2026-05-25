@@ -108,6 +108,11 @@ type ParsedBeat = Record<string, unknown>
 const DEFAULT_GM_AUTHOR_NAME = 'Game Master'
 const OPENING_PUBLIC_NARRATION_MIN_CHARS = 280
 const OPENING_PUBLIC_NARRATION_MIN_SENTENCES = 4
+const GM_PROMPT_TRANSCRIPT_MAX_CHARS = 800
+const GM_PROMPT_STATE_SUMMARY_MAX_CHARS = 450
+const GM_PROMPT_OBJECTIVE_MAX_CHARS = 240
+const GM_PROMPT_OPEN_THREADS_MAX_CHARS = 500
+const GM_PROMPT_ENCOUNTER_SEED_MAX_CHARS = 300
 
 function countSentenceLikeSegments(value: string): number {
   return value
@@ -460,35 +465,65 @@ export function normalizeGameMasterBeatResponse(
   }
 }
 
+function truncatePromptValue(value: string, limit: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= limit) return normalized
+  return `${normalized.slice(0, Math.max(0, limit - 1)).trim()}…`
+}
+
 function formatParticipants(participants: LocationRoomParticipant[]): string {
-  return participants
-    .map((participant) => `- ${participant.name} (#${participant.tokenId})`)
-    .join('\n')
+  const maxParticipants = 12
+  const visible = participants.slice(0, maxParticipants)
+  const lines = visible.map((participant) => `- ${truncatePromptValue(participant.name, 80)} (#${participant.tokenId})`)
+  if (participants.length > visible.length) {
+    lines.push(`- …${participants.length - visible.length} additional eligible participants omitted for prompt size.`)
+  }
+  return lines.join('\n')
 }
 
 function formatTranscript(messages: LocationRoomMessage[]): string {
   if (messages.length === 0) return 'No public room messages yet.'
 
-  return messages
-    .map((message) => {
-      const token = message.tokenId == null ? '' : ` #${message.tokenId}`
-      return `${message.authorName}${token}: ${message.content}`
-    })
-    .join('\n')
+  const lines: string[] = []
+  let total = 0
+
+  for (const message of [...messages].reverse()) {
+    const token = message.tokenId == null ? '' : ` #${message.tokenId}`
+    const line = `${message.authorName}${token}: ${truncatePromptValue(message.content, 360)}`
+    if (lines.length > 0 && total + line.length + 1 > GM_PROMPT_TRANSCRIPT_MAX_CHARS) {
+      break
+    }
+    lines.unshift(line)
+    total += line.length + 1
+  }
+
+  if (lines.length < messages.length) {
+    lines.unshift(`Earlier transcript omitted for prompt size; showing latest ${lines.length} public message(s).`)
+  }
+
+  return lines.join('\n')
 }
 
 function formatOpenThreads(threads: string[]): string {
   if (threads.length === 0) return 'None.'
-  return threads.map((thread) => `- ${thread}`).join('\n')
+  const lines: string[] = []
+  let total = 0
+  for (const thread of threads) {
+    const line = `- ${truncatePromptValue(thread, 160)}`
+    if (lines.length > 0 && total + line.length + 1 > GM_PROMPT_OPEN_THREADS_MAX_CHARS) break
+    lines.push(line)
+    total += line.length + 1
+  }
+  return lines.join('\n') || 'None.'
 }
 
 function formatEncounterSeed(seed: LocationRoomEncounterSeed | null): string {
   if (!seed) return 'None.'
-  return [
+  return truncatePromptValue([
     seed.title ? `Title: ${seed.title}` : null,
     seed.summary ? `Summary: ${seed.summary}` : null,
     seed.stakes ? `Stakes: ${seed.stakes}` : null,
-  ].filter(Boolean).join(' | ') || 'None.'
+  ].filter(Boolean).join(' | ') || 'None.', GM_PROMPT_ENCOUNTER_SEED_MAX_CHARS)
 }
 
 function buildProgressionContextLines(context?: GameMasterBeatProgressionContext): string[] {
@@ -581,8 +616,8 @@ function buildNarrativeStateLines(input: Pick<GenerateGameMasterBeatInput, 'narr
   const ttrpg = normalizeNarrativeTtrpgMetadata(input.narrativeState.metadata)
   return [
     'Current private narrative state:',
-    `Continuity summary: ${input.narrativeState.stateSummary || 'No established continuity yet.'}`,
-    `Current objective: ${input.narrativeState.currentObjective || 'None.'}`,
+    `Continuity summary: ${truncatePromptValue(input.narrativeState.stateSummary || 'No established continuity yet.', GM_PROMPT_STATE_SUMMARY_MAX_CHARS)}`,
+    `Current objective: ${truncatePromptValue(input.narrativeState.currentObjective || 'None.', GM_PROMPT_OBJECTIVE_MAX_CHARS)}`,
     'Open threads:',
     formatOpenThreads(input.narrativeState.openThreads),
     `TTRPG phase: ${ttrpg.ttrpgPhase}`,
