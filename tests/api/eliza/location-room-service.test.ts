@@ -688,16 +688,33 @@ describe('location room domain service', () => {
     expect(JSON.stringify(result.messages)).not.toContain('private_phase')
   })
 
-  it('projects sanitized public adventure metadata without exposing raw adventure state', async () => {
+  it('hides unfeatured publicAdventure metadata and projects only explicitly featured adventure state', async () => {
     const repository = makeRepository({
       listPublicMessages: jest.fn(async () => ({
         messages: [
           message({
-            id: 'msg-adventure',
+            id: 'msg-legacy-adventure',
             sequence: 1,
             authorKind: 'game_master',
             tokenId: null,
             metadata: {
+              publicAdventure: {
+                stakes: 'Legacy publicAdventure should remain hidden unless featured.',
+                activeDecision: {
+                  id: 'legacy-choice',
+                  prompt: 'Hidden prompt?',
+                  options: [{ id: 'hidden', label: 'Hidden option' }],
+                },
+              },
+            },
+          }),
+          message({
+            id: 'msg-adventure',
+            sequence: 2,
+            authorKind: 'game_master',
+            tokenId: null,
+            metadata: {
+              publicAdventureVisibility: 'featured',
               publicAdventure: {
                 stakes: 'The bell market closes at moonrise.',
                 activeDecision: {
@@ -739,7 +756,7 @@ describe('location room domain service', () => {
           }),
           message({
             id: 'msg-unsafe-adventure',
-            sequence: 2,
+            sequence: 3,
             metadata: {
               publicAdventure: {
                 stakes: 'Wallet 0x1234567890123456789012345678901234567890 wins rewards.',
@@ -748,7 +765,7 @@ describe('location room domain service', () => {
             },
           }),
         ],
-        total: 2,
+        total: 3,
         page: 1,
         pageSize: 20,
         hasMore: false,
@@ -758,7 +775,9 @@ describe('location room domain service', () => {
 
     const result = await service.getPublicRoom('loc-1')
 
-    expect(result.messages[0]).toMatchObject({
+    expect(result.messages[0]).toMatchObject({ id: 'msg-legacy-adventure' })
+    expect(result.messages[0]).not.toHaveProperty('adventure')
+    expect(result.messages[1]).toMatchObject({
       id: 'msg-adventure',
       adventure: {
         stakes: 'The bell market closes at moonrise.',
@@ -789,7 +808,9 @@ describe('location room domain service', () => {
         clocks: [{ id: 'market-close', label: 'Market close', value: 2, max: 6, summary: 'The third bell approaches.' }],
       },
     })
-    expect(result.messages[1]).not.toHaveProperty('adventure')
+    expect(result.messages[2]).not.toHaveProperty('adventure')
+    expect(JSON.stringify(result.messages)).not.toContain('Legacy publicAdventure should remain hidden')
+    expect(JSON.stringify(result.messages)).not.toContain('Hidden prompt')
     expect(JSON.stringify(result.messages)).not.toContain('private durable state')
     expect(JSON.stringify(result.messages)).not.toContain('raw patch')
     expect(JSON.stringify(result.messages)).not.toContain('adjudication')

@@ -335,6 +335,7 @@ export function buildGameMasterBeatProgressionContext(input: {
 
 export function validateGameMasterBeatProgressionContract(output: {
   publicNarration?: string | null
+  speakerInstruction?: string | null
   stateAfter: LocationRoomNarrativeStateSnapshot
   ttrpgPhase: LocationRoomTtrpgPhase
   combatReadiness: LocationRoomCombatReadiness
@@ -375,17 +376,24 @@ export function validateGameMasterBeatProgressionContract(output: {
     }
 
     const adventurePatch = output.adventurePatch ?? {}
-    const hasStoryPressure = Boolean(
+    const hasAdventureMemoryPressure = Boolean(
       adventurePatch.activeDecision ||
       adventurePatch.currentStakes ||
       (adventurePatch.consequenceLedger?.length ?? 0) > 0 ||
+      adventurePatch.lastOutcome ||
       (adventurePatch.discoveries?.length ?? 0) > 0 ||
-      (adventurePatch.clocks?.length ?? 0) > 0 ||
+      (adventurePatch.clocks?.length ?? 0) > 0
+    )
+    const publicNarrationReflectsPressure = Boolean(output.publicNarration?.trim() && output.publicNarration.trim().length >= 20)
+    const characterDirectionReflectsPressure = Boolean(output.speakerInstruction?.trim() && output.speakerInstruction.trim().length >= 20)
+    const pressureCanBeCarriedByCharacterTurn = !output.progressionContext?.requirePublicNarration && characterDirectionReflectsPressure
+    const hasStoryPressure = Boolean(
+      (hasAdventureMemoryPressure && (publicNarrationReflectsPressure || pressureCanBeCarriedByCharacterTurn)) ||
       output.sceneCheckRequest ||
       output.requestedGameplayAction === 'start_combat'
     )
     if (!hasStoryPressure) {
-      throw new Error('Game-master beat response missing adventurePatch story pressure for non-aftermath progression')
+      throw new Error('Game-master beat response missing narrated story pressure for non-aftermath progression')
     }
   }
 
@@ -459,14 +467,12 @@ function buildFallbackGameMasterBeat(
     .map((thread) => trimToLimit(thread, limits.openThreadMaxLength))
     .filter((thread): thread is string => Boolean(thread))
 
-  const publicNarration = progressionContext?.requirePublicNarration
-    ? trimToLimit(
-      progressionContext.requireOpeningPublicNarration
-        ? 'A cold hush settles over the Crow\'s Den as the room seems to notice the gathered dead all at once. Salt-stained boards creak under no visible foot, and a guttering lantern throws three clear choices into view: the dark stair, the watched doorway, and the table where fresh scratches mark a warning. The air offers no answer, only pressure, as if the place is waiting for someone to choose what fear is worth following. Whatever happens next should come from the characters, but the room has made it clear that standing still will not keep them safe.'
-        : 'The room shifts before anyone can mistake the silence for safety. Something in the Crow\'s Den changes position just out of sight, leaving the characters with a clear choice to investigate, withdraw, or challenge what is watching them.',
-      limits.publicNarrationMaxLength
-    )
-    : null
+  const publicNarration = trimToLimit(
+    progressionContext?.requireOpeningPublicNarration
+      ? 'A cold hush settles over the Crow\'s Den as the room seems to notice the gathered dead all at once. Salt-stained boards creak under no visible foot, and a guttering lantern throws three clear choices into view: the dark stair, the watched doorway, and the table where fresh scratches mark a warning. The air offers no answer, only pressure, as if the place is waiting for someone to choose what fear is worth following. Whatever happens next should come from the characters, but the room has made it clear that standing still will not keep them safe.'
+      : 'The room shifts before anyone can mistake the silence for safety. Something in the Crow\'s Den changes position just out of sight, leaving the characters with a clear pressure to answer in their own voice.',
+    limits.publicNarrationMaxLength
+  )
 
   const stateAfter = {
     stateSummary: trimToLimit(
@@ -488,19 +494,16 @@ function buildFallbackGameMasterBeat(
   const threatLevel = progressionContext?.requireEscalationBeyondOpening ? 1 : 0
   const adventurePatch = normalizeAdventurePatch({
     currentStakes: 'The room will answer delay with a sharper omen.',
-    activeDecision: {
-      id: 'fallback-immediate-choice',
-      prompt: `How does ${input.speaker.name} answer the room's immediate pressure?`,
-      options: [
-        { id: 'investigate', label: 'Investigate the nearest clue', summary: 'Study the most visible sign before moving deeper.' },
-        { id: 'confront', label: 'Confront the watcher', summary: 'Call out or challenge what seems to be observing the room.' },
-        { id: 'withdraw', label: 'Withdraw carefully', summary: 'Create distance while keeping the mystery in view.' },
-      ],
+    lastOutcome: {
+      kind: 'beat',
+      sourceId: 'fallback-game-master-beat',
+      summary: 'The room sharpened its pressure while leaving the next response in the characters\' hands.',
     },
   })
 
   validateGameMasterBeatProgressionContract({
     publicNarration,
+    speakerInstruction: `Respond in ${input.speaker.name}'s own voice to the room's sharpened pressure.`,
     stateAfter,
     ttrpgPhase,
     combatReadiness,
@@ -621,6 +624,7 @@ export function normalizeGameMasterBeatResponse(
 
   validateGameMasterBeatProgressionContract({
     publicNarration,
+    speakerInstruction,
     stateAfter,
     ttrpgPhase,
     combatReadiness,
@@ -781,11 +785,11 @@ function buildProgressionContextLines(context?: GameMasterBeatProgressionContext
 function buildSceneCheckContractLines(): string[] {
   return [
     'Optional non-combat scene checks:',
-    '- sceneCheckRequest may request one story/exploration roll; use null when none.',
-    `- actionIntent options: ${SCENE_CHECK_ACTION_INTENTS.join(', ')}.`,
+    '- sceneCheckRequest: one roll/null; actionIntent options; fixed rollChoice.checkType options.',
     `- fixed rollChoice.checkType options: ${GAMEPLAY_CHECK_TYPES.join(', ')}.`,
-    '- contextualChecks may include public-safe id, label, checkType, dc, description; backend sanitizes mechanics.',
-    '- requestedGameplayAction is combat-only; do not combine start_combat with sceneCheckRequest.',
+    `- actionIntent options: ${SCENE_CHECK_ACTION_INTENTS.join(', ')}.`,
+    '- contextualChecks: public-safe id/label/checkType/dc/description; backend sanitizes.',
+    '- requestedGameplayAction is combat-only; never combine start_combat with sceneCheckRequest.',
   ]
 }
 
@@ -795,28 +799,13 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     : '"optional public narration for observers, or null"'
 
   return [
-    'Return only a JSON object with this exact contract:',
-    '{',
-    `  "publicNarration": ${publicNarrationContract},`,
-    '  "speakerInstruction": "speaker-only direction",',
-    '  "stateSummary": "updated continuity",',
-    '  "currentObjective": "objective or null in aftermath",',
-    '  "openThreads": ["thread"],',
-    '  "ttrpgPhase": "story | exploration | threat | aftermath",',
-    '  "combatReadiness": "none | foreshadow | ready",',
-    '  "threatLevel": 0,',
-    '  "requestedGameplayAction": null,',
-    '  "encounterSeed": null,',
-    '  "sceneCheckRequest": null,',
-    '  "adventurePatch": {"currentStakes":"risk","activeDecision":{"id":"id","prompt":"choice","options":[{"id":"id","label":"option"}]},"consequence":{"summary":"aftermath","status":"open","tier":"unknown"},"discoveries":["clue"],"clockUpdates":[{"id":"id","label":"clock","value":1,"max":6,"summary":"pressure"}]},',
-    '  "featuredTokenIds": [123],',
-    `  "selectedSpeakerTokenId": ${input.speaker.tokenId}`,
-    '}',
+    'Return only JSON with this contract:',
+    `{ "publicNarration": ${publicNarrationContract}, "speakerInstruction": "speaker-only direction", "stateSummary": "updated continuity", "currentObjective": "objective or null", "openThreads": ["thread"], "ttrpgPhase": "story | exploration | threat | aftermath", "combatReadiness": "none | foreshadow | ready", "threatLevel": 0, "requestedGameplayAction": null, "encounterSeed": null, "sceneCheckRequest": null, "adventurePatch": {"currentStakes":"risk","consequence":{"summary":"aftermath","status":"open"},"discoveries":["clue"],"clockUpdates":[{"id":"id","value":1,"max":6}]}, "featuredTokenIds": [123], "selectedSpeakerTokenId": ${input.speaker.tokenId} }`,
     '',
     'Rules:',
     '- Output JSON only; no markdown/prose outside object.',
     '- speakerInstruction/stateSummary required; use eligible token ids.',
-    `- selectedSpeakerTokenId must be ${input.speaker.tokenId}; do not select another speaker.`,
+    `- selectedSpeakerTokenId must be ${input.speaker.tokenId}.`,
     '- Keep public narration public-safe and avoid markdown.',
     ...(input.progressionContext?.requireOpeningPublicNarration
       ? [
@@ -827,17 +816,19 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
       ]
       : []),
     '- Non-aftermath beats must include a concrete currentObjective and at least one unresolved openThreads entry.',
-    '- Non-aftermath beats must also include story pressure: adventurePatch choice/stakes/consequence/discovery/clock, sceneCheckRequest, or combat.',
-    '- Use adventurePatch for durable story memory; activeDecision is visible with 2-4 options and clockUpdates use absolute values.',
+    '- Non-aftermath beats need narrated story pressure: private adventurePatch update reflected in prose/character direction, sceneCheckRequest, or combat.',
+    '- adventurePatch is private continuity memory, not public UI copy; activeDecision is rare and only for a clear fictional fork.',
+    '- Keep publicNarration natural GM prose. Do not list stakes, options, clocks, catalog entries, or hidden memory labels.',
+    '- clockUpdates use absolute values when a private clock actually changes.',
     ...(input.progressionContext?.requirePublicNarration
       ? ['- publicNarration is required and must be non-empty for this beat.']
       : ['- publicNarration may be null only when this beat is character-focused and no public GM narration is required.']),
     ...(input.progressionContext?.requireEscalationBeyondOpening
       ? ['- Do not leave repeated activity in flat story/none/0 state; visibly escalate without forcing start_combat.']
       : []),
-    '- Use catalog entries as inspiration; do not reveal gated facts.',
+    '- Use catalog entries only as bounded private inspiration/constraints; live adventure memory is more authoritative. Do not name catalog items as a public checklist.',
     '- Do not spawn combat by default. Most beats keep requestedGameplayAction null.',
-    '- Use requestedGameplayAction "start_combat" only for clear fights; it requires threat/ready/threatLevel >= 3 and encounterSeed.',
+    '- Use requestedGameplayAction "start_combat" only for clear fights; requires threat/ready/threatLevel >= 3 and encounterSeed.',
     ...buildSceneCheckContractLines(),
   ]
 }
@@ -845,10 +836,10 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
 function formatAdventureDecision(decision: ReturnType<typeof normalizeAdventureMemory>['activeDecision']): string {
   if (!decision) return 'None.'
   const options = decision.options
-    .map((option) => `${option.id}: ${option.label}${option.summary ? ` — ${option.summary}` : ''}`)
+    .map((option) => `${option.id}: ${option.label}`)
     .join(' | ')
   const selected = decision.selectedOptionId ? ` | selected: ${decision.selectedOptionId}` : ''
-  return truncatePromptValue(`${decision.id}: ${decision.prompt} | options: ${options}${selected}`, 240)
+  return truncatePromptValue(`${decision.id}: ${decision.prompt} | options: ${options}${selected}`, 140)
 }
 
 function formatAdventureMemoryLines(input: Pick<GenerateGameMasterBeatInput, 'narrativeState' | 'speaker'>): string[] {
@@ -867,14 +858,14 @@ function formatAdventureMemoryLines(input: Pick<GenerateGameMasterBeatInput, 'na
   })
 
   return [
-    'Adventure memory:',
+    'Quiet private adventure memory (continuity guidance, not public panel copy):',
+    `Active decision: ${formatAdventureDecision(adventure.activeDecision)}`,
+    'Relevant catalog inspiration (private; do not recite):',
+    catalogEntries.length > 0
+      ? catalogEntries.slice(0, 3).map((entry) => `- [${entry.section}] ${entry.id}${entry.title ? ` ${entry.title}` : ''}: ${truncatePromptValue(entry.summary, 90)}${entry.tags.length ? ` (tags: ${entry.tags.slice(0, 3).join(', ')})` : ''}`).join('\n')
+      : 'None available.',
     `Arc summary: ${truncatePromptValue(adventure.arcSummary || 'None.', 500)}`,
     `Current stakes: ${truncatePromptValue(adventure.currentStakes || 'None.', 300)}`,
-    'Relevant location adventure catalog:',
-    catalogEntries.length > 0
-      ? catalogEntries.map((entry) => `- [${entry.section}] ${entry.id}${entry.title ? ` ${entry.title}` : ''}: ${truncatePromptValue(entry.summary, 120)}${entry.tags.length ? ` (tags: ${entry.tags.join(', ')})` : ''}`).join('\n')
-      : 'None available.',
-    `Active decision: ${formatAdventureDecision(adventure.activeDecision)}`,
     adventure.consequenceLedger.length > 0
       ? `Consequence ledger: ${truncatePromptValue(adventure.consequenceLedger.map((entry) => `${entry.id} [${entry.status}${entry.tier ? `/${entry.tier}` : ''}]: ${entry.summary}`).join(' | '), 360)}`
       : 'Consequence ledger: None.',
@@ -914,6 +905,7 @@ export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): s
   return clampGameMasterPrompt([
     'You are the private game master for a public WAGDIE location room.',
     'Plan exactly one narrative beat for the selected speaker. Do not directly create canon lore.',
+    'Keep adventurePatch private; public transcript output should be natural narration, not visible state labels.',
     '',
     `Room id: ${input.room.id}`,
     `Location id: ${input.room.locationId}`,
@@ -964,7 +956,7 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '  "openThreads": ["short unresolved thread"],',
     '  "adventurePatch": {',
     '    "currentStakes": "updated stakes, or omit",',
-    '    "activeDecision": {"id":"decision-id","prompt":"visible choice prompt","options":[{"id":"option-id","label":"visible option"}]},',
+    '    "activeDecision": {"id":"decision-id","prompt":"rare fictional fork prompt","options":[{"id":"option-id","label":"option"}]},',
     '    "consequence": {"id":"scene-check-consequence","summary":"tier-appropriate durable consequence","status":"open | resolved | advantage | complication","tier":"success"},',
     '    "discoveries": ["durable clue or reveal"],',
     '    "clockUpdates": [{"id":"clock-id","label":"clock label","value":1,"max":6,"summary":"absolute pressure after the roll"}]',
@@ -975,7 +967,8 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '- Output JSON only: no markdown fences, no commentary, no prose outside the object.',
     '- Use only the backend roll facts above for dice, modifier, total, DC, and outcome tier.',
     '- Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality, wallets, or private chain data.',
-    '- Narrate a consequence that fits the outcome tier and preserves future player agency.',
+    '- Narrate a consequence that fits the outcome tier and preserves future player agency; keep it natural prose, not an adventure-state panel.',
+    '- Treat adventurePatch as private durable memory for the resolved roll. activeDecision remains rare and only for a genuine new fork.',
     '- Tier rules for adventurePatch:',
     '  - critical_success: major discovery, advantage, opened route, or reduced pressure.',
     '  - success: progress with low/no cost; include a discovery, advantage, clarified decision, stakes update, or clock change.',
@@ -1006,13 +999,13 @@ export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMaster
     `Location id: ${input.room.locationId}`,
     `Tick id: ${input.tick.id}`,
     '',
+    'Backend-computed roll facts:',
+    ...formatSceneCheckRollFacts(input),
+    '',
     'Recent public transcript:',
     formatTranscript(input.recentMessages),
     '',
     ...buildNarrativeStateLines(input),
-    '',
-    'Backend-computed roll facts:',
-    ...formatSceneCheckRollFacts(input),
     '',
     ...buildGameMasterSceneCheckOutcomeContractLines(),
   ].join('\n'))

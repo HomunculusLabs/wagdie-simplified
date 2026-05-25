@@ -47,7 +47,6 @@ import {
   resolveSceneCheck,
 } from './sceneChecks/rules'
 import { projectPublicSceneCheckRolls } from './sceneChecks/publicRolls'
-import { sanitizePublicLocationRoomAdventure } from './publicAdventure'
 import type {
   SceneCheckAdjudication,
   SceneCheckResolution,
@@ -214,15 +213,6 @@ function withSourcedGameMasterPatch(output: GameMasterBeatOutput, sourceId: stri
       adventurePatch,
     },
   }
-}
-
-function publicAdventureMetadata(value: unknown): Record<string, unknown> {
-  const publicAdventure = sanitizePublicLocationRoomAdventure(value)
-  return publicAdventure ? { publicAdventure } : {}
-}
-
-function latestAdventureConsequence(memory: LocationRoomAdventureMemory): unknown {
-  return memory.consequenceLedger[memory.consequenceLedger.length - 1] ?? memory.lastOutcome ?? null
 }
 
 function buildLastBeatOutcome(output: GameMasterBeatOutput, sourceId: string): LocationRoomAdventurePatch {
@@ -581,12 +571,6 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           messageDomain: 'narrative',
           messageKind: 'gm_beat',
           ttrpgPhase: gameMasterOutput.ttrpgPhase,
-          ...publicAdventureMetadata({
-            currentStakes: gameMasterOutput.adventurePatch.currentStakes ?? adventureAfterGameMasterPatch.currentStakes,
-            activeDecision: adventureAfterGameMasterPatch.activeDecision,
-            consequenceLedger: gameMasterOutput.adventurePatch.consequenceLedger,
-            clocks: adventureAfterGameMasterPatch.clocks,
-          }),
         },
       })
 
@@ -687,8 +671,6 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         beatId: beat.id,
         output: gameMasterOutput,
       })
-      const normalAdventureMemory = normalizeAdventureMemory(normalAdventureMetadata)
-
       const message = await this.repository.appendMessage({
         roomId: input.room.id,
         locationId: input.room.locationId,
@@ -708,13 +690,6 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           messageDomain: 'narrative',
           messageKind: 'character_reaction',
           ttrpgPhase: gameMasterOutput.ttrpgPhase,
-          ...publicAdventureMetadata({
-            currentStakes: normalAdventureMemory.currentStakes,
-            activeDecision: normalAdventureMemory.activeDecision,
-            declaredAction: normalAdventureMemory.lastDeclaredAction ?? declaredAction,
-            consequence: latestAdventureConsequence(normalAdventureMemory),
-            clocks: normalAdventureMemory.clocks,
-          }),
           ...(gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError
             ? {
               sceneCheck: {
@@ -802,8 +777,6 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       tokenId: input.speaker.tokenId,
       beatId: beat.id,
     })
-    const actionAdventureMemory = normalizeAdventureMemory(actionAdventureMetadata)
-
     const actionMessage = await this.repository.appendMessage({
       roomId: input.room.id,
       locationId: input.room.locationId,
@@ -829,12 +802,6 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         sceneCheckRequest: storedSceneCheck.request,
         sceneCheckProposal: storedSceneCheck.proposal,
         sceneCheckProposalError: storedSceneCheck.proposalError,
-        ...publicAdventureMetadata({
-          currentStakes: actionAdventureMemory.currentStakes,
-          activeDecision: actionAdventureMemory.activeDecision,
-          declaredAction: actionAdventureMemory.lastDeclaredAction ?? declaredAction,
-          clocks: actionAdventureMemory.clocks,
-        }),
       },
     })
     messageIds = messageIdsWith(messageIds, actionMessage.id)
@@ -952,8 +919,6 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       tier: resolution.roll.tier,
       summary: outcome.publicNarration,
     }), { sourceId: sceneAdventureSourceId })
-    const sceneAdventureMemory = normalizeAdventureMemory(sceneAdventureMetadata)
-
     const outcomeMessage = await this.repository.appendMessage({
       roomId: input.room.id,
       locationId: input.room.locationId,
@@ -975,12 +940,6 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         messageDomain: 'narrative',
         messageKind: 'gm_outcome',
         ttrpgPhase: gameMasterOutput.ttrpgPhase,
-        ...publicAdventureMetadata({
-          currentStakes: sceneAdventureMemory.currentStakes,
-          activeDecision: sceneAdventureMemory.activeDecision,
-          consequence: latestAdventureConsequence(sceneAdventureMemory),
-          clocks: sceneAdventureMemory.clocks,
-        }),
         rollFacts: {
           actorTokenId: resolution.actorTokenId,
           actionIntent: resolution.actionIntent,

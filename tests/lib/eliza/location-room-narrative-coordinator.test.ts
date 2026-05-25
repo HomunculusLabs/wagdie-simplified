@@ -363,7 +363,7 @@ describe('location room narrative coordinator', () => {
     expect(narrativeRepository.markBeatCompleted).toHaveBeenCalledWith('beat-1')
   })
 
-  it('persists adventure memory and public metadata for a normal narrative beat', async () => {
+  it('persists private adventure memory while omitting routine public adventure metadata for a normal narrative beat', async () => {
     const repository = makeRepository()
     usePriorGameMasterMessage(repository)
     const narrativeRepository = makeNarrativeRepository()
@@ -450,24 +450,11 @@ describe('location room narrative coordinator', () => {
     }))
     expect(repository.appendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
       authorKind: 'game_master',
-      metadata: expect.objectContaining({
-        publicAdventure: expect.objectContaining({
-          stakes: 'Opening the brass door may wake what listens beyond it.',
-          activeDecision: expect.objectContaining({ id: 'brass-door' }),
-        }),
-      }),
+      metadata: expect.not.objectContaining({ publicAdventure: expect.anything() }),
     }))
     expect(repository.appendMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
       authorKind: 'agent',
-      metadata: expect.objectContaining({
-        publicAdventure: expect.objectContaining({
-          declaredAction: expect.objectContaining({
-            summary: 'Ash chooses to force the brass door open.',
-            chosenOptionId: 'force',
-            chosenOptionLabel: 'Force it open',
-          }),
-        }),
-      }),
+      metadata: expect.not.objectContaining({ publicAdventure: expect.anything() }),
     }))
     expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
       metadata: expect.objectContaining({
@@ -602,15 +589,7 @@ describe('location room narrative coordinator', () => {
       authorKind: 'agent',
       content: 'Stored Ash forces the door.',
       dedupeKey: 'narrative:beat-1:character_reaction',
-      metadata: expect.objectContaining({
-        publicAdventure: expect.objectContaining({
-          declaredAction: expect.objectContaining({
-            summary: 'Ash follows the stored choice to force the door.',
-            chosenOptionId: 'force',
-            chosenOptionLabel: 'Force it open',
-          }),
-        }),
-      }),
+      metadata: expect.not.objectContaining({ publicAdventure: expect.anything() }),
     }))
     expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
       metadata: expect.objectContaining({
@@ -929,7 +908,7 @@ describe('location room narrative coordinator', () => {
       generateBeat: jest.fn(async () => ({
         gameMasterAgentId: 'gm-1',
         publicNarration: null,
-        speakerInstruction: 'Speak once.',
+        speakerInstruction: 'Answer the existing GM lead with a concrete public character action.',
         stateAfter: {
           stateSummary: 'State after public character output.',
           currentObjective: 'Follow the existing GM lead.',
@@ -1077,19 +1056,12 @@ describe('location room narrative coordinator', () => {
       'narrative',
       'narrative',
     ])
-    expect(repository.appendMessage.mock.calls[0][0].metadata?.publicAdventure).toEqual(expect.objectContaining({
-      declaredAction: expect.objectContaining({ summary: 'Ash searches the ash for a hidden sign.' }),
-    }))
+    expect(repository.appendMessage.mock.calls[0][0].metadata).not.toHaveProperty('publicAdventure')
     expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
       rollContext: 'scene_check',
       sceneCheck: expect.objectContaining({ sceneCheckId: 'scene_check:beat-1:ash-marks' }),
     }))
-    expect(repository.appendMessage.mock.calls[2][0].metadata?.publicAdventure).toEqual(expect.objectContaining({
-      consequence: expect.objectContaining({
-        summary: 'The ash reveals a sign worth following.',
-        status: 'advantage',
-      }),
-    }))
+    expect(repository.appendMessage.mock.calls[2][0].metadata).not.toHaveProperty('publicAdventure')
     expect(events.indexOf('patch:resolution')).toBeLessThan(events.indexOf('append:roll_card'))
     expect(gameMasterGenerator.generateSceneCheckOutcome).toHaveBeenCalledWith(expect.objectContaining({
       narrativeState: expect.objectContaining({

@@ -43,106 +43,6 @@ function splitLegacyRolls(content: string): { narration: string; legacyRolls: st
   return { narration: content, legacyRolls: null };
 }
 
-type AdventureSignal = NonNullable<PublicRoomMessage['adventure']>;
-
-function hasAdventureSignals(adventure?: AdventureSignal): adventure is AdventureSignal {
-  return Boolean(
-    adventure && (
-      adventure.stakes ||
-      adventure.activeDecision ||
-      adventure.declaredAction ||
-      adventure.consequence ||
-      adventure.clocks?.length
-    )
-  );
-}
-
-function AdventureSignalPanel({ adventure }: { adventure?: AdventureSignal }) {
-  if (!hasAdventureSignals(adventure)) return null;
-
-  return (
-    <section
-      aria-label="Adventure signals"
-      className="space-y-3 rounded-xl border border-soul-accent/25 bg-black/25 p-3 font-eskapade text-sm text-neutral-300 md:p-4"
-    >
-      <p className="text-[10px] uppercase tracking-[0.22em] text-soul-accent/80">Adventure signals</p>
-
-      {adventure.stakes && (
-        <div className="space-y-1">
-          <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Stakes</p>
-          <p className="leading-relaxed text-neutral-200">{adventure.stakes}</p>
-        </div>
-      )}
-
-      {adventure.activeDecision && (
-        <div className="space-y-2">
-          <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Decision options</p>
-          <p className="leading-relaxed text-neutral-200">{adventure.activeDecision.prompt}</p>
-          <ul className="grid gap-2">
-            {adventure.activeDecision.options.map((option) => {
-              const isSelected = option.id === adventure.activeDecision?.selectedOptionId;
-              return (
-                <li
-                  key={option.id}
-                  className={`rounded-lg border px-3 py-2 ${isSelected
-                    ? 'border-soul-accent/50 bg-soul-accent/15 text-neutral-100'
-                    : 'border-neutral-800 bg-neutral-950/50 text-neutral-300'}`}
-                >
-                  <span className="font-semibold text-neutral-100">{option.label}</span>
-                  {isSelected && <span className="ml-2 text-xs uppercase tracking-[0.16em] text-soul-accent/80">chosen</span>}
-                  {option.summary && <p className="mt-1 leading-relaxed text-neutral-400">{option.summary}</p>}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-
-      {adventure.declaredAction && (
-        <div className="space-y-1">
-          <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Declared action</p>
-          <p className="leading-relaxed text-neutral-200">{adventure.declaredAction.summary}</p>
-          {adventure.declaredAction.chosenOptionLabel && (
-            <p className="text-xs text-soul-accent/80">Choice: {adventure.declaredAction.chosenOptionLabel}</p>
-          )}
-          {adventure.declaredAction.actionIntent && (
-            <p className="text-xs text-neutral-500">Intent: {formatStatusLabel(adventure.declaredAction.actionIntent)}</p>
-          )}
-        </div>
-      )}
-
-      {adventure.consequence && (
-        <div className="space-y-1">
-          <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Consequence</p>
-          <p className="leading-relaxed text-neutral-200">{adventure.consequence.summary}</p>
-          {(adventure.consequence.status || adventure.consequence.tier) && (
-            <p className="text-xs text-neutral-500">
-              {[adventure.consequence.status, adventure.consequence.tier].filter(Boolean).map((value) => formatStatusLabel(value)).join(' · ')}
-            </p>
-          )}
-        </div>
-      )}
-
-      {adventure.clocks && adventure.clocks.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">Clock pressure</p>
-          <ul className="grid gap-2">
-            {adventure.clocks.map((clock) => (
-              <li key={clock.id} className="rounded-lg border border-neutral-800 bg-neutral-950/50 px-3 py-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-semibold text-neutral-100">{clock.label}</span>
-                  <span className="text-xs text-soul-accent/80">{clock.value} / {clock.max}</span>
-                </div>
-                <p className="mt-1 leading-relaxed text-neutral-400">{clock.summary}</p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </section>
-  );
-}
-
 export function EncounterMessageCard({ message, roomData, isLatest = false }: EncounterMessageCardProps) {
   const participant = findParticipantForMessage(roomData.participants, message);
   const gameplayCharacter = findGameplayCharacter(roomData.gameplay, message.tokenId);
@@ -216,7 +116,6 @@ export function EncounterMessageCard({ message, roomData, isLatest = false }: En
             {narration}
           </p>
 
-          <AdventureSignalPanel adventure={message.adventure} />
 
           {legacyRolls && !message.gameplayRolls && (
             <div className="rounded-lg border border-neutral-800 bg-black/25 p-3 font-eskapade text-sm leading-relaxed text-neutral-500">

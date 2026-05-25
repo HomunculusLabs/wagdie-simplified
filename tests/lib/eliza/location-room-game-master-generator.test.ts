@@ -197,15 +197,17 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Combat readiness: foreshadow')
     expect(prompt).toContain('Threat level: 1')
     expect(prompt).toContain('Last encounter seed: Title: Old Bell')
-    expect(prompt).toContain('Adventure memory:')
+    expect(prompt).toContain('Quiet private adventure memory')
     expect(prompt).toContain('Arc summary: The ash bell tests anyone who follows it.')
     expect(prompt).toContain('Active decision: bell-choice')
-    expect(prompt).toContain('Relevant location adventure catalog:')
+    expect(prompt).toContain('Relevant catalog inspiration (private; do not recite):')
     expect(prompt).toContain('[50_items] 50.10.ash-rope')
-    expect(prompt).toContain('Return only a JSON object')
+    expect(prompt).toContain('Return only JSON with this contract')
     expect(prompt).toContain('"ttrpgPhase"')
     expect(prompt).toContain('"adventurePatch"')
     expect(prompt).toContain('Non-aftermath beats must include a concrete currentObjective')
+    expect(prompt).toContain('adventurePatch is private continuity memory')
+    expect(prompt).toContain('activeDecision is rare')
     expect(prompt).toContain('Do not spawn combat by default')
     expect(prompt).toContain('requestedGameplayAction "start_combat"')
   })
@@ -240,7 +242,7 @@ describe('game-master beat generator helpers', () => {
       publicNarrationRequirementReason: 'no_prior_public_game_master_message',
     })
     expect(prompt).toContain('"publicNarration": "required public narration for observers"')
-    expect(prompt).toContain('publicNarration is required and must be non-empty')
+    expect(prompt).toContain('Public narration is REQUIRED for this beat')
     expect(prompt).toContain('Opening publicNarration must be a rich table-setting GM beat')
     expect(prompt).toContain('2-3 interactable hooks')
   })
@@ -259,8 +261,8 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('"sceneCheckRequest": null')
     expect(prompt).toContain('Optional non-combat scene checks')
     expect(prompt).toContain('actionIntent options')
-    expect(prompt).toContain('fixed rollChoice.checkType options')
-    expect(prompt).toContain('requestedGameplayAction is combat-only')
+    expect(prompt).toContain('fixed rollChoice.checkType op')
+    expect(prompt).toContain('requestedGameplayAction "start_combat"')
 
     const output = normalizeGameMasterBeatResponse(JSON.stringify({
       publicNarration: 'The ash marks shine under the stair.',
@@ -508,11 +510,11 @@ describe('game-master beat generator helpers', () => {
       },
     })
     const optional = normalizeGameMasterBeatResponse(
-      '{"speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"exploration","adventurePatch":{"discoveries":["The bell answers only careful movement."]}}',
+      '{"publicNarration":"The bell answers only careful movement as ash lifts from a hidden latch.","speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"exploration","adventurePatch":{"discoveries":["The bell answers only careful movement."]}}',
       { participants, speaker: participants[0] },
       { gameMasterAgentId: 'gm-1', limits, progressionContext: optionalNarrationContext }
     )
-    expect(optional.publicNarration).toBeNull()
+    expect(optional.publicNarration).toBe('The bell answers only careful')
   })
 
   it('rejects structurally weak progression and unsafe combat handoff contracts', () => {
@@ -535,6 +537,12 @@ describe('game-master beat generator helpers', () => {
     )).toThrow('story pressure')
 
     expect(() => normalizeGameMasterBeatResponse(
+      '{"speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"exploration","adventurePatch":{"currentStakes":"The bell will choose soon."}}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits }
+    )).toThrow('narrated story pressure')
+
+    expect(() => normalizeGameMasterBeatResponse(
       '{"speakerInstruction":"Fight","stateSummary":"State","currentObjective":"Survive","openThreads":["What answers?"],"ttrpgPhase":"exploration","combatReadiness":"ready","threatLevel":2,"requestedGameplayAction":"start_combat"}',
       { participants, speaker: participants[0] },
       { gameMasterAgentId: 'gm-1', limits }
@@ -554,7 +562,7 @@ describe('game-master beat generator helpers', () => {
       sendSessionMessage: jest.fn(async () => ({} as Response)),
       collectStreamedResponseText: jest.fn(async () => ({
         message: null,
-        text: '{"publicNarration":"The bell tolls.","speakerInstruction":"Speak with dread.","stateSummary":"The bell has called Ash.","currentObjective":"Answer the toll.","openThreads":["Who answers the bell?"],"adventurePatch":{"currentStakes":"The toll is choosing who answers."},"selectedSpeakerTokenId":1}',
+          text: '{"publicNarration":"The bell tolls under ash and the floorboards answer with a new path.","speakerInstruction":"Speak with dread.","stateSummary":"The bell has called Ash.","currentObjective":"Answer the toll.","openThreads":["Who answers the bell?"],"adventurePatch":{"currentStakes":"The toll is choosing who answers."},"selectedSpeakerTokenId":1}',
       })),
       deleteSession: jest.fn(async () => undefined),
     }
@@ -652,12 +660,13 @@ describe('game-master beat generator helpers', () => {
     }))
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
     const repairPrompt = messaging.sendSessionMessage.mock.calls[1][0].content
-    expect(repairPrompt).toContain('Return only a JSON object')
+    expect(repairPrompt).toContain('Return only JSON with this contract')
     expect(repairPrompt).toContain('selectedSpeakerTokenId must be 1')
     expect(repairPrompt).toContain('Non-aftermath beats must include a concrete currentObjective')
     expect(repairPrompt).toContain('"publicNarration": "required public narration for observers"')
     expect(repairPrompt).toContain('"adventurePatch"')
-    expect(repairPrompt).toContain('story pressure')
+    expect(repairPrompt).toContain('narrated story pressure')
+    expect(repairPrompt).toContain('activeDecision is rare')
     expect(repairPrompt).toContain('publicNarration is required and must be non-empty')
     expect(repairPrompt).not.toContain('not json')
   })
@@ -709,10 +718,9 @@ describe('game-master beat generator helpers', () => {
     expect(output.stateAfter.openThreads.length).toBeGreaterThan(0)
     expect(output.adventurePatch).toEqual(expect.objectContaining({
       currentStakes: expect.any(String),
-      activeDecision: expect.objectContaining({
-        options: expect.arrayContaining([expect.objectContaining({ id: 'investigate' })]),
-      }),
+      lastOutcome: expect.objectContaining({ kind: 'beat' }),
     }))
+    expect(output.adventurePatch.activeDecision).toBeUndefined()
     expect(output.metadata.adventurePatch).toEqual(output.adventurePatch)
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
   })

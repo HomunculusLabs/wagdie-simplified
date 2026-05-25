@@ -143,6 +143,16 @@ function latestConsequenceFromLedger(value: unknown): PublicLocationRoomAdventur
   return null
 }
 
+export type PublicAdventureVisibilityMetadata = {
+  /** Server-owned future feature flag; routine/legacy publicAdventure remains hidden without this exact value. */
+  publicAdventureVisibility?: unknown
+  publicAdventure?: unknown
+}
+
+function isFeaturedPublicAdventureMetadata(metadata: PublicAdventureVisibilityMetadata): boolean {
+  return metadata.publicAdventureVisibility === 'featured'
+}
+
 export function sanitizePublicLocationRoomAdventure(value: unknown): PublicLocationRoomAdventure | null {
   if (!isRecord(value)) return null
   const stakes = nullablePublicText(value.stakes ?? value.currentStakes, 300)
@@ -165,4 +175,11 @@ export function sanitizePublicLocationRoomAdventure(value: unknown): PublicLocat
   }
 
   return Object.keys(adventure).length > 0 ? adventure : null
+}
+
+export function projectFeaturedPublicLocationRoomAdventure(
+  metadata: PublicAdventureVisibilityMetadata | null | undefined
+): PublicLocationRoomAdventure | null {
+  if (!metadata || !isFeaturedPublicAdventureMetadata(metadata)) return null
+  return sanitizePublicLocationRoomAdventure(metadata.publicAdventure)
 }
