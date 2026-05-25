@@ -4,10 +4,18 @@ import {
   normalizeOfficialResponseText,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
+import { GAMEPLAY_CHECK_TYPES } from './gameplay/types'
+import { normalizeSceneCheckRequest } from './sceneChecks/rules'
+import {
+  SCENE_CHECK_ACTION_INTENTS,
+  type NormalizedSceneCheckRequest,
+  type SceneCheckResolution,
+} from './sceneChecks/types'
 import {
   LOCATION_ROOM_COMBAT_READINESS_VALUES,
   LOCATION_ROOM_TTRPG_PHASES,
   type LocationRoom,
+  type PublicLocationRoomGameplayRolls,
   type LocationRoomCombatReadiness,
   type LocationRoomEncounterSeed,
   type LocationRoomMessage,
@@ -65,6 +73,7 @@ export type GameMasterBeatOutput = {
   threatLevel: number | null
   requestedGameplayAction: LocationRoomRequestedGameplayAction | null
   encounterSeed: LocationRoomEncounterSeed | null
+  sceneCheckRequest: NormalizedSceneCheckRequest | null
   metadata: {
     currentObjective?: string | null
     featuredTokenIds?: number[]
@@ -75,6 +84,12 @@ export type GameMasterBeatOutput = {
     threatLevel?: number | null
     requestedGameplayAction?: LocationRoomRequestedGameplayAction | null
     encounterSeed?: LocationRoomEncounterSeed | null
+    sceneCheckRequest?: NormalizedSceneCheckRequest | null
+    sceneCheck?: {
+      request?: NormalizedSceneCheckRequest | null
+      proposal?: unknown
+      proposalError?: unknown
+    }
     gmGeneration?: GameMasterGenerationDiagnostics
   }
 }
@@ -88,6 +103,30 @@ export type GenerateGameMasterBeatInput = {
   recentMessages: LocationRoomMessage[]
   narrativeState: LocationRoomNarrativeState
   progressionContext?: GameMasterBeatProgressionContext
+}
+
+export type GenerateGameMasterSceneCheckOutcomeInput = {
+  gameMasterAgentId: string
+  room: LocationRoom
+  tick: LocationRoomTick
+  participants: LocationRoomParticipant[]
+  speaker: LocationRoomParticipant
+  recentMessages: LocationRoomMessage[]
+  narrativeState: LocationRoomNarrativeState
+  characterAction: string
+  sceneCheckId: string
+  resolution: SceneCheckResolution
+  publicRolls: PublicLocationRoomGameplayRolls
+}
+
+export type GameMasterSceneCheckOutcomeOutput = {
+  gameMasterAgentId: string
+  publicNarration: string
+  stateAfter: LocationRoomNarrativeStateSnapshot
+  metadata: {
+    rawResponseLength?: number
+    fallbackUsed?: boolean
+  }
 }
 
 export type GameMasterBeatProgressionContext = {
@@ -116,6 +155,7 @@ const GM_PROMPT_OPEN_THREADS_MAX_CHARS = 500
 const GM_PROMPT_ENCOUNTER_SEED_MAX_CHARS = 300
 const OFFICIAL_ELIZA_MESSAGE_MAX_CHARS = 3900
 const GM_PROMPT_CONTRACT_MARKER = 'Return only a JSON object with this exact contract:'
+const GM_SCENE_CHECK_OUTCOME_CONTRACT_MARKER = 'Return only a JSON object with this exact scene-check outcome contract:'
 
 function countSentenceLikeSegments(value: string): number {
   return value
@@ -233,6 +273,15 @@ function parseEncounterSeed(value: unknown): LocationRoomEncounterSeed | null {
   return normalized
 }
 
+function parseSceneCheckRequest(value: unknown): NormalizedSceneCheckRequest | null {
+  if (value == null || value === '') return null
+  const normalized = normalizeSceneCheckRequest(value)
+  if (!normalized.ok) {
+    throw new Error(`Game-master beat response sceneCheckRequest is invalid: ${normalized.error}`)
+  }
+  return normalized.value
+}
+
 function isFlatOpeningState(input: {
   ttrpgPhase: LocationRoomTtrpgPhase
   combatReadiness: LocationRoomCombatReadiness
@@ -283,6 +332,7 @@ export function validateGameMasterBeatProgressionContract(output: {
   threatLevel: number | null
   requestedGameplayAction: LocationRoomRequestedGameplayAction | null
   encounterSeed: LocationRoomEncounterSeed | null
+  sceneCheckRequest?: NormalizedSceneCheckRequest | null
   progressionContext?: GameMasterBeatProgressionContext
 }): void {
   if (output.progressionContext?.requirePublicNarration && !output.publicNarration?.trim()) {
@@ -326,6 +376,10 @@ export function validateGameMasterBeatProgressionContract(output: {
     if (output.threatLevel == null || output.threatLevel < 3) {
       throw new Error('Game-master beat response combatReadiness ready requires threatLevel at least 3')
     }
+  }
+
+  if (output.requestedGameplayAction === 'start_combat' && output.sceneCheckRequest) {
+    throw new Error('Game-master beat response must not combine start_combat with sceneCheckRequest')
   }
 
   if (output.requestedGameplayAction === 'start_combat') {
@@ -417,6 +471,7 @@ function buildFallbackGameMasterBeat(
     threatLevel,
     requestedGameplayAction: null,
     encounterSeed: null,
+    sceneCheckRequest: null,
     progressionContext,
   })
 
@@ -433,6 +488,7 @@ function buildFallbackGameMasterBeat(
     threatLevel,
     requestedGameplayAction: null,
     encounterSeed: null,
+    sceneCheckRequest: null,
     metadata: {
       currentObjective: stateAfter.currentObjective,
       featuredTokenIds: [input.speaker.tokenId],
@@ -442,6 +498,12 @@ function buildFallbackGameMasterBeat(
       threatLevel,
       requestedGameplayAction: null,
       encounterSeed: null,
+      sceneCheckRequest: null,
+      sceneCheck: {
+        request: null,
+        proposal: null,
+        proposalError: null,
+      },
       gmGeneration: {
         ...diagnostics,
         status: 'repaired',
@@ -506,6 +568,7 @@ export function normalizeGameMasterBeatResponse(
     parsed.requestedGameplayAction ?? parsed.requested_gameplay_action
   )
   const encounterSeed = parseEncounterSeed(parsed.encounterSeed ?? parsed.encounter_seed)
+  const sceneCheckRequest = parseSceneCheckRequest(parsed.sceneCheckRequest ?? parsed.scene_check_request)
   const publicNarration = parseOptionalString(
     parsed.publicNarration ?? parsed.public_narration,
     limits.publicNarrationMaxLength
@@ -524,6 +587,7 @@ export function normalizeGameMasterBeatResponse(
     threatLevel,
     requestedGameplayAction,
     encounterSeed,
+    sceneCheckRequest,
     progressionContext: options.progressionContext,
   })
 
@@ -537,6 +601,7 @@ export function normalizeGameMasterBeatResponse(
     threatLevel,
     requestedGameplayAction,
     encounterSeed,
+    sceneCheckRequest,
     metadata: {
       currentObjective,
       featuredTokenIds,
@@ -547,6 +612,12 @@ export function normalizeGameMasterBeatResponse(
       threatLevel,
       requestedGameplayAction,
       encounterSeed,
+      sceneCheckRequest,
+      sceneCheck: {
+        request: sceneCheckRequest,
+        proposal: null,
+        proposalError: null,
+      },
     },
   }
 }
@@ -664,6 +735,18 @@ function buildProgressionContextLines(context?: GameMasterBeatProgressionContext
   return lines
 }
 
+function buildSceneCheckContractLines(): string[] {
+  return [
+    'Optional non-combat scene checks:',
+    '- sceneCheckRequest may request one story/exploration roll; use null when none.',
+    `- actionIntent options: ${SCENE_CHECK_ACTION_INTENTS.join(', ')}.`,
+    `- fixed rollChoice.checkType options: ${GAMEPLAY_CHECK_TYPES.join(', ')}.`,
+    '- contextualChecks may include public-safe id, label, checkType, dc, description; backend sanitizes mechanics.',
+    '- Never include dice results, HP, damage, rewards, death/finality, wallets, or private chain data.',
+    '- requestedGameplayAction is combat-only; do not combine start_combat with sceneCheckRequest.',
+  ]
+}
+
 function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInput, 'participants' | 'speaker' | 'progressionContext'>): string[] {
   const publicNarrationContract = input.progressionContext?.requirePublicNarration
     ? '"required public narration for observers"'
@@ -682,6 +765,7 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     '  "threatLevel": 0,',
     '  "requestedGameplayAction": null,',
     '  "encounterSeed": null,',
+    '  "sceneCheckRequest": null,',
     '  "featuredTokenIds": [123],',
     `  "selectedSpeakerTokenId": ${input.speaker.tokenId}`,
     '}',
@@ -714,6 +798,7 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     '- Use requestedGameplayAction "start_combat" only when the fiction clearly escalates to a fight.',
     '- start_combat requires ttrpgPhase "threat", combatReadiness "ready", and a non-null public-safe encounterSeed.',
     '- encounterSeed may include only title, summary, and stakes; never include mechanics, DCs, HP, rewards, wallets, or private chain data.',
+    ...buildSceneCheckContractLines(),
   ]
 }
 
@@ -759,6 +844,144 @@ export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): s
   ].join('\n'))
 }
 
+function formatSceneCheckRollFacts(input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'resolution' | 'sceneCheckId' | 'characterAction'>): string[] {
+  const roll = input.resolution.roll
+  return [
+    `Scene check id: ${input.sceneCheckId}`,
+    `Actor: ${input.resolution.actorName ?? `#${input.resolution.actorTokenId}`} (#${input.resolution.actorTokenId})`,
+    `Character action: ${truncatePromptValue(input.characterAction, 420)}`,
+    `Action intent: ${input.resolution.actionIntent}`,
+    `Check: ${roll.checkLabel} (${roll.checkType}, source ${roll.checkSource})`,
+    `d20: ${roll.roll.total}`,
+    `Modifier: ${roll.modifier}`,
+    `Total: ${roll.total}`,
+    `DC: ${roll.dc}`,
+    `Outcome tier: ${roll.tier}`,
+    `Request source: ${input.resolution.requestSource ?? 'none'}`,
+    `Adjudication source: ${input.resolution.adjudicationSource}`,
+  ]
+}
+
+function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
+  return [
+    'Return only a JSON object with this exact scene-check outcome contract:',
+    '{',
+    '  "publicNarration": "public GM consequence of the resolved scene check",',
+    '  "stateSummary": "updated private continuity summary after the roll",',
+    '  "currentObjective": "updated objective after the roll",',
+    '  "openThreads": ["short unresolved thread"]',
+    '}',
+    '',
+    'Rules:',
+    '- Output JSON only: no markdown fences, no commentary, no prose outside the object.',
+    '- Use only the backend roll facts above for dice, modifier, total, DC, and outcome tier.',
+    '- Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality, wallets, or private chain data.',
+    '- Narrate a consequence that fits the outcome tier and preserves future player agency.',
+    '- publicNarration, stateSummary, currentObjective, and at least one openThreads entry are required.',
+  ]
+}
+
+function clampGameMasterSceneCheckOutcomePrompt(prompt: string): string {
+  if (prompt.length <= OFFICIAL_ELIZA_MESSAGE_MAX_CHARS) return prompt
+  const markerIndex = prompt.indexOf(GM_SCENE_CHECK_OUTCOME_CONTRACT_MARKER)
+  if (markerIndex < 0) return prompt.slice(0, OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - 1).trimEnd() + '…'
+  const contract = prompt.slice(markerIndex)
+  const separator = '\n\n[Earlier context truncated to fit the ElizaOS 4000-character message limit.]\n\n'
+  const availableContextChars = OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - contract.length - separator.length
+  if (availableContextChars <= 0) return contract.slice(0, OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - 1).trimEnd() + '…'
+  return `${prompt.slice(0, availableContextChars).trimEnd()}${separator}${contract}`
+}
+
+export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMasterSceneCheckOutcomeInput): string {
+  return clampGameMasterSceneCheckOutcomePrompt([
+    'You are the private game master for a public WAGDIE location room.',
+    'Narrate the consequence of one already-resolved non-combat scene check. Do not directly create canon lore.',
+    '',
+    `Room id: ${input.room.id}`,
+    `Location id: ${input.room.locationId}`,
+    `Tick id: ${input.tick.id}`,
+    '',
+    'Recent public transcript:',
+    formatTranscript(input.recentMessages),
+    '',
+    ...buildNarrativeStateLines(input),
+    '',
+    'Backend-computed roll facts:',
+    ...formatSceneCheckRollFacts(input),
+    '',
+    ...buildGameMasterSceneCheckOutcomeContractLines(),
+  ].join('\n'))
+}
+
+export function normalizeGameMasterSceneCheckOutcomeResponse(
+  raw: string,
+  _input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'narrativeState'>,
+  options: { gameMasterAgentId: string; limits?: GameMasterBeatLimits }
+): GameMasterSceneCheckOutcomeOutput {
+  const limits = options.limits ?? elizaConfig.locationRooms.narrative
+  const parsed = extractGameMasterJsonObject(raw, 'Game-master scene-check outcome response')
+  const publicNarration = parseRequiredString(parsed.publicNarration ?? parsed.public_narration, limits.publicNarrationMaxLength, 'publicNarration')
+  const stateSummary = parseRequiredString(
+    parsed.stateSummary ?? parsed.state_summary ?? parsed.updatedContinuitySummary,
+    limits.stateSummaryMaxLength,
+    'stateSummary'
+  )
+  const currentObjective = parseRequiredString(parsed.currentObjective ?? parsed.current_objective, limits.stateSummaryMaxLength, 'currentObjective')
+  const openThreads = parseOpenThreads(parsed.openThreads ?? parsed.open_threads, limits)
+  if (openThreads.length === 0) {
+    throw new Error('Game-master scene-check outcome response missing openThreads')
+  }
+
+  return {
+    gameMasterAgentId: options.gameMasterAgentId,
+    publicNarration,
+    stateAfter: {
+      stateSummary,
+      currentObjective,
+      openThreads,
+    },
+    metadata: {
+      rawResponseLength: raw.length,
+    },
+  }
+}
+
+function buildFallbackGameMasterSceneCheckOutcome(
+  input: GenerateGameMasterSceneCheckOutcomeInput,
+  gameMasterAgentId: string
+): GameMasterSceneCheckOutcomeOutput {
+  const limits = elizaConfig.locationRooms.narrative
+  const roll = input.resolution.roll
+  const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
+  const outcome = roll.tier.replace(/_/g, ' ')
+  const publicNarration = trimToLimit(
+    `${actor}'s ${roll.checkLabel.toLowerCase()} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The scene answers the attempt without changing the roll: the result becomes the next clear pressure for the room to address.`,
+    limits.publicNarrationMaxLength
+  ) ?? 'The scene check resolves, and the room shifts around the result.'
+
+  return {
+    gameMasterAgentId,
+    publicNarration,
+    stateAfter: {
+      stateSummary: trimToLimit(
+        `${input.narrativeState.stateSummary || 'The room scene continues.'} ${actor}'s ${input.resolution.actionIntent.replace(/_/g, ' ')} check resolved as ${outcome}.`,
+        limits.stateSummaryMaxLength
+      ) ?? (input.narrativeState.stateSummary || 'The room scene continues after a resolved scene check.'),
+      currentObjective: trimToLimit(
+        input.narrativeState.currentObjective || 'Respond to the consequence of the resolved scene check.',
+        limits.stateSummaryMaxLength
+      ) ?? 'Respond to the consequence of the resolved scene check.',
+      openThreads: (input.narrativeState.openThreads.length > 0
+        ? input.narrativeState.openThreads
+        : ['How will the room respond to the scene-check result?']
+      ).slice(0, limits.openThreadsMaxCount),
+    },
+    metadata: {
+      fallbackUsed: true,
+    },
+  }
+}
+
 function responseFlags(raw: string): GameMasterGenerationResponseFlags {
   const text = normalizeOfficialResponseText(raw)
   return {
@@ -776,7 +999,7 @@ function categorizeBeatResponseError(error: unknown): string {
   if (/invalid JSON/i.test(message)) return 'invalid_json'
   if (/selectedSpeakerTokenId|selected speaker/i.test(message)) return 'speaker_constraint'
   if (/token id|featuredTokenIds/i.test(message)) return 'token_constraint'
-  if (/currentObjective|openThreads|start_combat|combatReadiness|ttrpgPhase|threatLevel|encounterSeed|requestedGameplayAction|publicNarration|flat opening|visibly escalate/i.test(message)) {
+  if (/currentObjective|openThreads|start_combat|combatReadiness|ttrpgPhase|threatLevel|encounterSeed|requestedGameplayAction|sceneCheckRequest|publicNarration|flat opening|visibly escalate/i.test(message)) {
     return 'progression_contract'
   }
   if (/missing .*speakerInstruction|missing .*stateSummary/i.test(message)) return 'missing_required_field'
@@ -844,6 +1067,7 @@ export class GameMasterBeatGenerationError extends Error {
 
 export interface GameMasterBeatGenerator {
   generateBeat(input: GenerateGameMasterBeatInput): Promise<GameMasterBeatOutput>
+  generateSceneCheckOutcome?(input: GenerateGameMasterSceneCheckOutcomeInput): Promise<GameMasterSceneCheckOutcomeOutput>
 }
 
 async function sendAndCollectOfficialMessage(
@@ -1026,6 +1250,60 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
       }
     } finally {
       await this.messaging.deleteSession(session.sessionId).catch(() => null)
+    }
+  }
+
+  async generateSceneCheckOutcome(input: GenerateGameMasterSceneCheckOutcomeInput): Promise<GameMasterSceneCheckOutcomeOutput> {
+    const gameMasterAgentId = input.gameMasterAgentId.trim()
+    if (!gameMasterAgentId) {
+      throw new Error('Location room narrative mode requires a game-master agent id')
+    }
+
+    await this.messaging.startAgent(gameMasterAgentId)
+    let session: { sessionId: string } | null = null
+
+    try {
+      session = await this.messaging.createSession({
+        agentId: gameMasterAgentId,
+        userId: input.room.officialUserId,
+        metadata: {
+          source: 'wagdie-location-room-game-master-scene-check-outcome',
+          roomId: input.room.id,
+          locationId: input.room.locationId,
+          tickId: input.tick.id,
+          channelId: input.room.channelId,
+          officialRoomId: input.room.officialRoomId,
+          officialWorldId: input.room.officialWorldId,
+          selectedSpeakerTokenId: input.speaker.tokenId,
+          sceneCheckId: input.sceneCheckId,
+        },
+      })
+
+      const collected = await sendAndCollectOfficialMessage(this.messaging, {
+        sessionId: session.sessionId,
+        content: buildGameMasterSceneCheckOutcomePrompt(input),
+        metadata: {
+          source: 'wagdie-location-room-game-master-scene-check-outcome',
+          roomId: input.room.id,
+          locationId: input.room.locationId,
+          tickId: input.tick.id,
+          channelId: input.room.channelId,
+          selectedSpeakerTokenId: input.speaker.tokenId,
+          sceneCheckId: input.sceneCheckId,
+        },
+      }, {
+        conversationId: session.sessionId,
+      })
+
+      return normalizeGameMasterSceneCheckOutcomeResponse(collected.text, input, {
+        gameMasterAgentId,
+      })
+    } catch {
+      return buildFallbackGameMasterSceneCheckOutcome(input, gameMasterAgentId)
+    } finally {
+      if (session) {
+        await this.messaging.deleteSession(session.sessionId).catch(() => null)
+      }
     }
   }
 }

@@ -24,11 +24,14 @@ const GAMEPLAY_CONTEXT_TEXT = [
   '{',
   '  "actionType": "attack|defend|help|investigate|negotiate|flee|rest",',
   '  "target": { "kind": "monster", "id": "monster-1" },',
+  '  "rollChoice": { "source": "fixed", "checkType": "attack" },',
   '  "publicSpeech": "short public in-character speech",',
   '  "intentSummary": "brief tactical intent"',
   '}',
   'Use only legal targets supplied in the gameplay prompt. Attack requires a monster target; help requires a character target. Omit target for scene actions when no legal target is needed.',
-  'Stats, rewards, reward claims, death, and finality are backend-authoritative. Agents and plugin actions may reference supplied context only; they cannot assign stats, rewards, claim status, HP changes, dice results, or death/finality outcomes.',
+  'rollChoice is optional but recommended when the prompt lists fixed or contextual checks. For contextual checks, use only a supplied contextualCheckId; never invent labels, DCs, dice, or mechanics.',
+  'For narrative scene-check prompts, respond with {"publicSpeech":"...","sceneCheckProposal":null} or include sceneCheckProposal with actionIntent, intentSummary, and rollChoice. The backend may ignore, sanitize, or override proposals.',
+  'Stats, rewards, reward claims, death, and finality are backend-authoritative. Agents and plugin actions may reference supplied context only; they cannot assign stats, rewards, claim status, HP changes, dice results, DCs, or death/finality outcomes.',
 ].join('\n');
 
 const gameplayContextProvider = {
@@ -48,6 +51,11 @@ const gameplayContextProvider = {
         target: {
           kind: 'monster|character',
           id: 'legal-target-id',
+        },
+        rollChoice: {
+          source: 'fixed|contextual',
+          checkType: 'listed-fixed-check-type',
+          contextualCheckId: 'offered-contextual-check-id',
         },
         publicSpeech: 'short public in-character speech',
         intentSummary: 'brief tactical intent',
@@ -81,8 +89,9 @@ const declareGameplayAction = {
   ): Promise<ActionResult> => {
     const text = [
       'Declare a WAGDIE gameplay action as JSON only:',
-      '{"actionType":"attack|defend|help|investigate|negotiate|flee|rest","target":{"kind":"monster|character","id":"legal-target-id"},"publicSpeech":"short in-character speech","intentSummary":"brief tactical intent"}',
-      'This plugin does not resolve mechanics or assign stats, rewards, reward claims, HP, death, or finality; WAGDIE backend validation remains authoritative.',
+      '{"actionType":"attack|defend|help|investigate|negotiate|flee|rest","target":{"kind":"monster|character","id":"legal-target-id"},"rollChoice":{"source":"fixed","checkType":"attack"},"publicSpeech":"short in-character speech","intentSummary":"brief tactical intent"}',
+      'For narrative scene checks, use {"publicSpeech":"short in-character speech","sceneCheckProposal":{"actionIntent":"investigate","intentSummary":"what you try","rollChoice":{"source":"fixed","checkType":"perception"}}} only when the prompt asks for scene-check JSON.',
+      'This plugin does not resolve mechanics or assign stats, rewards, reward claims, HP, dice, DCs, death, or finality; WAGDIE backend validation remains authoritative.',
     ].join('\n');
 
     if (callback) {
@@ -117,7 +126,7 @@ const declareGameplayAction = {
       {
         name: 'assistant',
         content: {
-          text: '{"actionType":"attack","target":{"kind":"monster","id":"monster-1"},"publicSpeech":"By ash and oath, I strike!","intentSummary":"Attack the active monster directly."}',
+          text: '{"actionType":"attack","target":{"kind":"monster","id":"monster-1"},"rollChoice":{"source":"fixed","checkType":"attack"},"publicSpeech":"By ash and oath, I strike!","intentSummary":"Attack the active monster directly."}',
           actions: ['DECLARE_WAGDIE_GAMEPLAY_ACTION'],
         },
       },

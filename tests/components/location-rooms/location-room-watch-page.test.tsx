@@ -281,6 +281,123 @@ describe('LocationRoomWatchPage', () => {
     expect(screen.queryByRole('button', { name: /Stir the Room/i })).not.toBeInTheDocument();
   });
 
+  it('renders narrative scene-check labels and scene-specific structured roll wording', () => {
+    const sceneRoomFixture: PublicLocationRoomRead = {
+      ...roomFixture,
+      activity: {
+        ...roomFixture.activity!,
+        messageCount: 3,
+        latestSequence: 3,
+        completedTurnCount: 4,
+      },
+      ttrpg: {
+        phase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 1,
+      },
+      messages: [
+        {
+          id: 'scene-msg-1',
+          sequence: 1,
+          authorKind: 'agent',
+          tokenId: 7,
+          authorName: 'Wagdie #7',
+          content: 'I brush ash away from the hidden marks.',
+          createdAt: '2026-05-24T13:01:00.000Z',
+          messageDomain: 'narrative',
+          messageKind: 'character_action',
+          ttrpgPhase: 'exploration',
+        },
+        {
+          id: 'scene-msg-2',
+          sequence: 2,
+          authorKind: 'game_master',
+          tokenId: null,
+          authorName: 'Internal GM Agent',
+          content: 'The ash waits on a scene check.',
+          createdAt: '2026-05-24T13:02:00.000Z',
+          messageDomain: 'narrative',
+          messageKind: 'roll_card',
+          ttrpgPhase: 'exploration',
+          gameplayRolls: {
+            rollContext: 'scene_check',
+            sceneCheck: {
+              sceneCheckId: 'scene_check:beat-1:ash-marks',
+              actionIntent: 'search',
+              requestSource: 'game_master',
+              adjudicationSource: 'game_master',
+              adjudicationReason: 'gm_request',
+            },
+            action: {
+              actionType: 'investigate',
+              checkType: 'perception',
+              checkLabel: 'Search the Ash Marks',
+              checkSource: 'fixed',
+              actor: { kind: 'character', id: '7', tokenId: 7, name: 'Wagdie #7' },
+              target: { kind: 'environment', id: 'ash-marks', name: 'Ash marks' },
+              roll: { formula: '1d20+2', total: 16 },
+              modifier: 2,
+              total: 16,
+              dc: 14,
+              tier: 'success',
+              outcome: 'success',
+            },
+            publicEffects: [
+              {
+                kind: 'narrative',
+                target: { kind: 'environment', id: 'ash-marks', name: 'Ash marks' },
+                amount: null,
+                status: null,
+                summary: 'The marks reveal a safe path through the cinders.',
+              },
+            ],
+            retaliation: null,
+            deaths: [],
+            encounterStatusAfter: 'unknown',
+          },
+        },
+        {
+          id: 'scene-msg-3',
+          sequence: 3,
+          authorKind: 'game_master',
+          tokenId: null,
+          authorName: 'Internal GM Agent',
+          content: 'The marks reveal where the floor will not collapse.',
+          createdAt: '2026-05-24T13:03:00.000Z',
+          messageDomain: 'narrative',
+          messageKind: 'gm_outcome',
+          ttrpgPhase: 'exploration',
+        },
+      ],
+      gameplay: undefined,
+      pagination: { ...roomFixture.pagination, total: 3 },
+    };
+    mockUsePublicLocationRoom.mockReturnValueOnce({
+      roomData: sceneRoomFixture,
+      isLoading: false,
+      error: null,
+      lastFetchedAt: new Date('2026-05-24T13:06:00.000Z'),
+      refetch: jest.fn(),
+    });
+
+    render(<LocationRoomWatchPage locationId="crows_den" />);
+
+    expect(screen.getByText('Scene action')).toBeInTheDocument();
+    expect(screen.getAllByText('Scene check').length).toBeGreaterThan(0);
+    expect(screen.getByText('Scene outcome')).toBeInTheDocument();
+    expect(screen.getByLabelText('Structured scene check roll')).toBeInTheDocument();
+    expect(screen.getByText('Scene check roll')).toBeInTheDocument();
+    expect(screen.getByText('Search the Ash Marks')).toBeInTheDocument();
+    expect(screen.getByText(/Fixed scene check · intent Search/)).toBeInTheDocument();
+    expect(screen.getByText(/1d20\+2 → 16/)).toBeInTheDocument();
+    expect(screen.getByText(/Scene total 16 · Success/)).toBeInTheDocument();
+    expect(screen.getByText('Scene effects')).toBeInTheDocument();
+    expect(screen.getByText(/safe path through the cinders/)).toBeInTheDocument();
+    expect(screen.queryByText('Combat action')).not.toBeInTheDocument();
+    expect(screen.queryByText('Combat outcome')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Structured GM rolls')).not.toBeInTheDocument();
+  });
+
   it('renders loading, error, and empty states', async () => {
     const refetch = jest.fn();
 

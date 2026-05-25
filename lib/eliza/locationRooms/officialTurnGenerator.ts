@@ -6,10 +6,15 @@ import {
   normalizeOfficialResponseText,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
+import { extractGameMasterJsonObject } from './gameMasterGenerator'
+import { GAMEPLAY_CHECK_TYPES } from './gameplay/types'
+import { normalizeSceneCheckProposal } from './sceneChecks/rules'
+import { SCENE_CHECK_ACTION_INTENTS } from './sceneChecks/types'
 import type {
   GenerateOfficialLocationRoomTurnInput,
   GenerateOfficialLocationRoomTurnResult,
   LocationRoomMessage,
+  LocationRoomNarrativeTurnSceneCheckContext,
   LocationRoomParticipant,
 } from './types'
 
@@ -67,6 +72,35 @@ function formatTranscript(messages: LocationRoomMessage[]): string {
   return lines.join('\n')
 }
 
+function formatSceneCheckContext(context: LocationRoomNarrativeTurnSceneCheckContext | null | undefined): string[] {
+  if (!context) return []
+
+  const request = context.request
+  const contextualChecks = context.contextualChecks ?? request?.contextualChecks ?? []
+
+  return [
+    '',
+    'Optional scene-check context:',
+    request
+      ? `Game Master requested: ${request.actionIntent}${request.summary ? ` — ${truncatePromptValue(request.summary, 240)}` : ''}.`
+      : 'No specific Game Master check request; propose a check only for a clearly roll-worthy story action.',
+    `Scene-check action intents: ${SCENE_CHECK_ACTION_INTENTS.join(', ')}.`,
+    `Fixed rollChoice check types: ${GAMEPLAY_CHECK_TYPES.join(', ')}.`,
+    'Contextual roll checks offered for this scene:',
+    contextualChecks.length > 0
+      ? contextualChecks.map((check) => `- ${check.id}: ${check.label} (checkType ${check.checkType}, DC ${check.dc})${check.description ? ` — ${check.description}` : ''}`).join('\n')
+      : 'None.',
+    'When scene-check context exists, return JSON only with this contract:',
+    '{',
+    '  "publicSpeech": "short public in-character utterance",',
+    '  "sceneCheckProposal": null',
+    '}',
+    'Use sceneCheckProposal only when your action is roll-worthy. Shape: {"actionIntent":"investigate","intentSummary":"what you try","rollChoice":{"source":"fixed","checkType":"perception"}}.',
+    'For contextual checks, use {"rollChoice":{"source":"contextual","contextualCheckId":"offered-id"}} and do not invent ids, labels, DCs, dice, or mechanics.',
+    'If you only speak/react normally, set sceneCheckProposal to null. Prose-only fallback is accepted but yields no proposal.',
+  ]
+}
+
 function formatNarrativeContext(input: GenerateOfficialLocationRoomTurnInput): string[] {
   const context = input.narrativeContext
   if (!context) return []
@@ -84,6 +118,7 @@ function formatNarrativeContext(input: GenerateOfficialLocationRoomTurnInput): s
     context.publicNarration
       ? `Public game-master narration just posted: ${truncatePromptValue(context.publicNarration, CHARACTER_PROMPT_NARRATION_MAX_CHARS)}`
       : 'No public game-master narration was posted for this beat.',
+    ...formatSceneCheckContext(context.sceneCheck),
   ]
 }
 
@@ -100,8 +135,12 @@ export function buildOfficialLocationRoomPrompt(input: GenerateOfficialLocationR
     formatTranscript(input.recentMessages),
     ...formatNarrativeContext(input),
     '',
-    'Write exactly one short in-world utterance as your character.',
-    'Keep it under two sentences. Do not use markdown, speaker labels, JSON, stage directions, or out-of-world explanations.',
+    input.narrativeContext?.sceneCheck
+      ? 'Return the requested JSON object with publicSpeech and optional sceneCheckProposal.'
+      : 'Write exactly one short in-world utterance as your character.',
+    input.narrativeContext?.sceneCheck
+      ? 'Keep publicSpeech under two sentences. Do not include markdown, speaker labels, stage directions, out-of-world explanations, dice results, DCs, HP, rewards, death, or finality.'
+      : 'Keep it under two sentences. Do not use markdown, speaker labels, JSON, stage directions, or out-of-world explanations.',
   ].join('\n'))
 }
 
@@ -115,6 +154,62 @@ export function normalizeLocationRoomGeneratedContent(content: string): string |
   if (!normalized) return null
 
   return normalized.slice(0, MAX_ROOM_UTTERANCE_CHARS).trim() || null
+}
+
+export function normalizeOfficialLocationRoomTurnResponse(
+  raw: string,
+  options: { sceneCheckContext?: LocationRoomNarrativeTurnSceneCheckContext | null } = {}
+): Omit<GenerateOfficialLocationRoomTurnResult, 'officialAgentId'> {
+  const sceneCheckContext = options.sceneCheckContext ?? null
+  if (!sceneCheckContext) {
+    return {
+      content: normalizeLocationRoomGeneratedContent(raw) ?? '',
+      sceneCheckProposal: null,
+      sceneCheckProposalError: null,
+    }
+  }
+
+  let parsed: Record<string, unknown> | null = null
+  try {
+    parsed = extractGameMasterJsonObject(raw, 'Location-room character turn response')
+  } catch {
+    return {
+      content: normalizeLocationRoomGeneratedContent(raw) ?? '',
+      sceneCheckProposal: null,
+      sceneCheckProposalError: null,
+    }
+  }
+
+  const content = typeof parsed.publicSpeech === 'string'
+    ? normalizeLocationRoomGeneratedContent(parsed.publicSpeech) ?? ''
+    : ''
+  const rawProposal = parsed.sceneCheckProposal ?? parsed.scene_check_proposal
+
+  if (rawProposal == null || rawProposal === '') {
+    return {
+      content,
+      sceneCheckProposal: null,
+      sceneCheckProposalError: null,
+    }
+  }
+
+  const proposal = normalizeSceneCheckProposal(rawProposal, {
+    contextualChecks: sceneCheckContext.contextualChecks ?? sceneCheckContext.request?.contextualChecks ?? [],
+  })
+
+  if (!proposal.ok) {
+    return {
+      content,
+      sceneCheckProposal: null,
+      sceneCheckProposalError: proposal.error,
+    }
+  }
+
+  return {
+    content,
+    sceneCheckProposal: proposal.value,
+    sceneCheckProposalError: null,
+  }
 }
 
 async function sendAndCollectOfficialMessage(
@@ -191,15 +286,17 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
       }, {
         conversationId: session.sessionId,
       })
-      const content = normalizeLocationRoomGeneratedContent(collected.text)
+      const normalized = normalizeOfficialLocationRoomTurnResponse(collected.text, {
+        sceneCheckContext: input.narrativeContext?.sceneCheck ?? null,
+      })
 
-      if (!content) {
+      if (!normalized.content) {
         throw new Error('Official ElizaOS generated an empty location-room turn')
       }
 
       return {
         officialAgentId: record.id,
-        content,
+        ...normalized,
       }
     } finally {
       await this.messaging.deleteSession(session.sessionId).catch(() => null)

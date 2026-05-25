@@ -1,4 +1,13 @@
-import type { GameplayCheckType, GameplayRollChoiceSource, GameplayRunStatus } from './gameplay/types'
+import type {
+  GameplayCheckType,
+  GameplayContextualCheckOption,
+  GameplayRollChoiceSource,
+  GameplayRunStatus,
+} from './gameplay/types'
+import type {
+  NormalizedSceneCheckProposal,
+  NormalizedSceneCheckRequest,
+} from './sceneChecks/types'
 
 export type LocationRoomTriggerType = 'scheduled' | 'owner' | 'admin'
 export type LocationRoomTickStatus = 'pending' | 'processing' | 'completed' | 'skipped' | 'failed' | 'dead'
@@ -175,6 +184,16 @@ export type PublicLocationRoomGameplayRollTarget = {
   name: string | null
 }
 
+export type PublicLocationRoomRollContext = 'combat' | 'scene_check'
+
+export type PublicLocationRoomSceneCheckRollMetadata = {
+  sceneCheckId?: string | null
+  actionIntent?: string | null
+  requestSource?: string | null
+  adjudicationSource?: string | null
+  adjudicationReason?: string | null
+}
+
 export type PublicLocationRoomGameplayActionRoll = {
   actionType: string
   checkType?: GameplayCheckType | string
@@ -220,6 +239,9 @@ export type PublicLocationRoomGameplayDeath = {
  * Do not expose raw mechanics, modifier sources, mechanical deltas, full metadata, or exact private state here.
  */
 export type PublicLocationRoomGameplayRolls = {
+  /** Optional additive marker. Omitted by legacy combat roll cards for compatibility. */
+  rollContext?: PublicLocationRoomRollContext
+  sceneCheck?: PublicLocationRoomSceneCheckRollMetadata | null
   action: PublicLocationRoomGameplayActionRoll
   publicEffects: PublicLocationRoomGameplayRollEffect[]
   retaliation?: PublicLocationRoomGameplayRetaliation | null
@@ -356,7 +378,12 @@ export type ProcessLocationRoomTickResult = {
   gameplayRunId?: string | null
   status: Extract<LocationRoomTickStatus, 'completed' | 'skipped' | 'failed' | 'dead'>
   selectedTokenId: number | null
+  /** Final public message appended for this tick. */
   messageId?: string
+  /** Scene-check subflow public message ids when present, in append/order order. */
+  messageIds?: string[]
+  /** Durable scene-check id when a narrative scene check resolved during this tick. */
+  sceneCheckId?: string | null
   reason?: string
   gameplayRun?: LocationRoomGameplayRunSummary
 }
@@ -425,12 +452,19 @@ export type RequestLocationRoomTickAndProcessResult = RequestLocationRoomTickRes
   processing: RequestLocationRoomTickProcessingSummary
 }
 
+export type LocationRoomNarrativeTurnSceneCheckContext = {
+  mode: 'optional' | 'requested'
+  request: NormalizedSceneCheckRequest | null
+  contextualChecks: GameplayContextualCheckOption[]
+}
+
 export type LocationRoomNarrativeTurnContext = {
   stateSummary: string
   currentObjective: string | null
   openThreads: string[]
   speakerInstruction: string
   publicNarration?: string | null
+  sceneCheck?: LocationRoomNarrativeTurnSceneCheckContext | null
 }
 
 export type GenerateOfficialLocationRoomTurnInput = {
@@ -444,4 +478,6 @@ export type GenerateOfficialLocationRoomTurnInput = {
 export type GenerateOfficialLocationRoomTurnResult = {
   officialAgentId: string
   content: string
+  sceneCheckProposal?: NormalizedSceneCheckProposal | null
+  sceneCheckProposalError?: string | null
 }

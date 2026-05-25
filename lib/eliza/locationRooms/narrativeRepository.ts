@@ -135,6 +135,7 @@ export interface LocationRoomNarrativeRepository {
   listRecentBeatsByRoomId(roomId: string, limit: number): Promise<LocationRoomNarrativeBeat[]>
   createOrReuseBeat(input: CreateOrReuseLocationRoomNarrativeBeatInput): Promise<LocationRoomNarrativeBeat>
   storeBeatGameMasterOutput(beatId: string, output: LocationRoomNarrativeBeatOutput): Promise<LocationRoomNarrativeBeat>
+  patchBeatMetadata(beatId: string, metadata: Record<string, unknown>): Promise<LocationRoomNarrativeBeat>
   markBeatGameMasterMessageAppended(beatId: string, output: LocationRoomNarrativeBeatOutput): Promise<LocationRoomNarrativeBeat>
   markBeatCharacterAppended(beatId: string): Promise<LocationRoomNarrativeBeat>
   markBeatCompleted(beatId: string): Promise<LocationRoomNarrativeBeat>
@@ -264,6 +265,13 @@ export class SupabaseLocationRoomNarrativeRepository implements LocationRoomNarr
       speaker_instruction: nullableTrimmed(output.speakerInstruction),
       state_after: output.stateAfter ?? {},
       metadata: output.metadata ?? {},
+      last_error: null,
+    })
+  }
+
+  async patchBeatMetadata(beatId: string, metadata: Record<string, unknown>): Promise<LocationRoomNarrativeBeat> {
+    return this.updateBeat(beatId, {
+      metadata,
       last_error: null,
     })
   }

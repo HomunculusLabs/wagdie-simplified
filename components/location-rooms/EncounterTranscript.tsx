@@ -30,7 +30,7 @@ export function EncounterTranscript({ roomData, endRef }: EncounterTranscriptPro
   }
 
   return (
-    <section aria-label="Encounter transcript" className="space-y-5">
+    <section aria-label="Location room transcript" className="space-y-5">
       {messages.map((message) => (
         <EncounterMessageCard
           key={message.id}

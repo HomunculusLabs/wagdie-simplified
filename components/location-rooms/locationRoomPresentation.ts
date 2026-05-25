@@ -79,6 +79,9 @@ export function getGameplayMessageLabel(message: PublicRoomMessage): string | nu
   if (domain === 'combat' && kind === 'gm_outcome') return 'Combat outcome';
   if (domain === 'narrative' && kind === 'gm_beat') return 'Story beat';
   if (domain === 'narrative' && kind === 'character_reaction') return 'Character reaction';
+  if (domain === 'narrative' && kind === 'character_action') return 'Scene action';
+  if (domain === 'narrative' && kind === 'roll_card') return 'Scene check';
+  if (domain === 'narrative' && kind === 'gm_outcome') return 'Scene outcome';
   if (kind === 'gm_setup') return 'GM setup';
   if (kind === 'character_action') return 'Character action';
   if (kind === 'roll_card') return 'Roll/check result';
@@ -113,6 +116,18 @@ export function getMessageToneClassName(message: PublicRoomMessage): string {
 
   if (domain === 'narrative' && kind === 'character_reaction') {
     return 'border-sky-500/25 bg-sky-500/10 shadow-[0_0_30px_rgba(14,165,233,0.06)]';
+  }
+
+  if (domain === 'narrative' && kind === 'character_action') {
+    return 'border-sky-500/30 bg-sky-500/10 shadow-[0_0_30px_rgba(14,165,233,0.06)]';
+  }
+
+  if (domain === 'narrative' && kind === 'roll_card') {
+    return 'border-teal-400/35 bg-teal-500/10 shadow-[0_0_30px_rgba(45,212,191,0.08)]';
+  }
+
+  if (domain === 'narrative' && kind === 'gm_outcome') {
+    return 'border-soul-accent/35 bg-soul-accent/10 shadow-[0_0_30px_rgba(180,130,255,0.08)]';
   }
 
   if (message.authorKind === 'game_master') {

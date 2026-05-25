@@ -7,6 +7,7 @@ import {
   validateGameMasterBeatProgressionContract,
   type GameMasterBeatGenerator,
   type GameMasterBeatOutput,
+  type GameMasterSceneCheckOutcomeOutput,
   type GameMasterBeatProgressionContext,
   type GameMasterGenerationDiagnostics,
   type GameMasterGenerationResponseFlags,
@@ -16,7 +17,9 @@ import {
   type LocationRoomNarrativeRepository,
 } from './narrativeRepository'
 import {
+  mergeNarrativeSceneCheckMetadata,
   mergeNarrativeTtrpgMetadata,
+  normalizeNarrativeSceneCheckMetadata,
   normalizeNarrativeTtrpgMetadata,
   toNarrativeStateSnapshot,
   type LocationRoomNarrativeBeat,
@@ -31,12 +34,22 @@ import {
   normalizeLocationRoomGeneratedContent,
   type OfficialLocationRoomTurnGenerator,
 } from './officialTurnGenerator'
+import {
+  adjudicateSceneCheck,
+  resolveSceneCheck,
+} from './sceneChecks/rules'
+import { projectPublicSceneCheckRolls } from './sceneChecks/publicRolls'
+import type {
+  SceneCheckAdjudication,
+  SceneCheckResolution,
+} from './sceneChecks/types'
 import type {
   LocationRoom,
   LocationRoomMessage,
   LocationRoomNarrativeTurnContext,
   LocationRoomParticipant,
   LocationRoomTick,
+  PublicLocationRoomGameplayRolls,
 } from './types'
 
 export type ProcessNarrativeLocationRoomTurnInput = {
@@ -49,7 +62,19 @@ export type ProcessNarrativeLocationRoomTurnInput = {
 
 export type ProcessNarrativeLocationRoomTurnResult = {
   selectedTokenId: number
+  /** Final public message appended by the narrative tick. */
   messageId: string
+  /** Scene-check subflow public message ids, in order: character_action, roll_card, gm_outcome. */
+  messageIds?: string[]
+  sceneCheckId?: string | null
+  /** Public-safe routing diagnostics for service logs; contains no prompt or payload bodies. */
+  sceneCheckDiagnostics?: {
+    requestPresent: boolean
+    proposalPresent: boolean
+    proposalErrorPresent: boolean
+    selected: boolean
+    skipReason?: string | null
+  }
 }
 
 export interface LocationRoomNarrativeCoordinator {
@@ -107,6 +132,7 @@ function beatToOutput(
   }
 
   const ttrpg = normalizeNarrativeTtrpgMetadata(beat.metadata)
+  const sceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
 
   const output = {
     gameMasterAgentId: beat.gameMasterAgentId ?? fallbackGameMasterAgentId,
@@ -118,7 +144,8 @@ function beatToOutput(
     threatLevel: ttrpg.threatLevel,
     requestedGameplayAction: ttrpg.requestedGameplayAction,
     encounterSeed: ttrpg.lastEncounterSeed,
-    metadata: beat.metadata,
+    sceneCheckRequest: sceneCheck.request,
+    metadata: mergeNarrativeSceneCheckMetadata(beat.metadata, { request: sceneCheck.request }),
   }
 
   validateGameMasterBeatProgressionContract({
@@ -136,6 +163,11 @@ function toGameMasterBeatMetadata(output: GameMasterBeatOutput): Record<string, 
     threatLevel: output.threatLevel,
     requestedGameplayAction: output.requestedGameplayAction,
     encounterSeed: output.encounterSeed,
+    sceneCheckRequest: output.sceneCheckRequest,
+    sceneCheck: {
+      ...output.metadata.sceneCheck,
+      request: output.sceneCheckRequest,
+    },
   }
 }
 
@@ -225,6 +257,69 @@ function toCharacterNarrativeContext(output: GameMasterBeatOutput): LocationRoom
     openThreads: output.stateAfter.openThreads,
     speakerInstruction: output.speakerInstruction,
     publicNarration: output.publicNarration,
+    sceneCheck: output.sceneCheckRequest
+      ? {
+        mode: 'requested',
+        request: output.sceneCheckRequest,
+        contextualChecks: output.sceneCheckRequest.contextualChecks,
+      }
+      : null,
+  }
+}
+
+function messageIdsWith(existing: string[], id: string): string[] {
+  return existing.includes(id) ? existing : [...existing, id]
+}
+
+function sceneCheckIdForBeat(
+  beat: LocationRoomNarrativeBeat,
+  existingId: string | null,
+  adjudication: SceneCheckAdjudication
+): string {
+  if (existingId) return existingId
+  if (adjudication.decision !== 'run') return `scene_check:${beat.id}`
+  const sourceId = adjudication.request?.id ?? adjudication.proposal?.id
+  return sourceId ? `scene_check:${beat.id}:${sourceId}` : `scene_check:${beat.id}`
+}
+
+function sceneRollCardContent(publicRolls: PublicLocationRoomGameplayRolls): string {
+  const action = publicRolls.action
+  const checkLabel = action.checkLabel?.trim() || action.checkType?.replace(/_/g, ' ') || action.actionType.replace(/_/g, ' ')
+  const total = typeof action.total === 'number' ? ` total ${action.total}` : null
+  const dc = typeof action.dc === 'number' ? ` vs DC ${action.dc}` : null
+  const outcome = action.outcome && action.outcome !== 'unknown'
+    ? ` — ${action.outcome.replace(/_/g, ' ')}`
+    : null
+
+  return [
+    checkLabel ? `The scene ${checkLabel} check resolves` : 'The scene check resolves',
+    total,
+    dc,
+    outcome,
+  ].filter(Boolean).join('') + '.'
+}
+
+function fallbackSceneCheckOutcome(input: {
+  gameMasterAgentId: string
+  narrativeState: LocationRoomNarrativeStateSnapshot
+  resolution: SceneCheckResolution
+}): GameMasterSceneCheckOutcomeOutput {
+  const roll = input.resolution.roll
+  const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
+  const outcome = roll.tier.replace(/_/g, ' ')
+  const publicNarration = `${actor}'s ${roll.checkLabel.toLowerCase()} check resolves as ${outcome}: ${roll.total} against DC ${roll.dc}. The scene shifts around that result, leaving the next choice in the characters' hands.`
+
+  return {
+    gameMasterAgentId: input.gameMasterAgentId,
+    publicNarration,
+    stateAfter: {
+      stateSummary: `${input.narrativeState.stateSummary} ${actor}'s ${input.resolution.actionIntent.replace(/_/g, ' ')} check resolved as ${outcome}.`.trim(),
+      currentObjective: input.narrativeState.currentObjective || 'Respond to the consequence of the resolved scene check.',
+      openThreads: input.narrativeState.openThreads.length > 0
+        ? input.narrativeState.openThreads
+        : ['How will the room respond to the scene-check result?'],
+    },
+    metadata: { fallbackUsed: true },
   }
 }
 
@@ -341,46 +436,334 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       }
     }
 
-    const generated = await this.turnGenerator.generateTurn({
-      room: input.room,
-      speaker: input.speaker,
-      participants: input.participants,
-      recentMessages: input.recentMessages,
-      narrativeContext: toCharacterNarrativeContext(gameMasterOutput),
-    })
-    const content = normalizeLocationRoomGeneratedContent(generated.content)
+    let storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
+    let content = storedSceneCheck.characterAction?.content ?? null
+    let officialAgentId = storedSceneCheck.characterAction?.officialAgentId ?? null
+    let sceneCheckProposal = storedSceneCheck.proposal
+    let sceneCheckProposalError = storedSceneCheck.proposalError
+
+    if (!content) {
+      const generated = await this.turnGenerator.generateTurn({
+        room: input.room,
+        speaker: input.speaker,
+        participants: input.participants,
+        recentMessages: input.recentMessages,
+        narrativeContext: toCharacterNarrativeContext(gameMasterOutput),
+      })
+      content = normalizeLocationRoomGeneratedContent(generated.content)
+      officialAgentId = generated.officialAgentId
+      sceneCheckProposal = generated.sceneCheckProposal ?? null
+      sceneCheckProposalError = generated.sceneCheckProposalError ?? null
+    }
 
     if (!content) {
       throw new Error('Official ElizaOS generated an empty location-room turn')
     }
 
-    const message = await this.repository.appendMessage({
+    let sceneCheckMetadata = (gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || storedSceneCheck.resolution)
+      ? mergeNarrativeSceneCheckMetadata(toGameMasterBeatMetadata(gameMasterOutput), {
+        id: storedSceneCheck.id,
+        proposal: sceneCheckProposal ?? null,
+        proposalError: sceneCheckProposalError ?? null,
+        adjudication: storedSceneCheck.adjudication,
+        resolution: storedSceneCheck.resolution,
+        publicRolls: storedSceneCheck.publicRolls,
+        messageIds: storedSceneCheck.messageIds,
+        characterAction: storedSceneCheck.characterAction,
+        gmOutcome: storedSceneCheck.gmOutcome,
+      })
+      : toGameMasterBeatMetadata(gameMasterOutput)
+
+    if (gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || storedSceneCheck.resolution) {
+      try {
+        beat = await this.narrativeRepository.patchBeatMetadata(beat.id, sceneCheckMetadata)
+        storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
+      } catch (error) {
+        console.warn('[Location Room Narrative] Failed to patch scene-check proposal metadata:', error)
+      }
+    }
+
+    const adjudication = storedSceneCheck.adjudication ?? adjudicateSceneCheck({
+      actorTokenId: input.speaker.tokenId,
+      actorName: input.speaker.name,
+      request: storedSceneCheck.request,
+      proposal: sceneCheckProposal,
+    })
+
+    if (adjudication.decision === 'skip') {
+      const message = await this.repository.appendMessage({
+        roomId: input.room.id,
+        locationId: input.room.locationId,
+        tickId: input.tick.id,
+        authorKind: 'agent',
+        tokenId: input.speaker.tokenId,
+        officialAgentId,
+        authorName: input.speaker.name,
+        content,
+        visibility: 'public',
+        metadata: {
+          source: 'scheduled-location-room-tick',
+          triggerType: input.tick.triggerType,
+          narrative: true,
+          beatId: beat.id,
+          messageDomain: 'narrative',
+          messageKind: 'character_reaction',
+          ttrpgPhase: gameMasterOutput.ttrpgPhase,
+          ...(gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError
+            ? {
+              sceneCheck: {
+                request: gameMasterOutput.sceneCheckRequest,
+                proposal: sceneCheckProposal ?? null,
+                proposalError: sceneCheckProposalError ?? null,
+                adjudication,
+              },
+              sceneCheckRequest: gameMasterOutput.sceneCheckRequest,
+              sceneCheckProposal: sceneCheckProposal ?? null,
+              sceneCheckProposalError: sceneCheckProposalError ?? null,
+            }
+            : {}),
+        },
+      })
+
+      try {
+        if (sceneCheckProposal || sceneCheckProposalError) {
+          await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(sceneCheckMetadata, {
+            adjudication,
+          }))
+        }
+        await this.narrativeRepository.markBeatCharacterAppended(beat.id)
+        await this.narrativeRepository.updateState(input.room, {
+          stateSummary: gameMasterOutput.stateAfter.stateSummary,
+          currentObjective: gameMasterOutput.stateAfter.currentObjective,
+          openThreads: gameMasterOutput.stateAfter.openThreads,
+          metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+            ttrpgPhase: gameMasterOutput.ttrpgPhase,
+            combatReadiness: gameMasterOutput.combatReadiness,
+            threatLevel: gameMasterOutput.threatLevel,
+            requestedGameplayAction: gameMasterOutput.requestedGameplayAction,
+            lastEncounterSeed: gameMasterOutput.encounterSeed,
+            lastCombatTriggerBeatId: gameMasterOutput.requestedGameplayAction === 'start_combat'
+              ? beat.id
+              : null,
+          }, {
+            source: 'location-room-narrative-coordinator',
+            lastBeatId: beat.id,
+            lastTickId: input.tick.id,
+            lastSelectedTokenId: input.speaker.tokenId,
+          }),
+        })
+        await this.narrativeRepository.markBeatCompleted(beat.id)
+      } catch (error) {
+        await this.narrativeRepository.markBeatFailed(beat.id, error).catch(() => null)
+      }
+
+      const hasSceneCheckSignal = Boolean(storedSceneCheck.request || sceneCheckProposal || storedSceneCheck.proposal || sceneCheckProposalError || storedSceneCheck.proposalError)
+      return {
+        selectedTokenId: input.speaker.tokenId,
+        messageId: message.id,
+        ...(hasSceneCheckSignal
+          ? {
+            sceneCheckDiagnostics: {
+              requestPresent: Boolean(storedSceneCheck.request),
+              proposalPresent: Boolean(sceneCheckProposal ?? storedSceneCheck.proposal),
+              proposalErrorPresent: Boolean(sceneCheckProposalError ?? storedSceneCheck.proposalError),
+              selected: false,
+              skipReason: adjudication.reason,
+            },
+          }
+          : {}),
+      }
+    }
+
+    let messageIds: string[] = []
+    const sceneCheckId = sceneCheckIdForBeat(beat, storedSceneCheck.id, adjudication)
+    sceneCheckMetadata = mergeNarrativeSceneCheckMetadata(sceneCheckMetadata, {
+      id: sceneCheckId,
+      adjudication,
+      characterAction: storedSceneCheck.characterAction ?? {
+        content,
+        officialAgentId,
+        authorName: input.speaker.name,
+      },
+    })
+    beat = await this.narrativeRepository.patchBeatMetadata(beat.id, sceneCheckMetadata)
+    storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
+
+    const actionMessage = await this.repository.appendMessage({
       roomId: input.room.id,
       locationId: input.room.locationId,
       tickId: input.tick.id,
       authorKind: 'agent',
       tokenId: input.speaker.tokenId,
-      officialAgentId: generated.officialAgentId,
+      officialAgentId,
       authorName: input.speaker.name,
-      content,
+      content: storedSceneCheck.characterAction?.content ?? content,
       visibility: 'public',
+      dedupeKey: `scene_check:${beat.id}:character_action`,
       metadata: {
         source: 'scheduled-location-room-tick',
         triggerType: input.tick.triggerType,
         narrative: true,
         beatId: beat.id,
+        sceneCheck: true,
+        sceneCheckId,
         messageDomain: 'narrative',
-        messageKind: 'character_reaction',
+        messageKind: 'character_action',
         ttrpgPhase: gameMasterOutput.ttrpgPhase,
+        adjudication,
+        sceneCheckRequest: storedSceneCheck.request,
+        sceneCheckProposal: storedSceneCheck.proposal,
+        sceneCheckProposalError: storedSceneCheck.proposalError,
       },
     })
+    messageIds = messageIdsWith(messageIds, actionMessage.id)
 
-    try {
-      await this.narrativeRepository.markBeatCharacterAppended(beat.id)
-      await this.narrativeRepository.updateState(input.room, {
+    let resolution = storedSceneCheck.resolution
+    let publicRolls = storedSceneCheck.publicRolls
+    if (!resolution) {
+      resolution = resolveSceneCheck({ adjudication })
+      publicRolls = projectPublicSceneCheckRolls(resolution, { sceneCheckId })
+      beat = await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(beat.metadata, {
+        id: sceneCheckId,
+        adjudication,
+        resolution,
+        publicRolls,
+        messageIds: {
+          ...storedSceneCheck.messageIds,
+          characterAction: actionMessage.id,
+        },
+      }))
+      storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
+    } else if (!publicRolls) {
+      publicRolls = projectPublicSceneCheckRolls(resolution, { sceneCheckId })
+    }
+
+    const rollCardMessage = await this.repository.appendMessage({
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      tickId: input.tick.id,
+      authorKind: 'game_master',
+      tokenId: null,
+      officialAgentId: gameMasterOutput.gameMasterAgentId,
+      authorName: GAME_MASTER_AUTHOR_NAME,
+      content: sceneRollCardContent(publicRolls),
+      visibility: 'public',
+      dedupeKey: `scene_check:${beat.id}:roll_card`,
+      metadata: {
+        source: 'location-room-scene-check',
+        triggerType: input.tick.triggerType,
+        narrative: true,
+        beatId: beat.id,
+        sceneCheck: true,
+        sceneCheckId,
+        messageDomain: 'narrative',
+        messageKind: 'roll_card',
+        ttrpgPhase: gameMasterOutput.ttrpgPhase,
+        publicRolls,
+      },
+    })
+    messageIds = messageIdsWith(messageIds, rollCardMessage.id)
+
+    beat = await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(beat.metadata, {
+      messageIds: {
+        ...storedSceneCheck.messageIds,
+        characterAction: actionMessage.id,
+        rollCard: rollCardMessage.id,
+      },
+      publicRolls,
+    }))
+    storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
+
+    let outcome = storedSceneCheck.gmOutcome
+    if (!outcome) {
+      const outcomeNarrativeState = {
+        ...narrativeState,
         stateSummary: gameMasterOutput.stateAfter.stateSummary,
         currentObjective: gameMasterOutput.stateAfter.currentObjective,
         openThreads: gameMasterOutput.stateAfter.openThreads,
+      }
+      const generatedOutcome = this.gameMasterGenerator.generateSceneCheckOutcome
+        ? await this.gameMasterGenerator.generateSceneCheckOutcome({
+          gameMasterAgentId: gameMasterOutput.gameMasterAgentId,
+          room: input.room,
+          tick: input.tick,
+          participants: input.participants,
+          speaker: input.speaker,
+          recentMessages: input.recentMessages,
+          narrativeState: outcomeNarrativeState,
+          characterAction: actionMessage.content,
+          sceneCheckId,
+          resolution,
+          publicRolls,
+        })
+        : fallbackSceneCheckOutcome({
+          gameMasterAgentId: gameMasterOutput.gameMasterAgentId,
+          narrativeState: gameMasterOutput.stateAfter,
+          resolution,
+        })
+
+      outcome = {
+        gameMasterAgentId: generatedOutcome.gameMasterAgentId,
+        publicNarration: generatedOutcome.publicNarration,
+        stateAfter: generatedOutcome.stateAfter,
+        metadata: generatedOutcome.metadata,
+      }
+      beat = await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(beat.metadata, {
+        gmOutcome: outcome,
+      }))
+      storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
+    }
+
+    const outcomeMessage = await this.repository.appendMessage({
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      tickId: input.tick.id,
+      authorKind: 'game_master',
+      tokenId: null,
+      officialAgentId: outcome.gameMasterAgentId,
+      authorName: GAME_MASTER_AUTHOR_NAME,
+      content: outcome.publicNarration,
+      visibility: 'public',
+      dedupeKey: `scene_check:${beat.id}:gm_outcome`,
+      metadata: {
+        source: 'location-room-scene-check',
+        triggerType: input.tick.triggerType,
+        narrative: true,
+        beatId: beat.id,
+        sceneCheck: true,
+        sceneCheckId,
+        messageDomain: 'narrative',
+        messageKind: 'gm_outcome',
+        ttrpgPhase: gameMasterOutput.ttrpgPhase,
+        rollFacts: {
+          actorTokenId: resolution.actorTokenId,
+          actionIntent: resolution.actionIntent,
+          checkType: resolution.roll.checkType,
+          checkLabel: resolution.roll.checkLabel,
+          d20: resolution.roll.roll.total,
+          modifier: resolution.roll.modifier,
+          total: resolution.roll.total,
+          dc: resolution.roll.dc,
+          tier: resolution.roll.tier,
+        },
+      },
+    })
+    messageIds = messageIdsWith(messageIds, outcomeMessage.id)
+
+    try {
+      await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(beat.metadata, {
+        messageIds: {
+          ...storedSceneCheck.messageIds,
+          characterAction: actionMessage.id,
+          rollCard: rollCardMessage.id,
+          gmOutcome: outcomeMessage.id,
+        },
+      }))
+      await this.narrativeRepository.markBeatCharacterAppended(beat.id)
+      await this.narrativeRepository.updateState(input.room, {
+        stateSummary: outcome.stateAfter.stateSummary,
+        currentObjective: outcome.stateAfter.currentObjective,
+        openThreads: outcome.stateAfter.openThreads,
         metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
           ttrpgPhase: gameMasterOutput.ttrpgPhase,
           combatReadiness: gameMasterOutput.combatReadiness,
@@ -391,10 +774,12 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
             ? beat.id
             : null,
         }, {
-          source: 'location-room-narrative-coordinator',
+          source: 'location-room-scene-check',
           lastBeatId: beat.id,
           lastTickId: input.tick.id,
           lastSelectedTokenId: input.speaker.tokenId,
+          lastSceneCheckId: sceneCheckId,
+          lastSceneCheckOutcome: resolution.roll.tier,
         }),
       })
       await this.narrativeRepository.markBeatCompleted(beat.id)
@@ -404,7 +789,15 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
 
     return {
       selectedTokenId: input.speaker.tokenId,
-      messageId: message.id,
+      messageId: outcomeMessage.id,
+      messageIds,
+      sceneCheckId,
+      sceneCheckDiagnostics: {
+        requestPresent: Boolean(storedSceneCheck.request),
+        proposalPresent: Boolean(storedSceneCheck.proposal),
+        proposalErrorPresent: Boolean(storedSceneCheck.proposalError),
+        selected: true,
+      },
     }
   }
 

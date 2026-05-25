@@ -368,6 +368,7 @@ describe('location room domain service', () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
+    jest.spyOn(console, 'info').mockImplementation(() => undefined)
     mutableElizaConfig.mode = originalMode
     mutableLocationRoomsConfig.enabled = true
     mutableLocationRoomsConfig.maxTicksPerRun = originalMaxTicksPerRun
@@ -376,6 +377,10 @@ describe('location room domain service', () => {
     mutableNarrativeConfig.gameMasterAgentId = ''
     mutableGameplayConfig.enabled = false
     mutableGameplayConfig.locationAllowlist = []
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
   })
 
   afterAll(() => {
@@ -1697,6 +1702,82 @@ describe('location room domain service', () => {
       tickIntervalMinutes: elizaConfig.locationRooms.activeNarrativeTickIntervalMinutes,
       now: new Date(now),
     })
+  })
+
+  it('preserves narrative scene-check result metadata and does not route it through combat', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const repository = makeRepository()
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        selectedTokenId: 1,
+        messageId: 'msg-gm-outcome',
+        messageIds: ['msg-character-action', 'msg-roll-card', 'msg-gm-outcome'],
+        sceneCheckId: 'scene_check:beat-1:ash-marks',
+        sceneCheckDiagnostics: {
+          requestPresent: true,
+          proposalPresent: true,
+          proposalErrorPresent: false,
+          selected: true,
+        },
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        status: 'completed',
+        selectedTokenId: 2,
+        messageId: 'msg-gameplay-action',
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayRepository = makeGameplayRepository({
+      findActiveEncounterByRoomId: jest.fn(async () => null),
+      createOrReuseActiveRun: jest.fn(),
+    })
+    const service = new LocationRoomService(
+      repository,
+      makeMembership([participant(1, 'Ash'), participant(2, 'Bone')]),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository,
+      makeNarrativeRepository()
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result.results[0]).toMatchObject({
+      status: 'completed',
+      selectedTokenId: 1,
+      messageId: 'msg-gm-outcome',
+      messageIds: ['msg-character-action', 'msg-roll-card', 'msg-gm-outcome'],
+      sceneCheckId: 'scene_check:beat-1:ash-marks',
+    })
+    expect(gameplayCoordinator.processTurn).not.toHaveBeenCalled()
+    expect(gameplayRepository.createOrReuseActiveRun).not.toHaveBeenCalled()
+    expect(gameplayRepository.createActiveEncounter).not.toHaveBeenCalled()
+    expect(gameplayRepository.findTurnByTickId).not.toHaveBeenCalled()
+    expect(console.info).toHaveBeenCalledWith(
+      '[Eliza Location Rooms] tick route decision',
+      expect.objectContaining({
+        tickId: 'tick-1',
+        roomId: 'room-1',
+        locationId: 'loc-1',
+        turnIntent: 'auto',
+        gameplayGateResult: 'enabled',
+        activeEncounterId: null,
+        combatTriggerId: null,
+        sceneCheckRequestPresent: true,
+        sceneCheckProposalPresent: true,
+        selectedRoute: 'narrative_scene_check',
+        skipReason: null,
+      })
+    )
   })
 
   it('routes an allowlisted gameplay room through narrative when no encounter or trigger exists', async () => {

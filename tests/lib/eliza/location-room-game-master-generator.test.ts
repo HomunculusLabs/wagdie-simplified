@@ -25,9 +25,14 @@ import {
   OfficialGameMasterBeatGenerator,
   buildGameMasterBeatProgressionContext,
   buildGameMasterBeatPrompt,
+  buildGameMasterSceneCheckOutcomePrompt,
   normalizeGameMasterBeatResponse,
+  normalizeGameMasterSceneCheckOutcomeResponse,
 } from '@/lib/eliza/locationRooms/gameMasterGenerator'
-import { buildOfficialLocationRoomPrompt } from '@/lib/eliza/locationRooms/officialTurnGenerator'
+import {
+  buildOfficialLocationRoomPrompt,
+  normalizeOfficialLocationRoomTurnResponse,
+} from '@/lib/eliza/locationRooms/officialTurnGenerator'
 import type {
   LocationRoom,
   LocationRoomMessage,
@@ -35,6 +40,11 @@ import type {
   LocationRoomTick,
 } from '@/lib/eliza/locationRooms/types'
 import type { LocationRoomNarrativeState } from '@/lib/eliza/locationRooms/narrativeTypes'
+import {
+  normalizeSceneCheckRequest,
+  resolveSceneCheck,
+} from '@/lib/eliza/locationRooms/sceneChecks/rules'
+import { projectPublicSceneCheckRolls } from '@/lib/eliza/locationRooms/sceneChecks/publicRolls'
 
 const now = '2026-05-22T12:00:00.000Z'
 const limits = {
@@ -199,11 +209,85 @@ describe('game-master beat generator helpers', () => {
       requireOpeningPublicNarration: true,
       publicNarrationRequirementReason: 'no_prior_public_game_master_message',
     })
-    expect(prompt).toContain('Public narration is REQUIRED for this beat.')
-    expect(prompt).toContain('Reason: no prior public Game Master message exists.')
     expect(prompt).toContain('"publicNarration": "required public narration for observers"')
+    expect(prompt).toContain('publicNarration is required and must be non-empty')
     expect(prompt).toContain('Opening publicNarration must be a rich table-setting GM beat')
     expect(prompt).toContain('2-3 interactable hooks')
+  })
+
+  it('includes optional scene-check request guidance and normalizes sanitized GM requests', () => {
+    const prompt = buildGameMasterBeatPrompt({
+      gameMasterAgentId: 'gm-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages: [message()],
+      narrativeState: narrativeState(),
+    })
+
+    expect(prompt).toContain('"sceneCheckRequest": null')
+    expect(prompt).toContain('Optional non-combat scene checks')
+    expect(prompt).toContain('actionIntent options')
+    expect(prompt).toContain('fixed rollChoice.checkType options')
+    expect(prompt).toContain('requestedGameplayAction is combat-only')
+
+    const output = normalizeGameMasterBeatResponse(JSON.stringify({
+      publicNarration: 'The ash marks shine under the stair.',
+      speakerInstruction: 'Search the ash marks without solving the whole room.',
+      stateSummary: 'Ash marks under the stair invite investigation.',
+      currentObjective: 'Search the ash marks.',
+      openThreads: ['What do the marks hide?'],
+      ttrpgPhase: 'exploration',
+      combatReadiness: 'none',
+      threatLevel: 1,
+      requestedGameplayAction: null,
+      encounterSeed: null,
+      sceneCheckRequest: {
+        actionIntent: 'search',
+        summary: 'Search the ash marks for a hidden route.',
+        contextualChecks: [{ id: 'ash marks', label: 'Read the Ash Marks', checkType: 'history', dc: 99 }],
+        rollChoice: { source: 'contextual', contextualCheckId: 'ash-marks' },
+        difficulty: 'hard',
+      },
+      selectedSpeakerTokenId: 1,
+    }), { participants, speaker: participants[0] }, { gameMasterAgentId: 'gm-1', limits })
+
+    expect(output.sceneCheckRequest).toEqual(expect.objectContaining({
+      source: 'game_master',
+      actionIntent: 'search',
+      gameplayActionType: 'investigate',
+      difficulty: 'hard',
+      contextualChecks: [expect.objectContaining({ id: 'ash-marks', dc: 20 })],
+      rollChoice: expect.objectContaining({ source: 'contextual', contextualCheckId: 'ash-marks', checkType: 'history' }),
+    }))
+    expect(output.metadata.sceneCheck).toEqual(expect.objectContaining({
+      request: output.sceneCheckRequest,
+      proposal: null,
+      proposalError: null,
+    }))
+
+    expect(() => normalizeGameMasterBeatResponse(JSON.stringify({
+      speakerInstruction: 'Search.',
+      stateSummary: 'State.',
+      currentObjective: 'Search.',
+      openThreads: ['What hides?'],
+      ttrpgPhase: 'exploration',
+      sceneCheckRequest: { actionIntent: 'search', rollChoice: { source: 'fixed', checkType: 'unsupported_check' } },
+    }), { participants, speaker: participants[0] }, { gameMasterAgentId: 'gm-1', limits })).toThrow('sceneCheckRequest')
+
+    expect(() => normalizeGameMasterBeatResponse(JSON.stringify({
+      speakerInstruction: 'Fight.',
+      stateSummary: 'State.',
+      currentObjective: 'Survive.',
+      openThreads: ['What attacks?'],
+      ttrpgPhase: 'threat',
+      combatReadiness: 'ready',
+      threatLevel: 4,
+      requestedGameplayAction: 'start_combat',
+      encounterSeed: { title: 'Bell Horror' },
+      sceneCheckRequest: { actionIntent: 'search', rollChoice: { source: 'fixed', checkType: 'perception' } },
+    }), { participants, speaker: participants[0] }, { gameMasterAgentId: 'gm-1', limits })).toThrow('must not combine')
   })
 
   it('normalizes fenced JSON and caps public/state/thread values', () => {
@@ -524,7 +608,7 @@ describe('game-master beat generator helpers', () => {
     expect(repairPrompt).toContain('Return only a JSON object')
     expect(repairPrompt).toContain('selectedSpeakerTokenId must be 1')
     expect(repairPrompt).toContain('Non-aftermath beats must include a concrete currentObjective')
-    expect(repairPrompt).toContain('Public narration is REQUIRED for this beat.')
+    expect(repairPrompt).toContain('"publicNarration": "required public narration for observers"')
     expect(repairPrompt).toContain('publicNarration is required and must be non-empty')
     expect(repairPrompt).not.toContain('not json')
   })
@@ -600,6 +684,162 @@ describe('game-master beat generator helpers', () => {
     })).rejects.toThrow('stream down')
 
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('prompts and normalizes optional character scene-check proposals with prose fallback', () => {
+    const request = normalizeSceneCheckRequest({
+      actionIntent: 'search',
+      summary: 'Search the ash marks for a hidden route.',
+      contextualChecks: [{ id: 'ash-marks', label: 'Read the Ash Marks', checkType: 'history', dc: 16 }],
+      rollChoice: { source: 'contextual', contextualCheckId: 'ash-marks' },
+    })
+    if (!request.ok) throw new Error(request.error)
+    const sceneCheckContext = {
+      mode: 'requested' as const,
+      request: request.value,
+      contextualChecks: request.value.contextualChecks,
+    }
+    const baseInput = {
+      room: room(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message()],
+      narrativeContext: {
+        stateSummary: 'The bell has woken something.',
+        currentObjective: 'Answer the toll.',
+        openThreads: ['Who first heard it?'],
+        speakerInstruction: 'Search the marks, but leave the omen uncertain.',
+        publicNarration: 'The ash marks shine.',
+        sceneCheck: sceneCheckContext,
+      },
+    }
+
+    const prompt = buildOfficialLocationRoomPrompt(baseInput)
+    expect(prompt).toContain('When scene-check context exists, return JSON only')
+    expect(prompt).toContain('"publicSpeech"')
+    expect(prompt).toContain('"sceneCheckProposal": null')
+    expect(prompt).toContain('ash-marks: Read the Ash Marks')
+
+    const prose = normalizeOfficialLocationRoomTurnResponse('I kneel beside the ash and listen before touching it.', {
+      sceneCheckContext,
+    })
+    expect(prose).toEqual({
+      content: 'I kneel beside the ash and listen before touching it.',
+      sceneCheckProposal: null,
+      sceneCheckProposalError: null,
+    })
+
+    const valid = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
+      publicSpeech: 'These marks remember a path beneath us.',
+      sceneCheckProposal: {
+        actionIntent: 'recall_lore',
+        intentSummary: 'Interpret the ash marks without disturbing them.',
+        rollChoice: { source: 'contextual', contextualCheckId: 'ash-marks' },
+      },
+    }), { sceneCheckContext })
+    expect(valid.content).toBe('These marks remember a path beneath us.')
+    expect(valid.sceneCheckProposal).toEqual(expect.objectContaining({
+      actionIntent: 'recall_lore',
+      rollChoice: expect.objectContaining({ source: 'contextual', contextualCheckId: 'ash-marks', checkType: 'history' }),
+    }))
+    expect(valid.sceneCheckProposalError).toBeNull()
+
+    const invalid = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
+      publicSpeech: 'I force the ash to answer.',
+      sceneCheckProposal: {
+        actionIntent: 'invent_spell',
+        rollChoice: { source: 'fixed', checkType: 'arcana' },
+      },
+    }), { sceneCheckContext })
+    expect(invalid).toEqual({
+      content: 'I force the ash to answer.',
+      sceneCheckProposal: null,
+      sceneCheckProposalError: 'Unsupported scene-check action intent',
+    })
+
+    const missingSpeech = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
+      sceneCheckProposal: {
+        actionIntent: 'search',
+        rollChoice: { source: 'fixed', checkType: 'perception' },
+      },
+    }), { sceneCheckContext })
+    expect(missingSpeech.content).toBe('')
+    expect(missingSpeech.sceneCheckProposal).toEqual(expect.objectContaining({
+      actionIntent: 'search',
+    }))
+  })
+
+  it('prompts and normalizes scene-check outcome narration from backend roll facts only', () => {
+    const request = normalizeSceneCheckRequest({
+      actionIntent: 'search',
+      rollChoice: { source: 'fixed', checkType: 'perception' },
+    })
+    if (!request.ok) throw new Error(request.error)
+    const resolution = resolveSceneCheck({
+      adjudication: {
+        decision: 'run',
+        source: 'game_master',
+        adjudicationSource: 'game_master',
+        requestSource: 'game_master',
+        reason: 'gm_request',
+        actorTokenId: 1,
+        actorName: 'Ash',
+        actionIntent: request.value.actionIntent,
+        gameplayActionType: request.value.gameplayActionType,
+        rollChoice: request.value.rollChoice,
+        contextualChecks: request.value.contextualChecks,
+        difficulty: request.value.difficulty,
+        request: request.value,
+        proposal: null,
+      },
+      rng: () => 0.69,
+    })
+    const publicRolls = projectPublicSceneCheckRolls(resolution, { sceneCheckId: 'scene_check:beat-1' })
+
+    const prompt = buildGameMasterSceneCheckOutcomePrompt({
+      gameMasterAgentId: 'gm-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages: [message()],
+      narrativeState: narrativeState(),
+      characterAction: 'I search the ash marks for the hidden route.',
+      sceneCheckId: 'scene_check:beat-1',
+      resolution,
+      publicRolls,
+    })
+
+    expect(prompt).toContain('Backend-computed roll facts')
+    expect(prompt).toContain('Total:')
+    expect(prompt).toContain('DC:')
+    expect(prompt).toContain('Outcome tier:')
+    expect(prompt).toContain('Use only the backend roll facts')
+    expect(prompt).toContain('Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality')
+
+    const output = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'The ash parts enough to show a stair, but the sound below notices Ash.',
+      stateSummary: 'Ash found a hidden stair under the ash marks.',
+      currentObjective: 'Decide whether to descend the stair.',
+      openThreads: ['What heard Ash below?'],
+    }), { narrativeState: narrativeState() }, { gameMasterAgentId: 'gm-1', limits })
+
+    expect(output).toEqual(expect.objectContaining({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'The ash parts enough to show a',
+      stateAfter: expect.objectContaining({
+        stateSummary: 'Ash found a hidden stair under the ash m',
+        currentObjective: 'Decide whether to descend the stair.',
+        openThreads: ['What heard A'],
+      }),
+    }))
+
+    expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'It changes.',
+      stateSummary: 'State.',
+      currentObjective: 'Continue.',
+      openThreads: [],
+    }), { narrativeState: narrativeState() }, { gameMasterAgentId: 'gm-1', limits })).toThrow('openThreads')
   })
 
   it('keeps the character prompt unchanged unless narrative context is provided', () => {

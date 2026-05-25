@@ -1,3 +1,14 @@
+import type { PublicLocationRoomGameplayRolls } from './types'
+import type {
+  NormalizedSceneCheckProposal,
+  NormalizedSceneCheckRequest,
+  SceneCheckAdjudication,
+  SceneCheckResolution,
+} from './sceneChecks/types'
+import {
+  normalizeSceneCheckProposal,
+  normalizeSceneCheckRequest,
+} from './sceneChecks/rules'
 import type {
   LocationRoom,
   LocationRoomCombatReadiness,
@@ -104,6 +115,40 @@ export type LocationRoomNarrativeTtrpgMetadata = {
 
 export type LocationRoomNarrativeTtrpgMetadataPatch = Partial<LocationRoomNarrativeTtrpgMetadata>
 
+export type LocationRoomNarrativeSceneCheckMessageIds = {
+  characterAction?: string | null
+  rollCard?: string | null
+  gmOutcome?: string | null
+}
+
+export type LocationRoomNarrativeSceneCheckCharacterAction = {
+  content: string
+  officialAgentId: string | null
+  authorName: string | null
+}
+
+export type LocationRoomNarrativeSceneCheckOutcome = {
+  publicNarration: string
+  stateAfter: LocationRoomNarrativeStateSnapshot
+  gameMasterAgentId: string | null
+  metadata?: Record<string, unknown>
+}
+
+export type LocationRoomNarrativeSceneCheckMetadata = {
+  id: string | null
+  request: NormalizedSceneCheckRequest | null
+  proposal: NormalizedSceneCheckProposal | null
+  proposalError: string | null
+  adjudication: SceneCheckAdjudication | null
+  resolution: SceneCheckResolution | null
+  publicRolls: PublicLocationRoomGameplayRolls | null
+  messageIds: LocationRoomNarrativeSceneCheckMessageIds
+  characterAction: LocationRoomNarrativeSceneCheckCharacterAction | null
+  gmOutcome: LocationRoomNarrativeSceneCheckOutcome | null
+}
+
+export type LocationRoomNarrativeSceneCheckMetadataPatch = Partial<LocationRoomNarrativeSceneCheckMetadata>
+
 function hasStringValue<T extends readonly string[]>(values: T, value: unknown): value is T[number] {
   return typeof value === 'string' && values.includes(value as T[number])
 }
@@ -117,6 +162,52 @@ function nullableTrimmedString(value: unknown, maxLength: number): string | null
 
 function nullableId(value: unknown): string | null {
   return nullableTrimmedString(value, 120)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function nullableSceneCheckError(value: unknown): string | null {
+  return nullableTrimmedString(value, 240)
+}
+
+function normalizeSceneCheckMessageIds(value: unknown): LocationRoomNarrativeSceneCheckMessageIds {
+  if (!isRecord(value)) return {}
+  return {
+    characterAction: nullableId(value.characterAction),
+    rollCard: nullableId(value.rollCard),
+    gmOutcome: nullableId(value.gmOutcome),
+  }
+}
+
+function normalizeSceneCheckCharacterAction(value: unknown): LocationRoomNarrativeSceneCheckCharacterAction | null {
+  if (!isRecord(value)) return null
+  const content = nullableTrimmedString(value.content, 4000)
+  if (!content) return null
+  return {
+    content,
+    officialAgentId: nullableId(value.officialAgentId),
+    authorName: nullableTrimmedString(value.authorName, 120),
+  }
+}
+
+function normalizeSceneCheckOutcome(value: unknown): LocationRoomNarrativeSceneCheckOutcome | null {
+  if (!isRecord(value)) return null
+  const publicNarration = nullableTrimmedString(value.publicNarration, 4000)
+  const stateAfter = isRecord(value.stateAfter) ? value.stateAfter : null
+  const stateSummary = nullableTrimmedString(stateAfter?.stateSummary, 1000)
+  if (!publicNarration || !stateSummary) return null
+  return {
+    publicNarration,
+    gameMasterAgentId: nullableId(value.gameMasterAgentId),
+    stateAfter: {
+      stateSummary,
+      currentObjective: nullableTrimmedString(stateAfter?.currentObjective, 1000),
+      openThreads: normalizeNarrativeOpenThreads(stateAfter?.openThreads),
+    },
+    metadata: isRecord(value.metadata) ? value.metadata : undefined,
+  }
 }
 
 export function normalizeTtrpgPhase(
@@ -173,6 +264,81 @@ export function normalizeNarrativeTtrpgMetadata(
     lastEncounterSeed: normalizeEncounterSeed(source.lastEncounterSeed ?? source.encounterSeed),
     lastCombatTriggerBeatId: nullableId(source.lastCombatTriggerBeatId),
     consumedCombatTriggerBeatId: nullableId(source.consumedCombatTriggerBeatId),
+  }
+}
+
+export function normalizeNarrativeSceneCheckMetadata(
+  metadata: Record<string, unknown> | null | undefined
+): LocationRoomNarrativeSceneCheckMetadata {
+  const source = metadata ?? {}
+  const sceneCheck = isRecord(source.sceneCheck) ? source.sceneCheck : {}
+  const rawRequest = sceneCheck.request ?? source.sceneCheckRequest
+  const requestResult = rawRequest == null ? null : normalizeSceneCheckRequest(rawRequest)
+  const request = requestResult?.ok ? requestResult.value : null
+  const rawProposal = sceneCheck.proposal ?? source.sceneCheckProposal
+  const proposalResult = rawProposal == null
+    ? null
+    : normalizeSceneCheckProposal(rawProposal, { contextualChecks: request?.contextualChecks ?? [] })
+  const proposal = proposalResult?.ok ? proposalResult.value : null
+
+  return {
+    id: nullableId(sceneCheck.id ?? source.sceneCheckId),
+    request,
+    proposal,
+    proposalError: nullableSceneCheckError(
+      sceneCheck.proposalError ??
+      sceneCheck.skippedProposalError ??
+      source.sceneCheckProposalError ??
+      (proposalResult && !proposalResult.ok ? proposalResult.error : null)
+    ),
+    adjudication: isRecord(sceneCheck.adjudication) ? sceneCheck.adjudication as unknown as SceneCheckAdjudication : null,
+    resolution: isRecord(sceneCheck.resolution) ? sceneCheck.resolution as unknown as SceneCheckResolution : null,
+    publicRolls: isRecord(sceneCheck.publicRolls) ? sceneCheck.publicRolls as unknown as PublicLocationRoomGameplayRolls : null,
+    messageIds: normalizeSceneCheckMessageIds(sceneCheck.messageIds),
+    characterAction: normalizeSceneCheckCharacterAction(sceneCheck.characterAction),
+    gmOutcome: normalizeSceneCheckOutcome(sceneCheck.gmOutcome),
+  }
+}
+
+export function mergeNarrativeSceneCheckMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+  patch: LocationRoomNarrativeSceneCheckMetadataPatch
+): Record<string, unknown> {
+  const current = normalizeNarrativeSceneCheckMetadata(metadata)
+  const next: LocationRoomNarrativeSceneCheckMetadata = {
+    id: patch.id === undefined ? current.id : patch.id,
+    request: patch.request === undefined ? current.request : patch.request,
+    proposal: patch.proposal === undefined ? current.proposal : patch.proposal,
+    proposalError: patch.proposalError === undefined ? current.proposalError : patch.proposalError,
+    adjudication: patch.adjudication === undefined ? current.adjudication : patch.adjudication,
+    resolution: patch.resolution === undefined ? current.resolution : patch.resolution,
+    publicRolls: patch.publicRolls === undefined ? current.publicRolls : patch.publicRolls,
+    messageIds: patch.messageIds === undefined ? current.messageIds : patch.messageIds,
+    characterAction: patch.characterAction === undefined ? current.characterAction : patch.characterAction,
+    gmOutcome: patch.gmOutcome === undefined ? current.gmOutcome : patch.gmOutcome,
+  }
+
+  const existingSceneCheck = isRecord(metadata?.sceneCheck) ? metadata.sceneCheck : {}
+
+  return {
+    ...(metadata ?? {}),
+    sceneCheckId: next.id,
+    sceneCheckRequest: next.request,
+    sceneCheckProposal: next.proposal,
+    sceneCheckProposalError: next.proposalError,
+    sceneCheck: {
+      ...existingSceneCheck,
+      id: next.id,
+      request: next.request,
+      proposal: next.proposal,
+      proposalError: next.proposalError,
+      adjudication: next.adjudication,
+      resolution: next.resolution,
+      publicRolls: next.publicRolls,
+      messageIds: next.messageIds,
+      characterAction: next.characterAction,
+      gmOutcome: next.gmOutcome,
+    },
   }
 }
 

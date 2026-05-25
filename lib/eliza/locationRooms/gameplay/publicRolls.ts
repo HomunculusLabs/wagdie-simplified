@@ -7,6 +7,8 @@ import type {
   PublicLocationRoomGameplayRollEffect,
   PublicLocationRoomGameplayRollTarget,
   PublicLocationRoomGameplayRolls,
+  PublicLocationRoomRollContext,
+  PublicLocationRoomSceneCheckRollMetadata,
 } from '../types'
 import type { GameplayMechanicalOutcomeSummary } from './gameMasterGameplayGenerator'
 
@@ -32,6 +34,7 @@ const ENCOUNTER_STATUSES = new Set<PublicEncounterStatus>([
 ])
 
 const CHECK_SOURCES = new Set(['fixed', 'contextual', 'inferred'])
+const ROLL_CONTEXTS = new Set<PublicLocationRoomRollContext>(['combat', 'scene_check'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -67,6 +70,10 @@ function sanitizeEncounterStatus(value: unknown): PublicEncounterStatus {
 
 function publicCheckSource(value: unknown): string | undefined {
   return CHECK_SOURCES.has(value as string) ? value as string : undefined
+}
+
+function publicRollContext(value: unknown): PublicLocationRoomRollContext | undefined {
+  return ROLL_CONTEXTS.has(value as PublicLocationRoomRollContext) ? value as PublicLocationRoomRollContext : undefined
 }
 
 function publicRollDie(value: unknown): PublicLocationRoomGameplayRollDie | null {
@@ -317,6 +324,19 @@ function sanitizeAction(value: unknown): PublicLocationRoomGameplayActionRoll | 
   }
 }
 
+function sanitizeSceneCheckMetadata(value: unknown): PublicLocationRoomSceneCheckRollMetadata | null {
+  if (value == null) return null
+  if (!isRecord(value)) return null
+
+  return {
+    sceneCheckId: publicString(value.sceneCheckId, 80),
+    actionIntent: publicString(value.actionIntent, 40),
+    requestSource: publicString(value.requestSource, 40),
+    adjudicationSource: publicString(value.adjudicationSource, 40),
+    adjudicationReason: publicString(value.adjudicationReason, 40),
+  }
+}
+
 function sanitizeEffect(value: unknown): PublicLocationRoomGameplayRollEffect | null {
   if (!isRecord(value)) return null
   const kind = value.kind === 'damage' || value.kind === 'healing' || value.kind === 'status' || value.kind === 'narrative'
@@ -368,7 +388,14 @@ export function sanitizePublicGameplayRolls(value: unknown): PublicLocationRoomG
   const action = sanitizeAction(value.action)
   if (!action) return null
 
+  const rollContext = publicRollContext(value.rollContext)
+  const sceneCheck = rollContext === 'scene_check'
+    ? sanitizeSceneCheckMetadata(value.sceneCheck)
+    : null
+
   return {
+    ...(rollContext ? { rollContext } : {}),
+    ...(sceneCheck ? { sceneCheck } : {}),
     action,
     publicEffects: Array.isArray(value.publicEffects)
       ? value.publicEffects.map(sanitizeEffect).filter((effect): effect is PublicLocationRoomGameplayRollEffect => Boolean(effect))
