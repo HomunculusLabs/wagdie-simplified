@@ -1,6 +1,6 @@
 import { ElizaClient } from '@elizaos/api-client'
 import type { ChatMessage, StreamCallbacks } from '@/lib/eliza/gateway/types'
-import { WagdieElizaError } from '@/lib/eliza/gateway/errors'
+import { WagdieElizaError, isWagdieElizaError } from '@/lib/eliza/gateway/errors'
 import { streamOfficialElizaSse } from './stream'
 
 export type OfficialMessagingConfig = {
@@ -39,6 +39,17 @@ export type OfficialSendSessionMessageInput = {
 export type OfficialCollectedResponse = {
   message: ChatMessage | null
   text: string
+}
+
+const DEFAULT_STREAM_MESSAGE_ATTEMPTS = 3
+const DEFAULT_STREAM_RETRY_DELAY_MS = 1000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isRetryableOfficialStreamError(error: unknown): boolean {
+  return isWagdieElizaError(error) && error.isRetryable
 }
 
 export function normalizeOfficialResponseText(text: string): string {
@@ -119,6 +130,49 @@ export class OfficialElizaMessagingClient {
     } = {}
   ): Promise<OfficialCollectedResponse> {
     return collectOfficialStreamedResponseText(response, options)
+  }
+
+  async sendAndCollectSessionMessage(
+    input: OfficialSendSessionMessageInput,
+    options: {
+      callbacks?: StreamCallbacks
+      conversationId?: string
+      maxAttempts?: number
+      retryDelayMs?: number
+    } = {}
+  ): Promise<OfficialCollectedResponse> {
+    const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_STREAM_MESSAGE_ATTEMPTS)
+    const retryDelayMs = Math.max(0, options.retryDelayMs ?? DEFAULT_STREAM_RETRY_DELAY_MS)
+    let lastError: unknown = null
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const response = await this.sendSessionMessage(input)
+
+      try {
+        return await this.collectStreamedResponseText(response, {
+          callbacks: options.callbacks,
+          conversationId: options.conversationId ?? input.sessionId,
+        })
+      } catch (error) {
+        lastError = error
+        if (attempt >= maxAttempts || !isRetryableOfficialStreamError(error)) {
+          throw error
+        }
+
+        console.warn('[Official ElizaOS] retrying failed streaming message', {
+          attempt,
+          maxAttempts,
+          statusCode: isWagdieElizaError(error) ? error.statusCode : undefined,
+          code: isWagdieElizaError(error) ? error.code : undefined,
+        })
+
+        if (retryDelayMs > 0) {
+          await sleep(retryDelayMs * attempt)
+        }
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('Official ElizaOS streaming request failed')
   }
 
   private authHeaders(): Record<string, string> {

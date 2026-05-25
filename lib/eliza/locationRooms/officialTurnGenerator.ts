@@ -81,6 +81,26 @@ export function normalizeLocationRoomGeneratedContent(content: string): string |
   return normalized.slice(0, MAX_ROOM_UTTERANCE_CHARS).trim() || null
 }
 
+async function sendAndCollectOfficialMessage(
+  messaging: OfficialElizaMessagingClient,
+  input: Parameters<OfficialElizaMessagingClient['sendSessionMessage']>[0],
+  options: Parameters<OfficialElizaMessagingClient['collectStreamedResponseText']>[1] = {}
+): Promise<Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>> {
+  const maybeRetryingMessaging = messaging as OfficialElizaMessagingClient & {
+    sendAndCollectSessionMessage?: (
+      input: Parameters<OfficialElizaMessagingClient['sendSessionMessage']>[0],
+      options?: Parameters<OfficialElizaMessagingClient['collectStreamedResponseText']>[1]
+    ) => Promise<Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>>
+  }
+
+  if (typeof maybeRetryingMessaging.sendAndCollectSessionMessage === 'function') {
+    return maybeRetryingMessaging.sendAndCollectSessionMessage(input, options)
+  }
+
+  const response = await messaging.sendSessionMessage(input)
+  return messaging.collectStreamedResponseText(response, options)
+}
+
 export interface OfficialLocationRoomTurnGenerator {
   generateTurn(input: GenerateOfficialLocationRoomTurnInput): Promise<GenerateOfficialLocationRoomTurnResult>
 }
@@ -122,7 +142,7 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
     })
 
     try {
-      const response = await this.messaging.sendSessionMessage({
+      const collected = await sendAndCollectOfficialMessage(this.messaging, {
         sessionId: session.sessionId,
         content: buildOfficialLocationRoomPrompt(input),
         metadata: {
@@ -132,8 +152,7 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
           speakerTokenId: input.speaker.tokenId,
           officialAgentId: record.id,
         },
-      })
-      const collected = await this.messaging.collectStreamedResponseText(response, {
+      }, {
         conversationId: session.sessionId,
       })
       const content = normalizeLocationRoomGeneratedContent(collected.text)

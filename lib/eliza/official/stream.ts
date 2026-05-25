@@ -1,5 +1,5 @@
 import type { ChatMessage, StreamCallbacks } from '@/lib/eliza/gateway/types'
-import { WagdieElizaError } from '@/lib/eliza/gateway/errors'
+import { WagdieElizaError, isRetryableGatewayStatus } from '@/lib/eliza/gateway/errors'
 
 type OfficialSseEvent = {
   event?: string
@@ -68,12 +68,22 @@ export async function streamOfficialElizaSse(
 ): Promise<void> {
   if (!response.ok || !response.body) {
     const body = await response.text().catch(() => '')
+    const upstreamBody = body.slice(0, 500)
+
+    console.warn('[Official ElizaOS] streaming request failed', {
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      hasBody: Boolean(response.body),
+      upstreamBody,
+    })
+
     throw new WagdieElizaError('Official ElizaOS streaming request failed', {
       code: response.status === 401 || response.status === 403 ? 'AUTH_ERROR' : 'API_ERROR',
       statusCode: response.status,
+      isRetryable: isRetryableGatewayStatus(response.status),
       details: {
         upstreamStatus: response.status,
-        upstreamBody: body.slice(0, 500),
+        upstreamBody,
       },
     })
   }

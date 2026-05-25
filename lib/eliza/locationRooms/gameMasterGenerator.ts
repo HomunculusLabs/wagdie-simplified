@@ -706,6 +706,26 @@ export interface GameMasterBeatGenerator {
   generateBeat(input: GenerateGameMasterBeatInput): Promise<GameMasterBeatOutput>
 }
 
+async function sendAndCollectOfficialMessage(
+  messaging: OfficialElizaMessagingClient,
+  input: Parameters<OfficialElizaMessagingClient['sendSessionMessage']>[0],
+  options: Parameters<OfficialElizaMessagingClient['collectStreamedResponseText']>[1] = {}
+): Promise<Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>> {
+  const maybeRetryingMessaging = messaging as OfficialElizaMessagingClient & {
+    sendAndCollectSessionMessage?: (
+      input: Parameters<OfficialElizaMessagingClient['sendSessionMessage']>[0],
+      options?: Parameters<OfficialElizaMessagingClient['collectStreamedResponseText']>[1]
+    ) => Promise<Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>>
+  }
+
+  if (typeof maybeRetryingMessaging.sendAndCollectSessionMessage === 'function') {
+    return maybeRetryingMessaging.sendAndCollectSessionMessage(input, options)
+  }
+
+  const response = await messaging.sendSessionMessage(input)
+  return messaging.collectStreamedResponseText(response, options)
+}
+
 export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator {
   constructor(
     private readonly messaging: OfficialElizaMessagingClient = createOfficialElizaMessagingClient({
@@ -738,7 +758,7 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
     })
 
     try {
-      const response = await this.messaging.sendSessionMessage({
+      const collected = await sendAndCollectOfficialMessage(this.messaging, {
         sessionId: session.sessionId,
         content: buildGameMasterBeatPrompt(input),
         metadata: {
@@ -749,8 +769,7 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
           channelId: input.room.channelId,
           selectedSpeakerTokenId: input.speaker.tokenId,
         },
-      })
-      const collected = await this.messaging.collectStreamedResponseText(response, {
+      }, {
         conversationId: session.sessionId,
       })
 
@@ -770,7 +789,7 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
         let repairText = ''
 
         try {
-          const repairResponse = await this.messaging.sendSessionMessage({
+          const repaired = await sendAndCollectOfficialMessage(this.messaging, {
             sessionId: session.sessionId,
             content: buildGameMasterBeatRepairPrompt(input, diagnostics),
             metadata: {
@@ -783,8 +802,7 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
               repairAttempted: true,
               initialErrorCategory: diagnostics.initialErrorCategory,
             },
-          })
-          const repaired = await this.messaging.collectStreamedResponseText(repairResponse, {
+          }, {
             conversationId: session.sessionId,
           })
           repairText = repaired.text
