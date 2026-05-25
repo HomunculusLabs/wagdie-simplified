@@ -13,6 +13,7 @@ import type {
   LocationRoomPublicMessageStats,
   LocationRoomTick,
   LocationRoomTriggerType,
+  LocationRoomTurnIntent,
   PaginatedLocationRoomMessages,
 } from './types'
 
@@ -26,7 +27,7 @@ const ROOM_COLUMNS =
 const MESSAGE_COLUMNS =
   'id, room_id, location_id, tick_id, sequence, visibility, author_kind, token_id, official_agent_id, author_name, content, metadata, created_at'
 const TICK_COLUMNS =
-  'id, room_id, location_id, gameplay_run_id, trigger_type, requested_by_wallet, requested_by_token_id, status, attempts, next_attempt_at, locked_at, locked_by, selected_token_id, started_at, completed_at, last_error, created_at, updated_at'
+  'id, room_id, location_id, gameplay_run_id, turn_intent, trigger_type, requested_by_wallet, requested_by_token_id, status, attempts, next_attempt_at, locked_at, locked_by, selected_token_id, started_at, completed_at, last_error, created_at, updated_at'
 const WORKER_LOCK_TTL_MS = 15 * 60_000
 
 type SupabaseError = { code?: string; message: string }
@@ -83,6 +84,7 @@ type TickRow = {
   room_id: string
   location_id: string
   gameplay_run_id: string | null
+  turn_intent: LocationRoomTurnIntent | null
   trigger_type: LocationRoomTriggerType
   requested_by_wallet: string | null
   requested_by_token_id: number | null
@@ -174,6 +176,7 @@ function mapTick(row: TickRow): LocationRoomTick {
     roomId: row.room_id,
     locationId: row.location_id,
     gameplayRunId: row.gameplay_run_id,
+    turnIntent: row.turn_intent ?? 'auto',
     triggerType: row.trigger_type,
     requestedByWallet: row.requested_by_wallet,
     requestedByTokenId: row.requested_by_token_id,
@@ -245,8 +248,10 @@ export interface LocationRoomRepository {
     requestedByWallet?: string | null
     requestedByTokenId?: number | null
     gameplayRunId?: string | null
+    turnIntent?: LocationRoomTurnIntent
     nextAttemptAt?: Date | string | null
   }): Promise<{ tick: LocationRoomTick | null; deduped: boolean }>
+  promoteOpenTickIntent(input: { tickId: string; roomId: string; turnIntent: LocationRoomTurnIntent }): Promise<LocationRoomTick | null>
   attachTickToGameplayRun(input: { tickId: string; roomId: string; gameplayRunId: string }): Promise<LocationRoomTick | null>
   countCompletedGameplayTurnsForRun(gameplayRunId: string): Promise<number>
   findOpenTickForRoom(roomId: string): Promise<LocationRoomTick | null>
@@ -360,6 +365,7 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     requestedByWallet?: string | null
     requestedByTokenId?: number | null
     gameplayRunId?: string | null
+    turnIntent?: LocationRoomTurnIntent
     nextAttemptAt?: Date | string | null
   }): Promise<{ tick: LocationRoomTick | null; deduped: boolean }> {
     const { data, error } = (await table(TICKS_TABLE)
@@ -367,6 +373,7 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
         room_id: input.room.id,
         location_id: input.room.locationId,
         trigger_type: input.triggerType,
+        turn_intent: input.turnIntent ?? 'auto',
         requested_by_wallet: input.requestedByWallet?.trim().toLowerCase() || null,
         requested_by_token_id: input.requestedByTokenId ?? null,
         gameplay_run_id: input.gameplayRunId ?? null,
@@ -382,6 +389,19 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     if (error) throw new Error(error.message)
     if (!data) throw new Error('Location room tick insert returned no row')
     return { tick: mapTick(data), deduped: false }
+  }
+
+  async promoteOpenTickIntent(input: { tickId: string; roomId: string; turnIntent: LocationRoomTurnIntent }): Promise<LocationRoomTick | null> {
+    const { data, error } = (await table(TICKS_TABLE)
+      .update({ turn_intent: input.turnIntent })
+      .eq('id', input.tickId)
+      .eq('room_id', input.roomId)
+      .in('status', ['pending', 'failed'])
+      .select(TICK_COLUMNS)
+      .maybeSingle()) as QueryResult<TickRow>
+
+    if (error && !isNoRowsReturned(error)) throw new Error(error.message)
+    return data ? mapTick(data) : null
   }
 
   async attachTickToGameplayRun(input: { tickId: string; roomId: string; gameplayRunId: string }): Promise<LocationRoomTick | null> {

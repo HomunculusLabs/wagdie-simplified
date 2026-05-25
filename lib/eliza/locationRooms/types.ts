@@ -71,6 +71,7 @@ export type LocationRoomTick = {
   roomId: string
   locationId: string
   gameplayRunId: string | null
+  turnIntent: LocationRoomTurnIntent
   triggerType: LocationRoomTriggerType
   requestedByWallet: string | null
   requestedByTokenId: number | null
@@ -385,6 +386,7 @@ export type RequestLocationRoomTickResult = {
   locationId: string
   tickId: string | null
   triggerType: Extract<LocationRoomTriggerType, 'owner' | 'admin'>
+  turnIntent: LocationRoomTurnIntent
   deduped: boolean
   requestedByTokenId: number | null
   participantCount: number

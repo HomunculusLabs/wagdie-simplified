@@ -22,6 +22,7 @@ jest.mock('@/lib/eliza/characterResolver', () => ({
 }))
 
 import {
+  GameMasterBeatGenerationError,
   OfficialGameMasterBeatGenerator,
   buildGameMasterBeatPrompt,
   normalizeGameMasterBeatResponse,
@@ -68,6 +69,7 @@ function tick(): LocationRoomTick {
     roomId: 'room-1',
     locationId: 'loc-1',
     gameplayRunId: null,
+    turnIntent: 'auto',
     triggerType: 'scheduled',
     requestedByWallet: null,
     requestedByTokenId: null,
@@ -124,7 +126,13 @@ function narrativeState(): LocationRoomNarrativeState {
     stateSummary: 'A bell rings under the ash.',
     currentObjective: 'Find the bell.',
     openThreads: ['Who rings it?'],
-    metadata: {},
+    metadata: {
+      ttrpgPhase: 'exploration',
+      combatReadiness: 'foreshadow',
+      threatLevel: 1,
+      requestedGameplayAction: null,
+      lastEncounterSeed: { title: 'Old Bell', summary: 'A prior seed.', stakes: 'Do not wake it.' },
+    },
     createdAt: now,
     updatedAt: now,
   }
@@ -150,8 +158,13 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Selected speaker: Bone (#2)')
     expect(prompt).toContain('Ash #1: The bell rings.')
     expect(prompt).toContain('Continuity summary: A bell rings under the ash.')
+    expect(prompt).toContain('TTRPG phase: exploration')
+    expect(prompt).toContain('Combat readiness: foreshadow')
+    expect(prompt).toContain('Threat level: 1')
+    expect(prompt).toContain('Last encounter seed: Title: Old Bell')
     expect(prompt).toContain('Return only a JSON object')
     expect(prompt).toContain('"ttrpgPhase"')
+    expect(prompt).toContain('Non-aftermath beats must include a concrete currentObjective')
     expect(prompt).toContain('Do not spawn combat by default')
     expect(prompt).toContain('requestedGameplayAction "start_combat"')
   })
@@ -192,13 +205,13 @@ describe('game-master beat generator helpers', () => {
     }))
 
     const noThreads = normalizeGameMasterBeatResponse(
-      '{"speakerInstruction":"Speak","stateSummary":"State","openThreads":["ignored"]}',
+      '{"speakerInstruction":"Speak","stateSummary":"State","currentObjective":null,"openThreads":["ignored"],"ttrpgPhase":"aftermath"}',
       { participants, speaker: participants[0] },
       { gameMasterAgentId: 'gm-1', limits: { ...limits, openThreadsMaxCount: 0 } }
     )
     expect(noThreads.stateAfter.openThreads).toEqual([])
     expect(noThreads).toMatchObject({
-      ttrpgPhase: 'story',
+      ttrpgPhase: 'aftermath',
       combatReadiness: 'none',
       threatLevel: null,
       requestedGameplayAction: null,
@@ -235,6 +248,32 @@ describe('game-master beat generator helpers', () => {
     )).toThrow('did not match')
   })
 
+  it('rejects structurally weak progression and unsafe combat handoff contracts', () => {
+    expect(() => normalizeGameMasterBeatResponse(
+      '{"speakerInstruction":"Speak","stateSummary":"State","ttrpgPhase":"exploration","openThreads":["Who waits?"]}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits }
+    )).toThrow('currentObjective')
+
+    expect(() => normalizeGameMasterBeatResponse(
+      '{"speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":[],"ttrpgPhase":"exploration"}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits }
+    )).toThrow('openThreads')
+
+    expect(() => normalizeGameMasterBeatResponse(
+      '{"speakerInstruction":"Fight","stateSummary":"State","currentObjective":"Survive","openThreads":["What answers?"],"ttrpgPhase":"exploration","combatReadiness":"ready","threatLevel":2,"requestedGameplayAction":"start_combat"}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits }
+    )).toThrow('combatReadiness ready')
+
+    expect(() => normalizeGameMasterBeatResponse(
+      '{"speakerInstruction":"Fight","stateSummary":"State","currentObjective":"Survive","openThreads":["What answers?"],"ttrpgPhase":"threat","combatReadiness":"ready","threatLevel":4,"requestedGameplayAction":"start_combat","encounterSeed":{"privateHp":100}}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits }
+    )).toThrow('encounterSeed')
+  })
+
   it('uses the input game-master agent id with room-scoped session and message metadata', async () => {
     const messaging = {
       startAgent: jest.fn(async () => undefined),
@@ -242,7 +281,7 @@ describe('game-master beat generator helpers', () => {
       sendSessionMessage: jest.fn(async () => ({} as Response)),
       collectStreamedResponseText: jest.fn(async () => ({
         message: null,
-        text: '{"publicNarration":"The bell tolls.","speakerInstruction":"Speak with dread.","stateSummary":"The bell has called Ash.","openThreads":[],"selectedSpeakerTokenId":1}',
+        text: '{"publicNarration":"The bell tolls.","speakerInstruction":"Speak with dread.","stateSummary":"The bell has called Ash.","currentObjective":"Answer the toll.","openThreads":["Who answers the bell?"],"selectedSpeakerTokenId":1}',
       })),
       deleteSession: jest.fn(async () => undefined),
     }
@@ -280,7 +319,124 @@ describe('game-master beat generator helpers', () => {
         selectedSpeakerTokenId: 1,
       }),
     }))
+    expect(output.metadata.gmGeneration).toEqual(expect.objectContaining({
+      status: 'accepted',
+      repairAttempted: false,
+      repaired: false,
+      initialResponseLength: expect.any(Number),
+    }))
     expect(messaging.deleteSession).toHaveBeenCalledWith('session-1')
+  })
+
+  it('repairs a collected invalid model response once and returns safe diagnostics', async () => {
+    const messaging = {
+      startAgent: jest.fn(async () => undefined),
+      createSession: jest.fn(async () => ({ sessionId: 'session-1' })),
+      sendSessionMessage: jest.fn(async () => ({} as Response)),
+      collectStreamedResponseText: jest.fn()
+        .mockResolvedValueOnce({ message: null, text: 'not json' })
+        .mockResolvedValueOnce({
+          message: null,
+          text: '{"publicNarration":"The bell tolls.","speakerInstruction":"Speak with dread.","stateSummary":"The bell has called Ash.","currentObjective":"Answer the toll.","openThreads":["Who answers the bell?"],"ttrpgPhase":"exploration","combatReadiness":"none","threatLevel":0,"requestedGameplayAction":null,"encounterSeed":null,"selectedSpeakerTokenId":1}',
+        }),
+      deleteSession: jest.fn(async () => undefined),
+    }
+    const generator = new OfficialGameMasterBeatGenerator(messaging as never)
+
+    const output = await generator.generateBeat({
+      gameMasterAgentId: 'gm-runtime-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages: [message()],
+      narrativeState: narrativeState(),
+    })
+
+    expect(output.stateAfter.currentObjective).toBe('Answer the toll.')
+    expect(output.metadata.gmGeneration).toEqual(expect.objectContaining({
+      status: 'repaired',
+      repairAttempted: true,
+      repaired: true,
+      initialErrorCategory: 'missing_json_object',
+      initialResponseLength: 'not json'.length,
+      repairResponseLength: expect.any(Number),
+      initialResponseFlags: expect.objectContaining({ hasJsonObject: false }),
+      repairResponseFlags: expect.objectContaining({ hasJsonObject: true }),
+    }))
+    expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
+    const repairPrompt = messaging.sendSessionMessage.mock.calls[1][0].content
+    expect(repairPrompt).toContain('Return only a JSON object')
+    expect(repairPrompt).toContain('selectedSpeakerTokenId must be 1')
+    expect(repairPrompt).toContain('Non-aftermath beats must include a concrete currentObjective')
+    expect(repairPrompt).not.toContain('not json')
+  })
+
+  it('throws a categorized repair failure without exposing raw model text', async () => {
+    const messaging = {
+      startAgent: jest.fn(async () => undefined),
+      createSession: jest.fn(async () => ({ sessionId: 'session-1' })),
+      sendSessionMessage: jest.fn(async () => ({} as Response)),
+      collectStreamedResponseText: jest.fn()
+        .mockResolvedValueOnce({ message: null, text: 'not json' })
+        .mockResolvedValueOnce({
+          message: null,
+          text: '{"speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":[],"ttrpgPhase":"exploration"}',
+        }),
+      deleteSession: jest.fn(async () => undefined),
+    }
+    const generator = new OfficialGameMasterBeatGenerator(messaging as never)
+
+    const thrown = await generator.generateBeat({
+      gameMasterAgentId: 'gm-runtime-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages: [message()],
+      narrativeState: narrativeState(),
+    }).catch((error) => error)
+
+    expect(thrown).toBeInstanceOf(GameMasterBeatGenerationError)
+    expect(thrown).toMatchObject({
+      name: 'GameMasterBeatGenerationError',
+      diagnostics: expect.objectContaining({
+        status: 'repair_failed',
+        repairAttempted: true,
+        repaired: false,
+        initialErrorCategory: 'missing_json_object',
+        repairErrorCategory: 'progression_contract',
+        initialResponseLength: 'not json'.length,
+        repairResponseLength: expect.any(Number),
+      }),
+    })
+    expect(thrown.message).not.toContain('not json')
+    expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not enter repair when session transport fails before model text is collected', async () => {
+    const messaging = {
+      startAgent: jest.fn(async () => undefined),
+      createSession: jest.fn(async () => ({ sessionId: 'session-1' })),
+      sendSessionMessage: jest.fn(async () => ({} as Response)),
+      collectStreamedResponseText: jest.fn(async () => {
+        throw new Error('stream down')
+      }),
+      deleteSession: jest.fn(async () => undefined),
+    }
+    const generator = new OfficialGameMasterBeatGenerator(messaging as never)
+
+    await expect(generator.generateBeat({
+      gameMasterAgentId: 'gm-runtime-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages: [message()],
+      narrativeState: narrativeState(),
+    })).rejects.toThrow('stream down')
+
+    expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(1)
   })
 
   it('keeps the character prompt unchanged unless narrative context is provided', () => {

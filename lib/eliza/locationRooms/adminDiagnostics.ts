@@ -19,12 +19,21 @@ import {
   locationRoomGameplayRepository,
   type LocationRoomGameplayRepository,
 } from './gameplay/repository'
-import type {
-  LocationRoom,
-  LocationRoomLocationDetails,
-  LocationRoomParticipant,
-  LocationRoomTick,
+import {
+  LOCATION_ROOM_TURN_INTENTS,
+  type LocationRoom,
+  type LocationRoomLocationDetails,
+  type LocationRoomParticipant,
+  type LocationRoomTick,
+  type LocationRoomTurnIntent,
 } from './types'
+import {
+  normalizeNarrativeOpenThreads,
+  normalizeNarrativeTtrpgMetadata,
+  type LocationRoomNarrativeBeat,
+  type LocationRoomNarrativeState,
+} from './narrativeTypes'
+import type { GameMasterGenerationDiagnostics } from './gameMasterGenerator'
 import type { GameplayRun } from './gameplay/types'
 
 export type LocationRoomRecommendedNextAction =
@@ -39,6 +48,10 @@ export type LocationRoomRecommendedNextAction =
   | 'trigger_location_room_tick'
   | 'run_location_room_worker'
   | 'inspect_failed_tick'
+  | 'inspect_gm_repair_failure'
+  | 'wait_for_retry'
+  | 'wait_for_cadence'
+  | 'missing_trigger_readiness'
   | 'wait_for_next_tick'
 
 export type LocationRoomHealthDiagnostics = {
@@ -91,6 +104,28 @@ export type LocationRoomHealthDiagnostics = {
     active: LocationRoomHealthTickSummary[]
     recent: LocationRoomHealthTickSummary[]
   }
+  durableIntent: {
+    active: LocationRoomHealthIntentTickSummary[]
+    recent: LocationRoomHealthIntentTickSummary[]
+    activeCounts: Record<LocationRoomTurnIntent, number>
+    recentCounts: Record<LocationRoomTurnIntent, number>
+    latestActiveIntent: LocationRoomTurnIntent | null
+    latestRecentIntent: LocationRoomTurnIntent | null
+  }
+  retryCadence: {
+    activeTickCount: number
+    dueActiveTickId: string | null
+    dueActiveTickStatus: LocationRoomTick['status'] | null
+    failedTickId: string | null
+    failedTickNextAttemptAt: string | null
+    failedTickRetryDue: boolean | null
+    failedTickNotDue: boolean
+    nextTickAt: string | null
+    nextTickDue: boolean | null
+    minutesUntilNextTick: number | null
+    tickIntervalMinutes: number
+    normalCadenceWait: boolean
+  }
   publicTranscript: {
     messageCount: number
     latestSequence: number | null
@@ -108,6 +143,25 @@ export type LocationRoomHealthDiagnostics = {
       completedAt: string | null
       lastError: string | null
     } | null
+  }
+  gmGeneration: LocationRoomHealthGameMasterGenerationSummary
+  triggerReadiness: {
+    stateExists: boolean
+    currentObjective: string | null
+    openThreadCount: number
+    ttrpgPhase: ReturnType<typeof normalizeNarrativeTtrpgMetadata>['ttrpgPhase']
+    combatReadiness: ReturnType<typeof normalizeNarrativeTtrpgMetadata>['combatReadiness']
+    threatLevel: number | null
+    requestedGameplayAction: ReturnType<typeof normalizeNarrativeTtrpgMetadata>['requestedGameplayAction']
+    triggerId: string | null
+    consumedTriggerId: string | null
+    triggerConsumed: boolean
+    hasUnconsumedTrigger: boolean
+    encounterSeedPresent: boolean
+    gameplayEnabled: boolean
+    gameplayStateStatus: string | null
+    activeEncounterStatus: string | null
+    blockers: LocationRoomTriggerReadinessBlocker[]
   }
   gameplay: {
     enabled: boolean
@@ -144,6 +198,7 @@ type LocationRoomHealthTickSummary = {
   id: string
   status: LocationRoomTick['status']
   attempts: number
+  turnIntent: LocationRoomTick['turnIntent']
   triggerType: LocationRoomTick['triggerType']
   selectedTokenId: number | null
   nextAttemptAt: string
@@ -153,6 +208,36 @@ type LocationRoomHealthTickSummary = {
   createdAt: string
   updatedAt: string
 }
+
+type LocationRoomHealthIntentTickSummary = {
+  id: string
+  status: LocationRoomTick['status']
+  turnIntent: LocationRoomTick['turnIntent']
+  triggerType: LocationRoomTick['triggerType']
+  nextAttemptAt: string
+  completedAt: string | null
+}
+
+type LocationRoomHealthGameMasterGenerationSummary = {
+  latestBeatStatus: LocationRoomNarrativeBeat['status'] | null
+  status: GameMasterGenerationDiagnostics['status'] | 'not_available'
+  repairAttempted: boolean
+  repaired: boolean
+  initialErrorCategory: string | null
+  repairErrorCategory: string | null
+  initialResponseLength: number | null
+  repairResponseLength: number | null
+  safeError: string | null
+}
+
+type LocationRoomTriggerReadinessBlocker =
+  | 'missing_narrative_state'
+  | 'missing_objective'
+  | 'missing_open_thread'
+  | 'not_combat_ready'
+  | 'missing_encounter_seed'
+  | 'missing_combat_trigger'
+  | 'combat_trigger_consumed'
 
 type GameMasterResolver = Pick<typeof gameMasterAgentService, 'resolveActiveGameMasterAgent'>
 
@@ -203,6 +288,7 @@ function serializeTick(tick: LocationRoomTick): LocationRoomHealthTickSummary {
     id: tick.id,
     status: tick.status,
     attempts: tick.attempts,
+    turnIntent: tick.turnIntent,
     triggerType: tick.triggerType,
     selectedTokenId: tick.selectedTokenId,
     nextAttemptAt: tick.nextAttemptAt,
@@ -214,8 +300,158 @@ function serializeTick(tick: LocationRoomTick): LocationRoomHealthTickSummary {
   }
 }
 
+function serializeIntentTick(tick: LocationRoomTick): LocationRoomHealthIntentTickSummary {
+  return {
+    id: tick.id,
+    status: tick.status,
+    turnIntent: tick.turnIntent,
+    triggerType: tick.triggerType,
+    nextAttemptAt: tick.nextAttemptAt,
+    completedAt: tick.completedAt,
+  }
+}
+
+function zeroIntentCounts(): Record<LocationRoomTurnIntent, number> {
+  return LOCATION_ROOM_TURN_INTENTS.reduce((counts, intent) => ({
+    ...counts,
+    [intent]: 0,
+  }), {} as Record<LocationRoomTurnIntent, number>)
+}
+
+function countIntents(ticks: LocationRoomTick[]): Record<LocationRoomTurnIntent, number> {
+  const counts = zeroIntentCounts()
+  for (const tick of ticks) counts[tick.turnIntent] += 1
+  return counts
+}
+
+function buildDurableIntentSummary(activeTicks: LocationRoomTick[], recentTicks: LocationRoomTick[]) {
+  return {
+    active: activeTicks.map(serializeIntentTick),
+    recent: recentTicks.map(serializeIntentTick),
+    activeCounts: countIntents(activeTicks),
+    recentCounts: countIntents(recentTicks),
+    latestActiveIntent: activeTicks[0]?.turnIntent ?? null,
+    latestRecentIntent: recentTicks[0]?.turnIntent ?? null,
+  }
+}
+
 function isDue(tick: Pick<LocationRoomTick, 'nextAttemptAt'>, now: Date): boolean {
   return new Date(tick.nextAttemptAt).getTime() <= now.getTime()
+}
+
+function buildRetryCadenceSummary(
+  room: LocationRoom | null,
+  activeTicks: LocationRoomTick[],
+  now: Date,
+  tickIntervalMinutes: number
+): LocationRoomHealthDiagnostics['retryCadence'] {
+  const dueActiveTick = activeTicks.find((tick) => isDue(tick, now)) ?? null
+  const failedTick = activeTicks.find((tick) => tick.status === 'failed') ?? null
+  const failedTickRetryDue = failedTick ? isDue(failedTick, now) : null
+  const nextTickAt = room?.nextTickAt ?? null
+  const nextTickMs = nextTickAt ? new Date(nextTickAt).getTime() : null
+  const nowMs = now.getTime()
+  const nextTickDue = room ? (nextTickMs === null ? true : nextTickMs <= nowMs) : null
+  const minutesUntilNextTick = nextTickMs === null
+    ? null
+    : Math.max(0, Math.ceil((nextTickMs - nowMs) / 60000))
+
+  return {
+    activeTickCount: activeTicks.length,
+    dueActiveTickId: dueActiveTick?.id ?? null,
+    dueActiveTickStatus: dueActiveTick?.status ?? null,
+    failedTickId: failedTick?.id ?? null,
+    failedTickNextAttemptAt: failedTick?.nextAttemptAt ?? null,
+    failedTickRetryDue,
+    failedTickNotDue: Boolean(failedTick && !failedTickRetryDue),
+    nextTickAt,
+    nextTickDue,
+    minutesUntilNextTick,
+    tickIntervalMinutes,
+    normalCadenceWait: Boolean(room?.tickEnabled && activeTicks.length === 0 && nextTickAt && nextTickDue === false),
+  }
+}
+
+function safeMetadataObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+function safeCategory(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.replace(/[^a-z0-9_.:-]/gi, '').trim()
+  return trimmed ? trimmed.slice(0, 80) : null
+}
+
+function safeLength(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null
+  return Math.max(0, Math.floor(value))
+}
+
+function summarizeGmGeneration(beat: LocationRoomNarrativeBeat | null): LocationRoomHealthGameMasterGenerationSummary {
+  const gmGeneration = safeMetadataObject(beat?.metadata.gmGeneration)
+  const status = gmGeneration?.status === 'accepted' || gmGeneration?.status === 'repaired' || gmGeneration?.status === 'repair_failed'
+    ? gmGeneration.status
+    : 'not_available'
+
+  return {
+    latestBeatStatus: beat?.status ?? null,
+    status,
+    repairAttempted: gmGeneration?.repairAttempted === true,
+    repaired: gmGeneration?.repaired === true,
+    initialErrorCategory: safeCategory(gmGeneration?.initialErrorCategory),
+    repairErrorCategory: safeCategory(gmGeneration?.repairErrorCategory),
+    initialResponseLength: safeLength(gmGeneration?.initialResponseLength),
+    repairResponseLength: safeLength(gmGeneration?.repairResponseLength),
+    safeError: sanitizeStoredError(beat?.lastError, SAFE_NARRATIVE_ERROR),
+  }
+}
+
+function buildTriggerReadinessSummary(
+  narrativeState: LocationRoomNarrativeState | null,
+  gameplayEnabled: boolean,
+  gameplayStateStatus: string | null,
+  activeEncounterStatus: string | null
+): LocationRoomHealthDiagnostics['triggerReadiness'] {
+  const ttrpg = normalizeNarrativeTtrpgMetadata(narrativeState?.metadata)
+  const openThreads = normalizeNarrativeOpenThreads(narrativeState?.openThreads)
+  const triggerId = ttrpg.lastCombatTriggerBeatId
+  const consumedTriggerId = ttrpg.consumedCombatTriggerBeatId
+  const triggerConsumed = Boolean(triggerId && consumedTriggerId === triggerId)
+  const hasUnconsumedTrigger = ttrpg.requestedGameplayAction === 'start_combat' && Boolean(triggerId) && !triggerConsumed
+  const blockers: LocationRoomTriggerReadinessBlocker[] = []
+
+  if (!narrativeState) {
+    blockers.push('missing_narrative_state')
+  } else {
+    if (!narrativeState.currentObjective) blockers.push('missing_objective')
+    if (ttrpg.ttrpgPhase !== 'aftermath' && openThreads.length === 0) blockers.push('missing_open_thread')
+  }
+
+  if (ttrpg.requestedGameplayAction === 'start_combat') {
+    if (ttrpg.ttrpgPhase !== 'threat' || ttrpg.combatReadiness !== 'ready') blockers.push('not_combat_ready')
+    if (!ttrpg.lastEncounterSeed) blockers.push('missing_encounter_seed')
+    if (!triggerId) blockers.push('missing_combat_trigger')
+    if (triggerConsumed) blockers.push('combat_trigger_consumed')
+  }
+
+  return {
+    stateExists: Boolean(narrativeState),
+    currentObjective: narrativeState?.currentObjective ?? null,
+    openThreadCount: openThreads.length,
+    ttrpgPhase: ttrpg.ttrpgPhase,
+    combatReadiness: ttrpg.combatReadiness,
+    threatLevel: ttrpg.threatLevel,
+    requestedGameplayAction: ttrpg.requestedGameplayAction,
+    triggerId,
+    consumedTriggerId,
+    triggerConsumed,
+    hasUnconsumedTrigger,
+    encounterSeedPresent: Boolean(ttrpg.lastEncounterSeed),
+    gameplayEnabled,
+    gameplayStateStatus,
+    activeEncounterStatus,
+    blockers,
+  }
 }
 
 function isGameplayEnabledForLocation(locationId: string): boolean {
@@ -277,8 +513,11 @@ function recommendedNextAction(input: {
   participantCount: number
   room: LocationRoom | null
   activeTicks: LocationRoomTick[]
+  recentTicks: LocationRoomTick[]
   publicMessageCount: number
-  now: Date
+  retryCadence: LocationRoomHealthDiagnostics['retryCadence']
+  gmGeneration: LocationRoomHealthDiagnostics['gmGeneration']
+  triggerReadiness: LocationRoomHealthDiagnostics['triggerReadiness']
 }): LocationRoomRecommendedNextAction {
   if (!input.locationExists) {
     return input.canonical.canonicalLocationId ? 'use_canonical_location_11' : 'location_not_found'
@@ -295,13 +534,16 @@ function recommendedNextAction(input: {
   if (!input.room) return 'trigger_location_room_tick'
   if (!input.room.tickEnabled) return 'enable_room_ticks'
 
-  const dueActive = input.activeTicks.find((tick) => isDue(tick, input.now))
-  if (dueActive) return 'run_location_room_worker'
-  if (input.activeTicks.some((tick) => tick.status === 'failed')) return 'inspect_failed_tick'
+  if (input.retryCadence.dueActiveTickId) return 'run_location_room_worker'
+  if (input.gmGeneration.status === 'repair_failed') return 'inspect_gm_repair_failure'
+  if (input.retryCadence.failedTickNotDue) return 'wait_for_retry'
+  if (input.recentTicks.some((tick) => tick.status === 'dead')) return 'inspect_failed_tick'
   if (input.publicMessageCount === 0) return 'trigger_location_room_tick'
-  if (!input.room.nextTickAt || new Date(input.room.nextTickAt).getTime() <= input.now.getTime()) {
-    return 'run_location_room_worker'
-  }
+
+  const triggerBlockers = input.triggerReadiness.blockers.filter((blocker) => blocker !== 'missing_narrative_state')
+  if (triggerBlockers.length > 0) return 'missing_trigger_readiness'
+  if (input.retryCadence.nextTickDue) return 'run_location_room_worker'
+  if (input.retryCadence.normalCadenceWait) return 'wait_for_cadence'
 
   return 'healthy'
 }
@@ -367,6 +609,11 @@ export class LocationRoomAdminDiagnosticsService {
     }
 
     if (!location) {
+      const durableIntent = buildDurableIntentSummary([], [])
+      const retryCadence = buildRetryCadenceSummary(null, [], now, config.tickIntervalMinutes)
+      const gmGeneration = summarizeGmGeneration(null)
+      const triggerReadiness = buildTriggerReadinessSummary(null, gameplayEnabledForLocation, null, null)
+
       return {
         generatedAt: now.toISOString(),
         location: {
@@ -392,6 +639,8 @@ export class LocationRoomAdminDiagnosticsService {
           updatedAt: null,
         },
         ticks: { active: [], recent: [] },
+        durableIntent,
+        retryCadence,
         publicTranscript: { messageCount: 0, latestSequence: null, latestCreatedAt: null },
         narrative: {
           enabled: config.narrativeEnabled,
@@ -401,6 +650,8 @@ export class LocationRoomAdminDiagnosticsService {
           currentObjective: null,
           latestBeat: null,
         },
+        gmGeneration,
+        triggerReadiness,
         gameplay: {
           enabled: gameplayEnabledForLocation,
           link: null,
@@ -420,8 +671,11 @@ export class LocationRoomAdminDiagnosticsService {
           participantCount: 0,
           room: null,
           activeTicks: [],
+          recentTicks: [],
           publicMessageCount: 0,
-          now,
+          retryCadence,
+          gmGeneration,
+          triggerReadiness,
         }),
       }
     }
@@ -464,6 +718,15 @@ export class LocationRoomAdminDiagnosticsService {
       : [null, [], null, null, [], [], null, []] as const
 
     const latestBeat = latestBeats[0] ?? null
+    const durableIntent = buildDurableIntentSummary(activeTicks, recentTicks)
+    const retryCadence = buildRetryCadenceSummary(room, activeTicks, now, config.tickIntervalMinutes)
+    const gmGeneration = summarizeGmGeneration(latestBeat)
+    const triggerReadiness = buildTriggerReadinessSummary(
+      narrativeState,
+      gameplayEnabledForLocation,
+      gameplayState?.status ?? null,
+      activeEncounter?.status ?? null
+    )
     const diagnostics: LocationRoomHealthDiagnostics = {
       generatedAt: now.toISOString(),
       location: {
@@ -496,6 +759,8 @@ export class LocationRoomAdminDiagnosticsService {
         active: activeTicks.map(serializeTick),
         recent: recentTicks.map(serializeTick),
       },
+      durableIntent,
+      retryCadence,
       publicTranscript,
       narrative: {
         enabled: config.narrativeEnabled,
@@ -510,6 +775,8 @@ export class LocationRoomAdminDiagnosticsService {
           lastError: sanitizeStoredError(latestBeat.lastError, SAFE_NARRATIVE_ERROR),
         } : null,
       },
+      gmGeneration,
+      triggerReadiness,
       gameplay: {
         enabled: gameplayEnabledForLocation,
         link: room ? `/api/admin/eliza/location-rooms/${encodeURIComponent(locationId)}/gameplay` : null,
@@ -532,8 +799,11 @@ export class LocationRoomAdminDiagnosticsService {
       participantCount: participants.length,
       room,
       activeTicks,
+      recentTicks,
       publicMessageCount: publicTranscript.messageCount,
-      now,
+      retryCadence,
+      gmGeneration,
+      triggerReadiness,
     })
 
     return diagnostics

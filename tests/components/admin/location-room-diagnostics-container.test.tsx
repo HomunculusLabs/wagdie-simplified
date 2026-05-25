@@ -29,6 +29,28 @@ function diagnostics(overrides: Partial<LocationRoomHealthDiagnostics> = {}): Lo
       updatedAt: '2026-05-23T11:00:00.000Z',
     },
     ticks: { active: [], recent: [] },
+    durableIntent: {
+      active: [],
+      recent: [],
+      activeCounts: { auto: 0, story: 0, combat: 0 },
+      recentCounts: { auto: 1, story: 0, combat: 0 },
+      latestActiveIntent: null,
+      latestRecentIntent: 'auto',
+    },
+    retryCadence: {
+      activeTickCount: 0,
+      dueActiveTickId: null,
+      dueActiveTickStatus: null,
+      failedTickId: null,
+      failedTickNextAttemptAt: null,
+      failedTickRetryDue: null,
+      failedTickNotDue: false,
+      nextTickAt: '2026-05-23T13:00:00.000Z',
+      nextTickDue: false,
+      minutesUntilNextTick: 120,
+      tickIntervalMinutes: 360,
+      normalCadenceWait: true,
+    },
     publicTranscript: { messageCount: 1, latestSequence: 4, latestCreatedAt: '2026-05-23T11:01:00.000Z' },
     narrative: {
       enabled: true,
@@ -38,6 +60,35 @@ function diagnostics(overrides: Partial<LocationRoomHealthDiagnostics> = {}): Lo
       currentObjective: 'Answer the toll',
       latestBeat: null,
     },
+    gmGeneration: {
+      latestBeatStatus: null,
+      status: 'not_available',
+      repairAttempted: false,
+      repaired: false,
+      initialErrorCategory: null,
+      repairErrorCategory: null,
+      initialResponseLength: null,
+      repairResponseLength: null,
+      safeError: null,
+    },
+    triggerReadiness: {
+      stateExists: true,
+      currentObjective: 'Answer the toll',
+      openThreadCount: 1,
+      ttrpgPhase: 'exploration',
+      combatReadiness: 'foreshadow',
+      threatLevel: 2,
+      requestedGameplayAction: null,
+      triggerId: null,
+      consumedTriggerId: null,
+      triggerConsumed: false,
+      hasUnconsumedTrigger: false,
+      encounterSeedPresent: false,
+      gameplayEnabled: false,
+      gameplayStateStatus: null,
+      activeEncounterStatus: null,
+      blockers: [],
+    },
     gameplay: {
       enabled: false,
       link: '/api/admin/eliza/location-rooms/11/gameplay',
@@ -46,6 +97,8 @@ function diagnostics(overrides: Partial<LocationRoomHealthDiagnostics> = {}): Lo
       recentTurnCount: 0,
       latestTurnStatus: null,
       rewardClaimCount: 0,
+      activeRun: null,
+      recentRuns: [],
     },
     recommendedNextAction: 'healthy',
     ...overrides,
@@ -76,6 +129,8 @@ describe('LocationRoomDiagnosticsContainer', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/admin/eliza/location-rooms/11/health', { cache: 'no-store' })
     expect(screen.getByText("11 The Crow's Den")).toBeInTheDocument()
     expect(screen.getByText('#7 Ash')).toBeInTheDocument()
+    expect(screen.getByText('auto 0, story 0, combat 0')).toBeInTheDocument()
+    expect(screen.getByText('not_available')).toBeInTheDocument()
   })
 
   it('queries an operator-entered location id', async () => {

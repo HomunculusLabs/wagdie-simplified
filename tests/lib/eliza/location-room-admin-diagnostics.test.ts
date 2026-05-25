@@ -21,6 +21,10 @@ import type {
   LocationRoomParticipant,
   LocationRoomTick,
 } from '@/lib/eliza/locationRooms/types'
+import type {
+  LocationRoomNarrativeBeat,
+  LocationRoomNarrativeState,
+} from '@/lib/eliza/locationRooms/narrativeTypes'
 import type { GameplayRun } from '@/lib/eliza/locationRooms/gameplay/types'
 
 const now = new Date('2026-05-23T12:00:00.000Z')
@@ -63,6 +67,7 @@ function tick(overrides: Partial<LocationRoomTick> = {}): LocationRoomTick {
     roomId: 'room-11',
     locationId: '11',
     gameplayRunId: null,
+    turnIntent: 'auto',
     triggerType: 'scheduled',
     requestedByWallet: null,
     requestedByTokenId: null,
@@ -77,6 +82,55 @@ function tick(overrides: Partial<LocationRoomTick> = {}): LocationRoomTick {
     lastError: null,
     createdAt: '2026-05-23T11:00:00.000Z',
     updatedAt: '2026-05-23T11:01:00.000Z',
+    ...overrides,
+  }
+}
+
+function narrativeState(overrides: Partial<LocationRoomNarrativeState> = {}): LocationRoomNarrativeState {
+  return {
+    id: 'narrative-state-1',
+    roomId: 'room-11',
+    locationId: '11',
+    stateSummary: 'The bell waits above the bone toll.',
+    currentObjective: 'Answer the toll.',
+    openThreads: ['The bellkeeper watches.'],
+    metadata: {
+      ttrpgPhase: 'exploration',
+      combatReadiness: 'foreshadow',
+      threatLevel: 2,
+      requestedGameplayAction: null,
+      lastEncounterSeed: null,
+      lastCombatTriggerBeatId: null,
+      consumedCombatTriggerBeatId: null,
+    },
+    createdAt: '2026-05-23T11:00:00.000Z',
+    updatedAt: '2026-05-23T11:01:00.000Z',
+    ...overrides,
+  }
+}
+
+function narrativeBeat(overrides: Partial<LocationRoomNarrativeBeat> = {}): LocationRoomNarrativeBeat {
+  return {
+    id: 'beat-1',
+    roomId: 'room-11',
+    locationId: '11',
+    tickId: 'tick-1',
+    status: 'completed',
+    selectedTokenId: 7,
+    gameMasterAgentId: 'gm-agent-1',
+    publicNarration: 'The bell answers.',
+    speakerInstruction: 'Answer carefully.',
+    stateBefore: {},
+    stateAfter: {
+      stateSummary: 'The bell waits above the bone toll.',
+      currentObjective: 'Answer the toll.',
+      openThreads: ['The bellkeeper watches.'],
+    },
+    metadata: {},
+    lastError: null,
+    createdAt: '2026-05-23T11:00:00.000Z',
+    updatedAt: '2026-05-23T11:01:00.000Z',
+    completedAt: '2026-05-23T11:01:00.000Z',
     ...overrides,
   }
 }
@@ -142,6 +196,7 @@ function makeRoomRepository(overrides: Partial<jest.Mocked<LocationRoomRepositor
     ensureRoomForLocation: jest.fn(async () => baseRoom),
     listDueRooms: jest.fn(async () => [baseRoom]),
     enqueueTick: jest.fn(),
+    promoteOpenTickIntent: jest.fn(),
     attachTickToGameplayRun: jest.fn(),
     countCompletedGameplayTurnsForRun: jest.fn(),
     findOpenTickForRoom: jest.fn(),
@@ -179,7 +234,9 @@ function makeMembershipRepository(participants = [participant(7), participant(8)
   }
 }
 
-function makeNarrativeRepository(): jest.Mocked<LocationRoomNarrativeRepository> {
+function makeNarrativeRepository(
+  overrides: Partial<jest.Mocked<LocationRoomNarrativeRepository>> = {}
+): jest.Mocked<LocationRoomNarrativeRepository> {
   return {
     findStateByRoomId: jest.fn(async () => null),
     ensureStateForRoom: jest.fn(),
@@ -193,6 +250,7 @@ function makeNarrativeRepository(): jest.Mocked<LocationRoomNarrativeRepository>
     markBeatCompleted: jest.fn(),
     markBeatFailed: jest.fn(),
     markBeatDead: jest.fn(),
+    ...overrides,
   } as jest.Mocked<LocationRoomNarrativeRepository>
 }
 
@@ -235,13 +293,14 @@ function makeGameplayRepository(): jest.Mocked<LocationRoomGameplayRepository> {
 function makeService(overrides: {
   roomRepository?: jest.Mocked<LocationRoomRepository>
   membershipRepository?: jest.Mocked<LocationRoomMembershipRepository>
+  narrativeRepository?: jest.Mocked<LocationRoomNarrativeRepository>
   gameplayRepository?: jest.Mocked<LocationRoomGameplayRepository>
   gameMasterResolver?: { resolveActiveGameMasterAgent: jest.Mock }
 } = {}) {
   return new LocationRoomAdminDiagnosticsService({
     roomRepository: overrides.roomRepository ?? makeRoomRepository(),
     membershipRepository: overrides.membershipRepository ?? makeMembershipRepository(),
-    narrativeRepository: makeNarrativeRepository(),
+    narrativeRepository: overrides.narrativeRepository ?? makeNarrativeRepository(),
     gameplayRepository: overrides.gameplayRepository ?? makeGameplayRepository(),
     gameMasterResolver: overrides.gameMasterResolver ?? {
       resolveActiveGameMasterAgent: jest.fn(async () => gmResolution()),
@@ -303,7 +362,7 @@ describe('LocationRoomAdminDiagnosticsService', () => {
     expect(result.recommendedNextAction).toBe('run_location_room_worker')
   })
 
-  it('sanitizes failed tick errors and recommends inspecting non-due failures', async () => {
+  it('sanitizes failed tick errors and recommends waiting for non-due retries', async () => {
     const roomRepository = makeRoomRepository({
       listActiveTicksForRoom: jest.fn(async () => [tick({
         id: 'tick-failed',
@@ -322,7 +381,12 @@ describe('LocationRoomAdminDiagnosticsService', () => {
       lastError: 'Location room tick failed. Check server logs for details.',
     })
     expect(JSON.stringify(result)).not.toContain('raw provider stack trace')
-    expect(result.recommendedNextAction).toBe('inspect_failed_tick')
+    expect(result.retryCadence).toMatchObject({
+      failedTickId: 'tick-failed',
+      failedTickRetryDue: false,
+      failedTickNotDue: true,
+    })
+    expect(result.recommendedNextAction).toBe('wait_for_retry')
   })
 
   it('recommends running the worker when the room next tick is due without active ticks', async () => {
@@ -407,6 +471,135 @@ describe('LocationRoomAdminDiagnosticsService', () => {
     expect(result.recommendedNextAction).toBe('use_canonical_location_11')
   })
 
+  it('projects durable intent, retry cadence, safe GM repair failure, and trigger readiness', async () => {
+    mutableNarrative.enabled = true
+    mutableGameplay.enabled = true
+    mutableGameplay.locationAllowlist = ['11']
+    const roomRepository = makeRoomRepository({
+      listActiveTicksForRoom: jest.fn(async () => [tick({
+        id: 'tick-story-failed',
+        status: 'failed',
+        turnIntent: 'story',
+        nextAttemptAt: '2026-05-23T12:30:00.000Z',
+        completedAt: null,
+        lastError: 'raw retry stack',
+      })]),
+      listRecentTicksForRoom: jest.fn(async () => [
+        tick({ id: 'tick-combat', turnIntent: 'combat', triggerType: 'admin' }),
+        tick({ id: 'tick-auto', turnIntent: 'auto', triggerType: 'scheduled' }),
+      ]),
+    })
+    const narrativeRepository = makeNarrativeRepository({
+      findStateByRoomId: jest.fn(async () => narrativeState({
+        metadata: {
+          ttrpgPhase: 'threat',
+          combatReadiness: 'ready',
+          threatLevel: 5,
+          requestedGameplayAction: 'start_combat',
+          lastEncounterSeed: { title: 'Bell Horror' },
+          lastCombatTriggerBeatId: 'beat-1',
+          consumedCombatTriggerBeatId: null,
+        },
+      })),
+      listRecentBeatsByRoomId: jest.fn(async () => [narrativeBeat({
+        status: 'failed',
+        lastError: 'raw malformed JSON response',
+        metadata: {
+          gmGeneration: {
+            status: 'repair_failed',
+            repairAttempted: true,
+            repaired: false,
+            initialErrorCategory: 'invalid_json',
+            repairErrorCategory: 'progression_contract',
+            initialResponseLength: 144,
+            repairResponseLength: 88,
+            rawResponseText: 'do not expose',
+          },
+        },
+      })]),
+    })
+
+    const result = await makeService({ roomRepository, narrativeRepository }).inspectLocation('11')
+
+    expect(result.durableIntent.activeCounts).toEqual({ auto: 0, story: 1, combat: 0 })
+    expect(result.durableIntent.recentCounts).toEqual({ auto: 1, story: 0, combat: 1 })
+    expect(result.ticks.active[0]).toMatchObject({ id: 'tick-story-failed', turnIntent: 'story' })
+    expect(result.retryCadence).toMatchObject({
+      failedTickId: 'tick-story-failed',
+      failedTickRetryDue: false,
+      failedTickNotDue: true,
+    })
+    expect(result.gmGeneration).toMatchObject({
+      latestBeatStatus: 'failed',
+      status: 'repair_failed',
+      repairAttempted: true,
+      repaired: false,
+      initialErrorCategory: 'invalid_json',
+      repairErrorCategory: 'progression_contract',
+      initialResponseLength: 144,
+      repairResponseLength: 88,
+      safeError: 'Narrative beat failed. Check server logs for details.',
+    })
+    expect(result.triggerReadiness).toMatchObject({
+      ttrpgPhase: 'threat',
+      combatReadiness: 'ready',
+      requestedGameplayAction: 'start_combat',
+      triggerId: 'beat-1',
+      hasUnconsumedTrigger: true,
+      encounterSeedPresent: true,
+      blockers: [],
+    })
+    expect(JSON.stringify(result)).not.toContain('raw malformed JSON response')
+    expect(JSON.stringify(result)).not.toContain('do not expose')
+    expect(result.recommendedNextAction).toBe('inspect_gm_repair_failure')
+  })
+
+  it('recommends missing trigger/readiness when narrative progression lacks required structure', async () => {
+    mutableNarrative.enabled = true
+    const narrativeRepository = makeNarrativeRepository({
+      findStateByRoomId: jest.fn(async () => narrativeState({
+        currentObjective: null,
+        openThreads: [],
+        metadata: {
+          ttrpgPhase: 'exploration',
+          combatReadiness: 'none',
+          threatLevel: 1,
+          requestedGameplayAction: 'start_combat',
+          lastEncounterSeed: null,
+          lastCombatTriggerBeatId: null,
+          consumedCombatTriggerBeatId: null,
+        },
+      })),
+    })
+
+    const result = await makeService({ narrativeRepository }).inspectLocation('11')
+
+    expect(result.triggerReadiness.blockers).toEqual(expect.arrayContaining([
+      'missing_objective',
+      'missing_open_thread',
+      'not_combat_ready',
+      'missing_encounter_seed',
+      'missing_combat_trigger',
+    ]))
+    expect(result.recommendedNextAction).toBe('missing_trigger_readiness')
+  })
+
+  it('reports dead recent ticks as failed ticks to inspect', async () => {
+    const roomRepository = makeRoomRepository({
+      listActiveTicksForRoom: jest.fn(async () => []),
+      listRecentTicksForRoom: jest.fn(async () => [tick({ id: 'tick-dead', status: 'dead', lastError: 'raw terminal error' })]),
+    })
+
+    const result = await makeService({ roomRepository }).inspectLocation('11')
+
+    expect(result.ticks.recent[0]).toMatchObject({
+      id: 'tick-dead',
+      status: 'dead',
+      lastError: 'Location room tick failed. Check server logs for details.',
+    })
+    expect(result.recommendedNextAction).toBe('inspect_failed_tick')
+  })
+
   it('reports safe active and recent gameplay run status in diagnostics', async () => {
     mutableGameplay.enabled = true
     mutableGameplay.locationAllowlist = ['11']
@@ -445,12 +638,13 @@ describe('LocationRoomAdminDiagnosticsService', () => {
     expect(JSON.stringify(result)).not.toContain('private')
   })
 
-  it('reports healthy canonical rooms with participants, messages, and no active due ticks', async () => {
+  it('reports cadence wait for canonical rooms with participants, messages, and no active due ticks', async () => {
     const result = await makeService().inspectLocation('11')
 
     expect(result.location).toMatchObject({ id: '11', chainLocationId: '11', exists: true })
     expect(result.participants.count).toBe(2)
     expect(result.publicTranscript.messageCount).toBe(1)
-    expect(result.recommendedNextAction).toBe('healthy')
+    expect(result.retryCadence.normalCadenceWait).toBe(true)
+    expect(result.recommendedNextAction).toBe('wait_for_cadence')
   })
 })

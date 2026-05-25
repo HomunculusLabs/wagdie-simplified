@@ -1,9 +1,13 @@
 import { gameMasterAgentService } from '@/lib/eliza/gameMasterAgent/service'
 import {
   GAME_MASTER_AUTHOR_NAME,
+  GameMasterBeatGenerationError,
   officialGameMasterBeatGenerator,
+  validateGameMasterBeatProgressionContract,
   type GameMasterBeatGenerator,
   type GameMasterBeatOutput,
+  type GameMasterGenerationDiagnostics,
+  type GameMasterGenerationResponseFlags,
 } from './gameMasterGenerator'
 import {
   locationRoomNarrativeRepository,
@@ -101,7 +105,7 @@ function beatToOutput(
 
   const ttrpg = normalizeNarrativeTtrpgMetadata(beat.metadata)
 
-  return {
+  const output = {
     gameMasterAgentId: beat.gameMasterAgentId ?? fallbackGameMasterAgentId,
     publicNarration: beat.publicNarration,
     speakerInstruction: beat.speakerInstruction,
@@ -113,6 +117,9 @@ function beatToOutput(
     encounterSeed: ttrpg.lastEncounterSeed,
     metadata: beat.metadata,
   }
+
+  validateGameMasterBeatProgressionContract(output)
+  return output
 }
 
 function toGameMasterBeatMetadata(output: GameMasterBeatOutput): Record<string, unknown> {
@@ -124,6 +131,80 @@ function toGameMasterBeatMetadata(output: GameMasterBeatOutput): Record<string, 
     requestedGameplayAction: output.requestedGameplayAction,
     encounterSeed: output.encounterSeed,
   }
+}
+
+const SAFE_GM_GENERATION_ERROR_CATEGORIES = new Set([
+  'empty_response',
+  'missing_json_object',
+  'invalid_json',
+  'speaker_constraint',
+  'token_constraint',
+  'progression_contract',
+  'missing_required_field',
+  'validation_error',
+  'repair_transport_error',
+])
+
+function normalizeDiagnosticsCategory(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  return SAFE_GM_GENERATION_ERROR_CATEGORIES.has(value) ? value : undefined
+}
+
+function normalizeDiagnosticsLength(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  return Math.max(0, Math.min(100000, Math.floor(value)))
+}
+
+function normalizeDiagnosticsFlags(value: unknown): GameMasterGenerationResponseFlags | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const flags = value as Partial<Record<keyof GameMasterGenerationResponseFlags, unknown>>
+  return {
+    empty: flags.empty === true,
+    hasJsonObject: flags.hasJsonObject === true,
+    fencedJson: flags.fencedJson === true,
+    startsWithJsonObject: flags.startsWithJsonObject === true,
+  }
+}
+
+function sanitizeGameMasterGenerationDiagnostics(value: unknown): GameMasterGenerationDiagnostics | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const source = value as Partial<Record<keyof GameMasterGenerationDiagnostics, unknown>>
+  const status = source.status === 'accepted' || source.status === 'repaired' || source.status === 'repair_failed'
+    ? source.status
+    : null
+  if (!status) return null
+
+  return {
+    status,
+    repairAttempted: source.repairAttempted === true,
+    repaired: source.repaired === true,
+    ...(normalizeDiagnosticsCategory(source.initialErrorCategory)
+      ? { initialErrorCategory: normalizeDiagnosticsCategory(source.initialErrorCategory) }
+      : {}),
+    ...(normalizeDiagnosticsCategory(source.repairErrorCategory)
+      ? { repairErrorCategory: normalizeDiagnosticsCategory(source.repairErrorCategory) }
+      : {}),
+    ...(normalizeDiagnosticsLength(source.initialResponseLength) !== undefined
+      ? { initialResponseLength: normalizeDiagnosticsLength(source.initialResponseLength) }
+      : {}),
+    ...(normalizeDiagnosticsLength(source.repairResponseLength) !== undefined
+      ? { repairResponseLength: normalizeDiagnosticsLength(source.repairResponseLength) }
+      : {}),
+    ...(normalizeDiagnosticsFlags(source.initialResponseFlags)
+      ? { initialResponseFlags: normalizeDiagnosticsFlags(source.initialResponseFlags) }
+      : {}),
+    ...(normalizeDiagnosticsFlags(source.repairResponseFlags)
+      ? { repairResponseFlags: normalizeDiagnosticsFlags(source.repairResponseFlags) }
+      : {}),
+  }
+}
+
+function getGameMasterGenerationDiagnostics(error: unknown): GameMasterGenerationDiagnostics | null {
+  if (error instanceof GameMasterBeatGenerationError) {
+    return sanitizeGameMasterGenerationDiagnostics(error.diagnostics)
+  }
+  if (!error || typeof error !== 'object') return null
+  return sanitizeGameMasterGenerationDiagnostics((error as { diagnostics?: unknown }).diagnostics)
 }
 
 function shouldAppendGameMasterMessage(beat: LocationRoomNarrativeBeat, output: GameMasterBeatOutput): boolean {
@@ -172,15 +253,28 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
     if (isUsableGeneratedBeat(beat)) {
       gameMasterOutput = beatToOutput(beat, beatGameMasterAgentId)
     } else {
-      gameMasterOutput = await this.gameMasterGenerator.generateBeat({
-        gameMasterAgentId: beatGameMasterAgentId,
-        room: input.room,
-        tick: input.tick,
-        participants: input.participants,
-        speaker: input.speaker,
-        recentMessages: input.recentMessages,
-        narrativeState,
-      })
+      try {
+        gameMasterOutput = await this.gameMasterGenerator.generateBeat({
+          gameMasterAgentId: beatGameMasterAgentId,
+          room: input.room,
+          tick: input.tick,
+          participants: input.participants,
+          speaker: input.speaker,
+          recentMessages: input.recentMessages,
+          narrativeState,
+        })
+      } catch (error) {
+        const gmGeneration = getGameMasterGenerationDiagnostics(error)
+        if (gmGeneration) {
+          await this.narrativeRepository.markBeatFailed(beat.id, error, {
+            metadata: {
+              ...beat.metadata,
+              gmGeneration,
+            },
+          }).catch(() => null)
+        }
+        throw error
+      }
 
       beat = await this.narrativeRepository.storeBeatGameMasterOutput(beat.id, {
         gameMasterAgentId: gameMasterOutput.gameMasterAgentId,

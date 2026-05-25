@@ -23,7 +23,11 @@ jest.mock('@/lib/eliza/gameMasterAgent/service', () => ({
 }))
 
 import { DefaultLocationRoomNarrativeCoordinator } from '@/lib/eliza/locationRooms/narrativeCoordinator'
-import type { GameMasterBeatGenerator } from '@/lib/eliza/locationRooms/gameMasterGenerator'
+import {
+  GameMasterBeatGenerationError,
+  type GameMasterBeatGenerator,
+  type GameMasterGenerationDiagnostics,
+} from '@/lib/eliza/locationRooms/gameMasterGenerator'
 import type { LocationRoomNarrativeRepository } from '@/lib/eliza/locationRooms/narrativeRepository'
 import type {
   LocationRoomNarrativeBeat,
@@ -59,6 +63,7 @@ function tick(overrides: Partial<LocationRoomTick> = {}): LocationRoomTick {
     roomId: 'room-1',
     locationId: 'loc-1',
     gameplayRunId: null,
+    turnIntent: 'auto',
     triggerType: 'scheduled',
     requestedByWallet: null,
     requestedByTokenId: null,
@@ -154,6 +159,7 @@ function makeRepository(): jest.Mocked<LocationRoomRepository> {
     ensureRoomForLocation: jest.fn(),
     listDueRooms: jest.fn(),
     enqueueTick: jest.fn(),
+    promoteOpenTickIntent: jest.fn(),
     findRecentCompletedOwnerTick: jest.fn(),
     findOldestProcessableTickForRoom: jest.fn(),
     findNonStaleProcessingTickForRoom: jest.fn(),
@@ -380,7 +386,7 @@ describe('location room narrative coordinator', () => {
       stateAfter: {
         stateSummary: 'The stored state survives retry.',
         currentObjective: 'Keep retry idempotent.',
-        openThreads: [],
+        openThreads: ['Stored unresolved thread.'],
       },
     }))
     const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
@@ -416,6 +422,107 @@ describe('location room narrative coordinator', () => {
         stateSummary: 'The stored state survives retry.',
       }),
     }))
+  })
+
+  it('marks a failed game-master repair on the beat without appending public output', async () => {
+    const repository = makeRepository()
+    const narrativeRepository = makeNarrativeRepository()
+    const diagnostics: GameMasterGenerationDiagnostics = {
+      status: 'repair_failed',
+      repairAttempted: true,
+      repaired: false,
+      initialErrorCategory: 'invalid_json',
+      repairErrorCategory: 'progression_contract',
+      initialResponseLength: 12,
+      repairResponseLength: 83,
+      initialResponseFlags: {
+        empty: false,
+        hasJsonObject: true,
+        fencedJson: false,
+        startsWithJsonObject: true,
+      },
+      repairResponseFlags: {
+        empty: false,
+        hasJsonObject: true,
+        fencedJson: false,
+        startsWithJsonObject: true,
+      },
+    }
+    const error = new GameMasterBeatGenerationError('Game-master beat repair failed (initial: invalid_json, repair: progression_contract)', diagnostics)
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => {
+        throw error
+      }),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    await expect(coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [],
+    })).rejects.toThrow('Game-master beat repair failed')
+
+    expect(narrativeRepository.markBeatFailed).toHaveBeenCalledWith('beat-1', error, {
+      metadata: expect.objectContaining({
+        gmGeneration: diagnostics,
+      }),
+    })
+    expect(repository.appendMessage).not.toHaveBeenCalled()
+    expect(turnGenerator.generateTurn).not.toHaveBeenCalled()
+    expect(narrativeRepository.updateState).not.toHaveBeenCalled()
+    expect(narrativeRepository.storeBeatGameMasterOutput).not.toHaveBeenCalled()
+  })
+
+  it('rejects stored generated output that no longer satisfies the guided progression contract', async () => {
+    const repository = makeRepository()
+    const narrativeRepository = makeNarrativeRepository(beat({
+      status: 'failed',
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'The stored bell tolls once.',
+      speakerInstruction: 'Use the stored instruction.',
+      stateAfter: {
+        stateSummary: 'The stored state is too weak.',
+        currentObjective: 'Keep retry idempotent.',
+        openThreads: [],
+      },
+    }))
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    await expect(coordinator.processTurn({
+      room: room(),
+      tick: tick({ attempts: 2 }),
+      speaker: participants[0],
+      participants,
+      recentMessages: [],
+    })).rejects.toThrow('openThreads')
+
+    expect(gameMasterGenerator.generateBeat).not.toHaveBeenCalled()
+    expect(repository.appendMessage).not.toHaveBeenCalled()
+    expect(turnGenerator.generateTurn).not.toHaveBeenCalled()
+    expect(narrativeRepository.updateState).not.toHaveBeenCalled()
   })
 
   it('returns the appended character message even when post-append narrative bookkeeping fails', async () => {

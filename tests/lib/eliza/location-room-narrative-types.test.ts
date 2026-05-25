@@ -43,7 +43,15 @@ describe('location room narrative TTRPG metadata helpers', () => {
       stakes: 'Survive the toll.',
     })
 
-    expect(mergeNarrativeTtrpgMetadata({ privateNote: 'keep' }, {
+    expect(mergeNarrativeTtrpgMetadata({
+      privateNote: 'keep',
+      gmGeneration: {
+        status: 'repaired',
+        repairAttempted: true,
+        repaired: true,
+        initialErrorCategory: 'invalid_json',
+      },
+    }, {
       ttrpgPhase: 'threat',
       combatReadiness: 'ready',
       threatLevel: 4,
@@ -54,6 +62,12 @@ describe('location room narrative TTRPG metadata helpers', () => {
       source: 'test',
     })).toEqual({
       privateNote: 'keep',
+      gmGeneration: {
+        status: 'repaired',
+        repairAttempted: true,
+        repaired: true,
+        initialErrorCategory: 'invalid_json',
+      },
       source: 'test',
       ttrpgPhase: 'threat',
       combatReadiness: 'ready',

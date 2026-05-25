@@ -8,6 +8,7 @@ import type {
   LocationRoomParticipant,
   LocationRoomGameplayRunSummary,
   LocationRoomTick,
+  LocationRoomTurnIntent,
   LocationRoomWorkerResult,
   LocationRoomWorkerRunCounters,
   ProcessLocationRoomTickResult,
@@ -384,6 +385,20 @@ function gameplayRunStartedByActor(triggerType: LocationRoomTick['triggerType'])
   return triggerType
 }
 
+const TURN_INTENT_PRIORITY: Record<LocationRoomTurnIntent, number> = {
+  auto: 0,
+  story: 1,
+  combat: 2,
+}
+
+function shouldPromoteTurnIntent(existing: LocationRoomTurnIntent, requested: LocationRoomTurnIntent): boolean {
+  return TURN_INTENT_PRIORITY[requested] > TURN_INTENT_PRIORITY[existing]
+}
+
+function manualCombatTriggerId(tickId: string): string {
+  return `manual:${tickId}`
+}
+
 function isUnconsumedCombatTrigger(metadata: ReturnType<typeof normalizeNarrativeTtrpgMetadata>): boolean {
   return metadata.requestedGameplayAction === 'start_combat' &&
     Boolean(metadata.lastCombatTriggerBeatId) &&
@@ -679,45 +694,45 @@ export class LocationRoomService {
     const requestedByTokenId = input.actor === 'owner'
       ? ownedParticipant?.tokenId ?? null
       : null
-    if (intent === 'combat') {
-      const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room })
-      const now = input.now ?? new Date()
-      await this.narrativeRepository.updateState(room, {
-        metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
-          ttrpgPhase: 'threat',
-          combatReadiness: 'ready',
-          threatLevel: 5,
-          requestedGameplayAction: 'start_combat',
-          lastEncounterSeed: null,
-          lastCombatTriggerBeatId: `manual:${randomUUID()}`,
-        }, {
-          source: 'location-room-manual-tick-intent',
-          lastManualIntent: intent,
-          lastManualIntentActor: input.actor,
-          lastManualIntentAt: now.toISOString(),
-        }),
+
+    const preexistingOpenTick = await this.repository.findOpenTickForRoom(room.id)
+    const enqueueResult = preexistingOpenTick?.status === 'failed'
+      ? { tick: null, deduped: true }
+      : await this.repository.enqueueTick({
+        room,
+        triggerType,
+        requestedByWallet: normalizedWallet,
+        requestedByTokenId,
+        gameplayRunId: null,
+        turnIntent: intent,
       })
+
+    let resultTick = enqueueResult.tick ?? (preexistingOpenTick?.status === 'failed' ? preexistingOpenTick : null)
+    if (enqueueResult.deduped && !resultTick) {
+      resultTick = preexistingOpenTick ?? await this.repository.findOpenTickForRoom(room.id)
+    }
+    if (resultTick && resultTick.status !== 'processing' && shouldPromoteTurnIntent(resultTick.turnIntent, intent)) {
+      resultTick = await this.repository.promoteOpenTickIntent({
+        tickId: resultTick.id,
+        roomId: room.id,
+        turnIntent: intent,
+      }) ?? resultTick
     }
 
-    const enqueueResult = await this.repository.enqueueTick({
-      room,
-      triggerType,
-      requestedByWallet: normalizedWallet,
-      requestedByTokenId,
-      gameplayRunId: null,
-    })
-
-    const enqueuedTick = enqueueResult.tick
+    if (intent === 'combat' && resultTick && resultTick.triggerType === 'admin' && resultTick.status !== 'processing') {
+      await this.ensureAdminCombatTriggerForTick({ room, tick: resultTick, now: input.now ?? new Date() })
+    }
 
     return {
       room,
-      enqueuedTick,
+      enqueuedTick: enqueueResult.tick,
       enqueuedTickIsFresh: Boolean(enqueueResult.tick),
       result: {
         roomId: room.id,
         locationId: room.locationId,
-        tickId: enqueuedTick?.id ?? enqueueResult.tick?.id ?? null,
+        tickId: resultTick?.id ?? null,
         triggerType,
+        turnIntent: resultTick?.turnIntent ?? intent,
         deduped: enqueueResult.deduped,
         requestedByTokenId,
         participantCount: participants.length,
@@ -753,6 +768,7 @@ export class LocationRoomService {
           room,
           triggerType: 'scheduled',
           gameplayRunId: null,
+          turnIntent: 'auto',
         })
         if (result.deduped) deduped += 1
         else enqueued += 1
@@ -1008,6 +1024,7 @@ export class LocationRoomService {
           room,
           triggerType: 'scheduled',
           gameplayRunId: currentRun.id,
+          turnIntent: 'combat',
           nextAttemptAt: now,
         })
         if (result.deduped) {
@@ -1025,6 +1042,43 @@ export class LocationRoomService {
     }
 
     return { enqueued, deduped }
+  }
+
+  private async ensureAdminCombatTriggerForTick(params: {
+    room: LocationRoom
+    tick: LocationRoomTick
+    now: Date
+  }): Promise<LocationRoomGameplayEncounterTrigger> {
+    const triggerId = manualCombatTriggerId(params.tick.id)
+    const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room: params.room })
+    const ttrpg = normalizeNarrativeTtrpgMetadata(narrativeState.metadata)
+
+    if (!isUnconsumedCombatTrigger(ttrpg) || ttrpg.lastCombatTriggerBeatId !== triggerId) {
+      await this.narrativeRepository.updateState(params.room, {
+        metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+          ttrpgPhase: 'threat',
+          combatReadiness: 'ready',
+          threatLevel: Math.max(ttrpg.threatLevel ?? 0, 5),
+          requestedGameplayAction: 'start_combat',
+          lastEncounterSeed: ttrpg.lastEncounterSeed,
+          lastCombatTriggerBeatId: triggerId,
+        }, {
+          source: 'location-room-manual-tick-intent',
+          lastManualIntent: 'combat',
+          lastManualIntentActor: 'admin',
+          lastManualIntentAt: params.now.toISOString(),
+          lastManualIntentTickId: params.tick.id,
+        }),
+      })
+    }
+
+    return {
+      source: 'admin',
+      triggerId,
+      narrativeBeatId: null,
+      encounterSeed: ttrpg.lastEncounterSeed,
+      speakerInstruction: null,
+    }
   }
 
   private async buildEncounterTriggerFromNarrativeState(
@@ -1346,10 +1400,21 @@ export class LocationRoomService {
     if (isLocationRoomGameplayEnabledForLocation(room.locationId)) {
       const activeEncounter = await this.gameplayRepository.findActiveEncounterByRoomId(room.id)
       let encounterTrigger: LocationRoomGameplayEncounterTrigger | null = null
+      const turnIntent = tick.turnIntent ?? 'auto'
+      if (turnIntent === 'combat' && tick.triggerType !== 'admin' && !tick.gameplayRunId) {
+        throw new LocationRoomManualTickIntentForbiddenError()
+      }
+      const isAdminCombatIntent = turnIntent === 'combat' && tick.triggerType === 'admin'
 
       if (!activeEncounter) {
-        const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room })
-        encounterTrigger = await this.buildEncounterTriggerFromNarrativeState(room, narrativeState.metadata)
+        if (isAdminCombatIntent) {
+          encounterTrigger = await this.ensureAdminCombatTriggerForTick({ room, tick, now })
+        } else if (turnIntent === 'auto') {
+          const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room })
+          encounterTrigger = await this.buildEncounterTriggerFromNarrativeState(room, narrativeState.metadata)
+        } else if (turnIntent === 'combat') {
+          throw new LocationRoomManualTickIntentForbiddenError()
+        }
       }
 
       if (activeEncounter || encounterTrigger) {

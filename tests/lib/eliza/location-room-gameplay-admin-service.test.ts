@@ -141,6 +141,7 @@ function makeRoomRepository(): jest.Mocked<LocationRoomRepository> {
     ensureRoomForLocation: jest.fn(),
     listDueRooms: jest.fn(),
     enqueueTick: jest.fn(),
+    promoteOpenTickIntent: jest.fn(),
     attachTickToGameplayRun: jest.fn(),
     countCompletedGameplayTurnsForRun: jest.fn(),
     findOpenTickForRoom: jest.fn(),

@@ -8,6 +8,7 @@ import {
   type LocationRoomNarrativeBeatOutput,
   type LocationRoomNarrativeBeatStatus,
   type LocationRoomNarrativeState,
+  type MarkLocationRoomNarrativeBeatFailedOptions,
   type UpdateLocationRoomNarrativeStateInput,
 } from './narrativeTypes'
 
@@ -137,7 +138,11 @@ export interface LocationRoomNarrativeRepository {
   markBeatGameMasterMessageAppended(beatId: string, output: LocationRoomNarrativeBeatOutput): Promise<LocationRoomNarrativeBeat>
   markBeatCharacterAppended(beatId: string): Promise<LocationRoomNarrativeBeat>
   markBeatCompleted(beatId: string): Promise<LocationRoomNarrativeBeat>
-  markBeatFailed(beatId: string, error: unknown): Promise<LocationRoomNarrativeBeat>
+  markBeatFailed(
+    beatId: string,
+    error: unknown,
+    options?: MarkLocationRoomNarrativeBeatFailedOptions
+  ): Promise<LocationRoomNarrativeBeat>
   markBeatDead(beatId: string, error: unknown): Promise<LocationRoomNarrativeBeat>
 }
 
@@ -293,9 +298,14 @@ export class SupabaseLocationRoomNarrativeRepository implements LocationRoomNarr
     })
   }
 
-  async markBeatFailed(beatId: string, error: unknown): Promise<LocationRoomNarrativeBeat> {
+  async markBeatFailed(
+    beatId: string,
+    error: unknown,
+    options: MarkLocationRoomNarrativeBeatFailedOptions = {}
+  ): Promise<LocationRoomNarrativeBeat> {
     return this.updateBeat(beatId, {
       status: 'failed',
+      ...(options.metadata ? { metadata: options.metadata } : {}),
       last_error: sanitizeNarrativeStoredError(error),
     })
   }

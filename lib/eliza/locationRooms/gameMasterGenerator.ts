@@ -4,19 +4,22 @@ import {
   normalizeOfficialResponseText,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
-import type {
-  LocationRoom,
-  LocationRoomCombatReadiness,
-  LocationRoomEncounterSeed,
-  LocationRoomMessage,
-  LocationRoomParticipant,
-  LocationRoomRequestedGameplayAction,
-  LocationRoomTick,
-  LocationRoomTtrpgPhase,
+import {
+  LOCATION_ROOM_COMBAT_READINESS_VALUES,
+  LOCATION_ROOM_TTRPG_PHASES,
+  type LocationRoom,
+  type LocationRoomCombatReadiness,
+  type LocationRoomEncounterSeed,
+  type LocationRoomMessage,
+  type LocationRoomParticipant,
+  type LocationRoomRequestedGameplayAction,
+  type LocationRoomTick,
+  type LocationRoomTtrpgPhase,
 } from './types'
 import {
   normalizeCombatReadiness,
   normalizeEncounterSeed,
+  normalizeNarrativeTtrpgMetadata,
   normalizeRequestedGameplayAction,
   normalizeThreatLevel,
   normalizeTtrpgPhase,
@@ -29,6 +32,25 @@ export type GameMasterBeatLimits = {
   stateSummaryMaxLength: number
   openThreadsMaxCount: number
   openThreadMaxLength: number
+}
+
+export type GameMasterGenerationResponseFlags = {
+  empty: boolean
+  hasJsonObject: boolean
+  fencedJson: boolean
+  startsWithJsonObject: boolean
+}
+
+export type GameMasterGenerationDiagnostics = {
+  status: 'accepted' | 'repaired' | 'repair_failed'
+  repairAttempted: boolean
+  repaired: boolean
+  initialErrorCategory?: string
+  repairErrorCategory?: string
+  initialResponseLength?: number
+  repairResponseLength?: number
+  initialResponseFlags?: GameMasterGenerationResponseFlags
+  repairResponseFlags?: GameMasterGenerationResponseFlags
 }
 
 export type GameMasterBeatOutput = {
@@ -51,6 +73,7 @@ export type GameMasterBeatOutput = {
     threatLevel?: number | null
     requestedGameplayAction?: LocationRoomRequestedGameplayAction | null
     encounterSeed?: LocationRoomEncounterSeed | null
+    gmGeneration?: GameMasterGenerationDiagnostics
   }
 }
 
@@ -124,6 +147,98 @@ function assertEligibleTokenIds(tokenIds: number[], eligibleTokenIds: Set<number
   const ineligible = tokenIds.filter((tokenId) => !eligibleTokenIds.has(tokenId))
   if (ineligible.length > 0) {
     throw new Error(`Game-master beat response ${fieldName} referenced ineligible token id ${ineligible[0]}`)
+  }
+}
+
+function parseTtrpgPhase(value: unknown): LocationRoomTtrpgPhase {
+  if (value == null || value === '') return normalizeTtrpgPhase(value)
+  if (typeof value !== 'string' || !LOCATION_ROOM_TTRPG_PHASES.includes(value as LocationRoomTtrpgPhase)) {
+    throw new Error('Game-master beat response ttrpgPhase must be story, exploration, threat, or aftermath')
+  }
+  if (value === 'combat') {
+    throw new Error('Game-master beat response ttrpgPhase must use threat before combat handoff')
+  }
+  return value as LocationRoomTtrpgPhase
+}
+
+function parseCombatReadiness(value: unknown): LocationRoomCombatReadiness {
+  if (value == null || value === '') return normalizeCombatReadiness(value)
+  if (typeof value !== 'string' || !LOCATION_ROOM_COMBAT_READINESS_VALUES.includes(value as LocationRoomCombatReadiness)) {
+    throw new Error('Game-master beat response combatReadiness must be none, foreshadow, or ready')
+  }
+  return value as LocationRoomCombatReadiness
+}
+
+function parseThreatLevel(value: unknown): number | null {
+  if (value == null || value === '') return null
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    throw new Error('Game-master beat response threatLevel must be a number from 0 to 5')
+  }
+  const normalized = normalizeThreatLevel(value)
+  if (normalized == null) {
+    throw new Error('Game-master beat response threatLevel must be a number from 0 to 5')
+  }
+  return normalized
+}
+
+function parseRequestedGameplayAction(value: unknown): LocationRoomRequestedGameplayAction | null {
+  if (value == null || value === '') return null
+  const normalized = normalizeRequestedGameplayAction(value)
+  if (normalized !== 'start_combat') {
+    throw new Error('Game-master beat response requestedGameplayAction must be null or start_combat')
+  }
+  return normalized
+}
+
+function parseEncounterSeed(value: unknown): LocationRoomEncounterSeed | null {
+  if (value == null || value === '') return null
+  const normalized = normalizeEncounterSeed(value)
+  if (!normalized) {
+    throw new Error('Game-master beat response encounterSeed must include public-safe title, summary, or stakes')
+  }
+  return normalized
+}
+
+export function validateGameMasterBeatProgressionContract(output: {
+  stateAfter: LocationRoomNarrativeStateSnapshot
+  ttrpgPhase: LocationRoomTtrpgPhase
+  combatReadiness: LocationRoomCombatReadiness
+  threatLevel: number | null
+  requestedGameplayAction: LocationRoomRequestedGameplayAction | null
+  encounterSeed: LocationRoomEncounterSeed | null
+}): void {
+  if (output.ttrpgPhase !== 'aftermath') {
+    if (!output.stateAfter.currentObjective) {
+      throw new Error('Game-master beat response missing currentObjective for non-aftermath progression')
+    }
+    if (output.stateAfter.openThreads.length === 0) {
+      throw new Error('Game-master beat response missing openThreads for non-aftermath progression')
+    }
+  }
+
+  if (output.combatReadiness === 'foreshadow' && (output.threatLevel == null || output.threatLevel < 1)) {
+    throw new Error('Game-master beat response combatReadiness foreshadow requires threatLevel at least 1')
+  }
+
+  if (output.combatReadiness === 'ready') {
+    if (output.ttrpgPhase !== 'threat') {
+      throw new Error('Game-master beat response combatReadiness ready requires ttrpgPhase threat')
+    }
+    if (output.threatLevel == null || output.threatLevel < 3) {
+      throw new Error('Game-master beat response combatReadiness ready requires threatLevel at least 3')
+    }
+  }
+
+  if (output.requestedGameplayAction === 'start_combat') {
+    if (output.ttrpgPhase !== 'threat') {
+      throw new Error('Game-master beat response start_combat requires ttrpgPhase threat')
+    }
+    if (output.combatReadiness !== 'ready') {
+      throw new Error('Game-master beat response start_combat requires combatReadiness ready')
+    }
+    if (!output.encounterSeed) {
+      throw new Error('Game-master beat response start_combat requires public-safe encounterSeed')
+    }
   }
 }
 
@@ -201,13 +316,27 @@ export function normalizeGameMasterBeatResponse(
     limits.stateSummaryMaxLength,
     'speakerInstruction'
   )
-  const ttrpgPhase = normalizeTtrpgPhase(parsed.ttrpgPhase ?? parsed.ttrpg_phase)
-  const combatReadiness = normalizeCombatReadiness(parsed.combatReadiness ?? parsed.combat_readiness)
-  const threatLevel = normalizeThreatLevel(parsed.threatLevel ?? parsed.threat_level)
-  const requestedGameplayAction = normalizeRequestedGameplayAction(
+  const ttrpgPhase = parseTtrpgPhase(parsed.ttrpgPhase ?? parsed.ttrpg_phase)
+  const combatReadiness = parseCombatReadiness(parsed.combatReadiness ?? parsed.combat_readiness)
+  const threatLevel = parseThreatLevel(parsed.threatLevel ?? parsed.threat_level)
+  const requestedGameplayAction = parseRequestedGameplayAction(
     parsed.requestedGameplayAction ?? parsed.requested_gameplay_action
   )
-  const encounterSeed = normalizeEncounterSeed(parsed.encounterSeed ?? parsed.encounter_seed)
+  const encounterSeed = parseEncounterSeed(parsed.encounterSeed ?? parsed.encounter_seed)
+  const stateAfter = {
+    stateSummary,
+    currentObjective,
+    openThreads,
+  }
+
+  validateGameMasterBeatProgressionContract({
+    stateAfter,
+    ttrpgPhase,
+    combatReadiness,
+    threatLevel,
+    requestedGameplayAction,
+    encounterSeed,
+  })
 
   return {
     gameMasterAgentId: options.gameMasterAgentId,
@@ -216,11 +345,7 @@ export function normalizeGameMasterBeatResponse(
       limits.publicNarrationMaxLength
     ),
     speakerInstruction,
-    stateAfter: {
-      stateSummary,
-      currentObjective,
-      openThreads,
-    },
+    stateAfter,
     ttrpgPhase,
     combatReadiness,
     threatLevel,
@@ -262,6 +387,66 @@ function formatOpenThreads(threads: string[]): string {
   return threads.map((thread) => `- ${thread}`).join('\n')
 }
 
+function formatEncounterSeed(seed: LocationRoomEncounterSeed | null): string {
+  if (!seed) return 'None.'
+  return [
+    seed.title ? `Title: ${seed.title}` : null,
+    seed.summary ? `Summary: ${seed.summary}` : null,
+    seed.stakes ? `Stakes: ${seed.stakes}` : null,
+  ].filter(Boolean).join(' | ') || 'None.'
+}
+
+function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInput, 'participants' | 'speaker'>): string[] {
+  return [
+    'Return only a JSON object with this exact contract:',
+    '{',
+    '  "publicNarration": "optional public narration for observers, or null",',
+    '  "speakerInstruction": "private direction for only the selected speaker",',
+    '  "stateSummary": "updated private continuity summary after this beat",',
+    '  "currentObjective": "concrete current objective, or null only when ttrpgPhase is aftermath",',
+    '  "openThreads": ["short unresolved thread"],',
+    '  "ttrpgPhase": "story | exploration | threat | aftermath",',
+    '  "combatReadiness": "none | foreshadow | ready",',
+    '  "threatLevel": 0,',
+    '  "requestedGameplayAction": null,',
+    '  "encounterSeed": null,',
+    '  "featuredTokenIds": [123],',
+    `  "selectedSpeakerTokenId": ${input.speaker.tokenId}`,
+    '}',
+    '',
+    'Rules:',
+    '- Output JSON only: no markdown fences, no commentary, no prose outside the object.',
+    '- speakerInstruction and stateSummary are required and must be non-empty.',
+    '- Reference only eligible current participant token ids.',
+    `- selectedSpeakerTokenId must be ${input.speaker.tokenId}; do not select another speaker.`,
+    '- Keep public narration suitable for public display and avoid markdown.',
+    '- Non-aftermath beats must include a concrete currentObjective and at least one unresolved openThreads entry.',
+    '- Preserve or refine the current objective/thread, and advance the scene with a decision, clue, complication, changed threat/readiness, or explicit consequence.',
+    '- Do not spawn combat by default. Most beats should keep requestedGameplayAction null.',
+    '- Use ttrpgPhase "threat" and combatReadiness "foreshadow" with threatLevel at least 1 to hint at danger without starting combat.',
+    '- Use combatReadiness "ready" only with ttrpgPhase "threat" and threatLevel at least 3.',
+    '- Use requestedGameplayAction "start_combat" only when the fiction clearly escalates to a fight.',
+    '- start_combat requires ttrpgPhase "threat", combatReadiness "ready", and a non-null public-safe encounterSeed.',
+    '- encounterSeed may include only title, summary, and stakes; never include mechanics, DCs, HP, rewards, wallets, or private chain data.',
+  ]
+}
+
+function buildNarrativeStateLines(input: Pick<GenerateGameMasterBeatInput, 'narrativeState'>): string[] {
+  const ttrpg = normalizeNarrativeTtrpgMetadata(input.narrativeState.metadata)
+  return [
+    'Current private narrative state:',
+    `Continuity summary: ${input.narrativeState.stateSummary || 'No established continuity yet.'}`,
+    `Current objective: ${input.narrativeState.currentObjective || 'None.'}`,
+    'Open threads:',
+    formatOpenThreads(input.narrativeState.openThreads),
+    `TTRPG phase: ${ttrpg.ttrpgPhase}`,
+    `Combat readiness: ${ttrpg.combatReadiness}`,
+    `Threat level: ${ttrpg.threatLevel ?? 'None.'}`,
+    `Requested gameplay action: ${ttrpg.requestedGameplayAction ?? 'None.'}`,
+    `Last encounter seed: ${formatEncounterSeed(ttrpg.lastEncounterSeed)}`,
+  ]
+}
+
 export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): string {
   return [
     'You are the private game master for a public WAGDIE location room.',
@@ -280,38 +465,91 @@ export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): s
     'Recent public transcript:',
     formatTranscript(input.recentMessages),
     '',
-    'Current private narrative state:',
-    `Continuity summary: ${input.narrativeState.stateSummary || 'No established continuity yet.'}`,
-    `Current objective: ${input.narrativeState.currentObjective || 'None.'}`,
-    'Open threads:',
-    formatOpenThreads(input.narrativeState.openThreads),
+    ...buildNarrativeStateLines(input),
     '',
-    'Return only a JSON object with this exact contract:',
-    '{',
-    '  "publicNarration": "optional public narration for observers, or null",',
-    '  "speakerInstruction": "private direction for only the selected speaker",',
-    '  "stateSummary": "updated private continuity summary after this beat",',
-    '  "currentObjective": "current objective, or null",',
-    '  "openThreads": ["short unresolved thread"],',
-    '  "ttrpgPhase": "story | exploration | threat | aftermath",',
-    '  "combatReadiness": "none | foreshadow | ready",',
-    '  "threatLevel": 0,',
-    '  "requestedGameplayAction": null,',
-    '  "encounterSeed": null,',
-    '  "featuredTokenIds": [123],',
-    `  "selectedSpeakerTokenId": ${input.speaker.tokenId}`,
-    '}',
-    '',
-    'Rules:',
-    '- speakerInstruction and stateSummary are required and must be non-empty.',
-    '- Reference only eligible current participant token ids.',
-    '- Keep public narration suitable for public display and avoid markdown.',
-    '- The selected speaker must remain the selected speaker above.',
-    '- Do not spawn combat by default. Most beats should keep requestedGameplayAction null.',
-    '- Use ttrpgPhase "threat" and combatReadiness "foreshadow" to hint at danger without starting combat.',
-    '- Use combatReadiness "ready" and requestedGameplayAction "start_combat" only when the fiction clearly escalates to a fight.',
-    '- encounterSeed may be a public-safe object with title, summary, and stakes; never include mechanics, DCs, HP, rewards, or private chain data.',
+    ...buildGameMasterBeatContractLines(input),
   ].join('\n')
+}
+
+function responseFlags(raw: string): GameMasterGenerationResponseFlags {
+  const text = normalizeOfficialResponseText(raw)
+  return {
+    empty: text.length === 0,
+    hasJsonObject: text.indexOf('{') >= 0 && text.lastIndexOf('}') > text.indexOf('{'),
+    fencedJson: /```(?:json)?/i.test(text),
+    startsWithJsonObject: text.trim().startsWith('{'),
+  }
+}
+
+function categorizeBeatResponseError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  if (/empty/i.test(message)) return 'empty_response'
+  if (/did not contain a JSON object/i.test(message)) return 'missing_json_object'
+  if (/invalid JSON/i.test(message)) return 'invalid_json'
+  if (/selectedSpeakerTokenId|selected speaker/i.test(message)) return 'speaker_constraint'
+  if (/token id|featuredTokenIds/i.test(message)) return 'token_constraint'
+  if (/currentObjective|openThreads|start_combat|combatReadiness|ttrpgPhase|threatLevel|encounterSeed|requestedGameplayAction/i.test(message)) {
+    return 'progression_contract'
+  }
+  if (/missing .*speakerInstruction|missing .*stateSummary/i.test(message)) return 'missing_required_field'
+  return 'validation_error'
+}
+
+function diagnosticsForInitialFailure(raw: string, error: unknown): GameMasterGenerationDiagnostics {
+  return {
+    status: 'repair_failed',
+    repairAttempted: true,
+    repaired: false,
+    initialErrorCategory: categorizeBeatResponseError(error),
+    initialResponseLength: raw.length,
+    initialResponseFlags: responseFlags(raw),
+  }
+}
+
+function buildGameMasterBeatRepairPrompt(
+  input: GenerateGameMasterBeatInput,
+  diagnostics: GameMasterGenerationDiagnostics
+): string {
+  return [
+    'Your previous game-master beat response failed the required JSON contract.',
+    `Failure category: ${diagnostics.initialErrorCategory ?? 'validation_error'}`,
+    `Previous response length: ${diagnostics.initialResponseLength ?? 0}`,
+    '',
+    'Repair by producing one fresh valid response. Do not explain the repair.',
+    `Selected speaker remains: ${input.speaker.name} (#${input.speaker.tokenId})`,
+    '',
+    'Eligible current participants:',
+    formatParticipants(input.participants),
+    '',
+    ...buildNarrativeStateLines(input),
+    '',
+    ...buildGameMasterBeatContractLines(input),
+  ].join('\n')
+}
+
+function withGenerationDiagnostics(
+  output: GameMasterBeatOutput,
+  diagnostics: GameMasterGenerationDiagnostics
+): GameMasterBeatOutput {
+  return {
+    ...output,
+    metadata: {
+      ...output.metadata,
+      gmGeneration: diagnostics,
+    },
+  }
+}
+
+export class GameMasterBeatGenerationError extends Error {
+  constructor(
+    message: string,
+    readonly diagnostics: GameMasterGenerationDiagnostics,
+    options?: { cause?: unknown }
+  ) {
+    super(message)
+    this.name = 'GameMasterBeatGenerationError'
+    this.cause = options?.cause
+  }
 }
 
 export interface GameMasterBeatGenerator {
@@ -366,9 +604,84 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
         conversationId: session.sessionId,
       })
 
-      return normalizeGameMasterBeatResponse(collected.text, input, {
-        gameMasterAgentId,
-      })
+      try {
+        return withGenerationDiagnostics(normalizeGameMasterBeatResponse(collected.text, input, {
+          gameMasterAgentId,
+        }), {
+          status: 'accepted',
+          repairAttempted: false,
+          repaired: false,
+          initialResponseLength: collected.text.length,
+          initialResponseFlags: responseFlags(collected.text),
+        })
+      } catch (initialError) {
+        const diagnostics = diagnosticsForInitialFailure(collected.text, initialError)
+        let repairText = ''
+
+        try {
+          const repairResponse = await this.messaging.sendSessionMessage({
+            sessionId: session.sessionId,
+            content: buildGameMasterBeatRepairPrompt(input, diagnostics),
+            metadata: {
+              source: 'wagdie-location-room-game-master-repair',
+              roomId: input.room.id,
+              locationId: input.room.locationId,
+              tickId: input.tick.id,
+              channelId: input.room.channelId,
+              selectedSpeakerTokenId: input.speaker.tokenId,
+              repairAttempted: true,
+              initialErrorCategory: diagnostics.initialErrorCategory,
+            },
+          })
+          const repaired = await this.messaging.collectStreamedResponseText(repairResponse, {
+            conversationId: session.sessionId,
+          })
+          repairText = repaired.text
+        } catch (repairTransportError) {
+          const failedDiagnostics: GameMasterGenerationDiagnostics = {
+            ...diagnostics,
+            status: 'repair_failed',
+            repairAttempted: true,
+            repaired: false,
+            repairErrorCategory: 'repair_transport_error',
+            repairResponseLength: repairText.length,
+            repairResponseFlags: responseFlags(repairText),
+          }
+          throw new GameMasterBeatGenerationError(
+            `Game-master beat repair failed (initial: ${failedDiagnostics.initialErrorCategory}, repair: ${failedDiagnostics.repairErrorCategory})`,
+            failedDiagnostics,
+            { cause: repairTransportError }
+          )
+        }
+
+        try {
+          return withGenerationDiagnostics(normalizeGameMasterBeatResponse(repairText, input, {
+            gameMasterAgentId,
+          }), {
+            ...diagnostics,
+            status: 'repaired',
+            repairAttempted: true,
+            repaired: true,
+            repairResponseLength: repairText.length,
+            repairResponseFlags: responseFlags(repairText),
+          })
+        } catch (repairError) {
+          const failedDiagnostics: GameMasterGenerationDiagnostics = {
+            ...diagnostics,
+            status: 'repair_failed',
+            repairAttempted: true,
+            repaired: false,
+            repairErrorCategory: categorizeBeatResponseError(repairError),
+            repairResponseLength: repairText.length,
+            repairResponseFlags: responseFlags(repairText),
+          }
+          throw new GameMasterBeatGenerationError(
+            `Game-master beat repair failed (initial: ${failedDiagnostics.initialErrorCategory}, repair: ${failedDiagnostics.repairErrorCategory})`,
+            failedDiagnostics,
+            { cause: repairError }
+          )
+        }
+      }
     } finally {
       await this.messaging.deleteSession(session.sessionId).catch(() => null)
     }

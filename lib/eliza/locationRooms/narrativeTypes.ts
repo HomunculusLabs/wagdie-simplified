@@ -81,6 +81,10 @@ export type LocationRoomNarrativeBeatOutput = {
   metadata?: Record<string, unknown>
 }
 
+export type MarkLocationRoomNarrativeBeatFailedOptions = {
+  metadata?: Record<string, unknown>
+}
+
 export type UpdateLocationRoomNarrativeStateInput = {
   stateSummary?: string
   currentObjective?: string | null

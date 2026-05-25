@@ -14,7 +14,12 @@ function statusTone(value: boolean | null | undefined) {
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '—'
   if (typeof value === 'boolean') return value ? 'yes' : 'no'
+  if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : '—'
   return String(value)
+}
+
+function formatIntentCounts(counts: LocationRoomHealthDiagnostics['durableIntent']['activeCounts']): string {
+  return `auto ${counts.auto}, story ${counts.story}, combat ${counts.combat}`
 }
 
 function Field({ label, value, tone }: { label: string; value: unknown; tone?: string }) {
@@ -47,6 +52,7 @@ function TickList({ ticks }: { ticks: LocationRoomHealthDiagnostics['ticks']['re
           <tr>
             <th className="py-2 pr-3">Status</th>
             <th className="py-2 pr-3">Attempts</th>
+            <th className="py-2 pr-3">Intent</th>
             <th className="py-2 pr-3">Trigger</th>
             <th className="py-2 pr-3">Token</th>
             <th className="py-2 pr-3">Next attempt</th>
@@ -59,6 +65,7 @@ function TickList({ ticks }: { ticks: LocationRoomHealthDiagnostics['ticks']['re
             <tr key={tick.id}>
               <td className="py-2 pr-3">{tick.status}</td>
               <td className="py-2 pr-3">{tick.attempts}</td>
+              <td className="py-2 pr-3">{tick.turnIntent}</td>
               <td className="py-2 pr-3">{tick.triggerType}</td>
               <td className="py-2 pr-3">{formatValue(tick.selectedTokenId)}</td>
               <td className="py-2 pr-3">{formatValue(tick.nextAttemptAt)}</td>
@@ -191,6 +198,62 @@ export function LocationRoomDiagnosticsContainer() {
                 <Field label="GM ready" value={diagnostics.gmReadiness.ready} tone={statusTone(diagnostics.gmReadiness.ready)} />
                 <Field label="GM source" value={diagnostics.gmReadiness.source} />
                 <Field label="GM error" value={diagnostics.gmReadiness.safeError} tone="text-red-200" />
+              </dl>
+            </Panel>
+          </div>
+
+          <div className="grid gap-5 lg:grid-cols-2">
+            <Panel title="Durable intent">
+              <dl className="grid gap-3 sm:grid-cols-2">
+                <Field label="Active intent counts" value={formatIntentCounts(diagnostics.durableIntent.activeCounts)} />
+                <Field label="Recent intent counts" value={formatIntentCounts(diagnostics.durableIntent.recentCounts)} />
+                <Field label="Latest active intent" value={diagnostics.durableIntent.latestActiveIntent} />
+                <Field label="Latest recent intent" value={diagnostics.durableIntent.latestRecentIntent} />
+              </dl>
+            </Panel>
+
+            <Panel title="Retry & cadence">
+              <dl className="grid gap-3 sm:grid-cols-2">
+                <Field label="Active ticks" value={diagnostics.retryCadence.activeTickCount} />
+                <Field label="Due active tick" value={diagnostics.retryCadence.dueActiveTickId} />
+                <Field label="Failed tick" value={diagnostics.retryCadence.failedTickId} />
+                <Field label="Failed retry due" value={diagnostics.retryCadence.failedTickRetryDue} tone={statusTone(diagnostics.retryCadence.failedTickRetryDue)} />
+                <Field label="Failed next retry" value={diagnostics.retryCadence.failedTickNextAttemptAt} />
+                <Field label="Next cadence due" value={diagnostics.retryCadence.nextTickDue} tone={statusTone(diagnostics.retryCadence.nextTickDue)} />
+                <Field label="Minutes until cadence" value={diagnostics.retryCadence.minutesUntilNextTick} />
+                <Field label="Normal cadence wait" value={diagnostics.retryCadence.normalCadenceWait} tone={statusTone(!diagnostics.retryCadence.normalCadenceWait)} />
+              </dl>
+            </Panel>
+          </div>
+
+          <div className="grid gap-5 lg:grid-cols-2">
+            <Panel title="GM repair/failure">
+              <dl className="grid gap-3 sm:grid-cols-2">
+                <Field label="Latest beat status" value={diagnostics.gmGeneration.latestBeatStatus} />
+                <Field label="GM status" value={diagnostics.gmGeneration.status} />
+                <Field label="Repair attempted" value={diagnostics.gmGeneration.repairAttempted} />
+                <Field label="Repaired" value={diagnostics.gmGeneration.repaired} tone={statusTone(diagnostics.gmGeneration.repaired || !diagnostics.gmGeneration.repairAttempted)} />
+                <Field label="Initial error category" value={diagnostics.gmGeneration.initialErrorCategory} />
+                <Field label="Repair error category" value={diagnostics.gmGeneration.repairErrorCategory} />
+                <Field label="Initial response length" value={diagnostics.gmGeneration.initialResponseLength} />
+                <Field label="Repair response length" value={diagnostics.gmGeneration.repairResponseLength} />
+                <Field label="Safe beat error" value={diagnostics.gmGeneration.safeError} tone="text-red-200" />
+              </dl>
+            </Panel>
+
+            <Panel title="Trigger & readiness">
+              <dl className="grid gap-3 sm:grid-cols-2">
+                <Field label="Narrative state" value={diagnostics.triggerReadiness.stateExists} tone={statusTone(diagnostics.triggerReadiness.stateExists)} />
+                <Field label="Objective" value={diagnostics.triggerReadiness.currentObjective} />
+                <Field label="Open threads" value={diagnostics.triggerReadiness.openThreadCount} />
+                <Field label="Phase" value={diagnostics.triggerReadiness.ttrpgPhase} />
+                <Field label="Readiness" value={diagnostics.triggerReadiness.combatReadiness} />
+                <Field label="Threat" value={diagnostics.triggerReadiness.threatLevel} />
+                <Field label="Requested action" value={diagnostics.triggerReadiness.requestedGameplayAction} />
+                <Field label="Trigger ID" value={diagnostics.triggerReadiness.triggerId} />
+                <Field label="Unconsumed trigger" value={diagnostics.triggerReadiness.hasUnconsumedTrigger} tone={statusTone(diagnostics.triggerReadiness.hasUnconsumedTrigger)} />
+                <Field label="Encounter seed" value={diagnostics.triggerReadiness.encounterSeedPresent} tone={statusTone(diagnostics.triggerReadiness.encounterSeedPresent)} />
+                <Field label="Blockers" value={diagnostics.triggerReadiness.blockers} tone={diagnostics.triggerReadiness.blockers.length > 0 ? 'text-red-200' : undefined} />
               </dl>
             </Panel>
           </div>
