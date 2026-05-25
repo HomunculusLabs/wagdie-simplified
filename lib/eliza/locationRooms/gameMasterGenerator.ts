@@ -824,23 +824,44 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
         let repairText = ''
 
         try {
-          const repaired = await sendAndCollectOfficialMessage(this.messaging, {
-            sessionId: session.sessionId,
-            content: buildGameMasterBeatRepairPrompt(input, diagnostics),
+          const repairSession = await this.messaging.createSession({
+            agentId: gameMasterAgentId,
+            userId: input.room.officialUserId,
             metadata: {
               source: 'wagdie-location-room-game-master-repair',
               roomId: input.room.id,
               locationId: input.room.locationId,
               tickId: input.tick.id,
               channelId: input.room.channelId,
+              officialRoomId: input.room.officialRoomId,
+              officialWorldId: input.room.officialWorldId,
               selectedSpeakerTokenId: input.speaker.tokenId,
               repairAttempted: true,
               initialErrorCategory: diagnostics.initialErrorCategory,
             },
-          }, {
-            conversationId: session.sessionId,
           })
-          repairText = repaired.text
+
+          try {
+            const repaired = await sendAndCollectOfficialMessage(this.messaging, {
+              sessionId: repairSession.sessionId,
+              content: buildGameMasterBeatRepairPrompt(input, diagnostics),
+              metadata: {
+                source: 'wagdie-location-room-game-master-repair',
+                roomId: input.room.id,
+                locationId: input.room.locationId,
+                tickId: input.tick.id,
+                channelId: input.room.channelId,
+                selectedSpeakerTokenId: input.speaker.tokenId,
+                repairAttempted: true,
+                initialErrorCategory: diagnostics.initialErrorCategory,
+              },
+            }, {
+              conversationId: repairSession.sessionId,
+            })
+            repairText = repaired.text
+          } finally {
+            await this.messaging.deleteSession(repairSession.sessionId).catch(() => null)
+          }
         } catch (repairTransportError) {
           const failedDiagnostics: GameMasterGenerationDiagnostics = {
             ...diagnostics,
