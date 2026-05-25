@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { elizaConfig } from '@/lib/eliza/config'
 import { createOfficialServerClient } from '@/lib/eliza/client'
+import { WagdieElizaError } from '@/lib/eliza/gateway/errors'
 import type { CharacterRecord, WagdieElizaClient } from '@/lib/eliza/gateway/types'
 import {
   applyWagdieUpdateToAgentCharacter,
@@ -124,6 +125,10 @@ export class GameMasterKnowledgeValidationError extends Error {
 function getEnvFallbackAgentId(): string | null {
   const value = elizaConfig.locationRooms.narrative.gameMasterAgentId.trim()
   return value || null
+}
+
+function isOfficialRecordNotFound(error: unknown): boolean {
+  return error instanceof WagdieElizaError && error.statusCode === 404
 }
 
 function normalizeErrorMessage(error: unknown, fallback: string): string {
@@ -294,7 +299,21 @@ export class GameMasterAgentService {
       throw new GameMasterAgentConfigError()
     }
 
-    return resolution.officialAgentId
+    try {
+      await this.createClient().characters.getRecord(resolution.officialAgentId)
+      return resolution.officialAgentId
+    } catch (error) {
+      if (!isOfficialRecordNotFound(error) || resolution.source !== 'database') {
+        throw error
+      }
+
+      console.warn('[Game Master Agent] Active official record is missing; re-bootstrapping deterministic game-master agent', {
+        officialAgentId: resolution.officialAgentId,
+      })
+      await this.settingsRepository.clearActive()
+      const bootstrapped = await this.bootstrapGameMasterAgent('runtime-self-heal')
+      return bootstrapped.record.id
+    }
   }
 
   async clearActiveGameMasterAgentSetting(): Promise<void> {
