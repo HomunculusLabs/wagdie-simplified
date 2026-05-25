@@ -113,6 +113,8 @@ const GM_PROMPT_STATE_SUMMARY_MAX_CHARS = 450
 const GM_PROMPT_OBJECTIVE_MAX_CHARS = 240
 const GM_PROMPT_OPEN_THREADS_MAX_CHARS = 500
 const GM_PROMPT_ENCOUNTER_SEED_MAX_CHARS = 300
+const OFFICIAL_ELIZA_MESSAGE_MAX_CHARS = 3900
+const GM_PROMPT_CONTRACT_MARKER = 'Return only a JSON object with this exact contract:'
 
 function countSentenceLikeSegments(value: string): number {
   return value
@@ -471,6 +473,25 @@ function truncatePromptValue(value: string, limit: number): string {
   return `${normalized.slice(0, Math.max(0, limit - 1)).trim()}…`
 }
 
+function clampGameMasterPrompt(prompt: string): string {
+  if (prompt.length <= OFFICIAL_ELIZA_MESSAGE_MAX_CHARS) return prompt
+
+  const markerIndex = prompt.indexOf(GM_PROMPT_CONTRACT_MARKER)
+  if (markerIndex < 0) {
+    return prompt.slice(0, OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - 1).trimEnd() + '…'
+  }
+
+  const contract = prompt.slice(markerIndex)
+  const separator = '\n\n[Earlier context truncated to fit the ElizaOS 4000-character message limit.]\n\n'
+  const availableContextChars = OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - contract.length - separator.length
+
+  if (availableContextChars <= 0) {
+    return contract.slice(0, OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - 1).trimEnd() + '…'
+  }
+
+  return `${prompt.slice(0, availableContextChars).trimEnd()}${separator}${contract}`
+}
+
 function formatParticipants(participants: LocationRoomParticipant[]): string {
   const maxParticipants = 12
   const visible = participants.slice(0, maxParticipants)
@@ -629,7 +650,7 @@ function buildNarrativeStateLines(input: Pick<GenerateGameMasterBeatInput, 'narr
 }
 
 export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): string {
-  return [
+  return clampGameMasterPrompt([
     'You are the private game master for a public WAGDIE location room.',
     'Plan exactly one narrative beat for the selected speaker. Do not directly create canon lore.',
     '',
@@ -651,7 +672,7 @@ export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): s
     ...buildProgressionContextLines(input.progressionContext),
     '',
     ...buildGameMasterBeatContractLines(input),
-  ].join('\n')
+  ].join('\n'))
 }
 
 function responseFlags(raw: string): GameMasterGenerationResponseFlags {
@@ -693,7 +714,7 @@ function buildGameMasterBeatRepairPrompt(
   input: GenerateGameMasterBeatInput,
   diagnostics: GameMasterGenerationDiagnostics
 ): string {
-  return [
+  return clampGameMasterPrompt([
     'Your previous game-master beat response failed the required JSON contract.',
     `Failure category: ${diagnostics.initialErrorCategory ?? 'validation_error'}`,
     `Previous response length: ${diagnostics.initialResponseLength ?? 0}`,
@@ -709,7 +730,7 @@ function buildGameMasterBeatRepairPrompt(
     ...buildProgressionContextLines(input.progressionContext),
     '',
     ...buildGameMasterBeatContractLines(input),
-  ].join('\n')
+  ].join('\n'))
 }
 
 function withGenerationDiagnostics(

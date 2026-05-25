@@ -20,11 +20,17 @@ const CHARACTER_PROMPT_OBJECTIVE_MAX_CHARS = 240
 const CHARACTER_PROMPT_OPEN_THREADS_MAX_CHARS = 400
 const CHARACTER_PROMPT_NARRATION_MAX_CHARS = 650
 const CHARACTER_PROMPT_INSTRUCTION_MAX_CHARS = 450
+const OFFICIAL_ELIZA_MESSAGE_MAX_CHARS = 3900
 
 function truncatePromptValue(value: string, limit: number): string {
   const normalized = value.replace(/\s+/g, ' ').trim()
   if (normalized.length <= limit) return normalized
   return `${normalized.slice(0, Math.max(0, limit - 1)).trim()}…`
+}
+
+function clampOfficialPrompt(prompt: string): string {
+  if (prompt.length <= OFFICIAL_ELIZA_MESSAGE_MAX_CHARS) return prompt
+  return `${prompt.slice(0, OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - 1).trimEnd()}…`
 }
 
 function formatParticipants(participants: LocationRoomParticipant[]): string {
@@ -82,7 +88,7 @@ function formatNarrativeContext(input: GenerateOfficialLocationRoomTurnInput): s
 }
 
 export function buildOfficialLocationRoomPrompt(input: GenerateOfficialLocationRoomTurnInput): string {
-  return [
+  return clampOfficialPrompt([
     'You are participating in a public WAGDIE location room.',
     `Location id: ${input.room.locationId}.`,
     `You are speaking as ${input.speaker.name} (#${input.speaker.tokenId}).`,
@@ -96,7 +102,7 @@ export function buildOfficialLocationRoomPrompt(input: GenerateOfficialLocationR
     '',
     'Write exactly one short in-world utterance as your character.',
     'Keep it under two sentences. Do not use markdown, speaker labels, JSON, stage directions, or out-of-world explanations.',
-  ].join('\n')
+  ].join('\n'))
 }
 
 export function normalizeLocationRoomGeneratedContent(content: string): string | null {
