@@ -153,6 +153,7 @@ function makeRoomRepository(): jest.Mocked<LocationRoomRepository> {
     listActiveTicksForRoom: jest.fn(),
     listRecentTicksForRoom: jest.fn(),
     getPublicMessageStats: jest.fn(),
+    getPublicAuthorMessageStats: jest.fn(),
     markTickSelected: jest.fn(),
     appendMessage: jest.fn(),
     markTickCompleted: jest.fn(),

@@ -52,6 +52,7 @@ export type LocationRoomRecommendedNextAction =
   | 'wait_for_retry'
   | 'wait_for_cadence'
   | 'missing_trigger_readiness'
+  | 'missing_public_game_master_message'
   | 'wait_for_next_tick'
 
 export type LocationRoomHealthDiagnostics = {
@@ -130,6 +131,10 @@ export type LocationRoomHealthDiagnostics = {
     messageCount: number
     latestSequence: number | null
     latestCreatedAt: string | null
+    gameMasterMessageCount: number
+    agentMessageCount: number
+    latestGameMasterMessageCreatedAt: string | null
+    latestAgentMessageCreatedAt: string | null
   }
   narrative: {
     enabled: boolean
@@ -142,7 +147,15 @@ export type LocationRoomHealthDiagnostics = {
       selectedTokenId: number | null
       completedAt: string | null
       lastError: string | null
+      publicNarrationPresent: boolean
     } | null
+  }
+  narrativeVisibility: {
+    latestBeatPublicNarrationPresent: boolean | null
+    publicGameMasterMessageCount: number
+    publicAgentMessageCount: number
+    completedBeatWithoutPublicGameMasterMessage: boolean
+    blocker: 'missing_public_game_master_message' | null
   }
   gmGeneration: LocationRoomHealthGameMasterGenerationSummary
   triggerReadiness: {
@@ -518,6 +531,7 @@ function recommendedNextAction(input: {
   retryCadence: LocationRoomHealthDiagnostics['retryCadence']
   gmGeneration: LocationRoomHealthDiagnostics['gmGeneration']
   triggerReadiness: LocationRoomHealthDiagnostics['triggerReadiness']
+  completedBeatWithoutPublicGameMasterMessage: boolean
 }): LocationRoomRecommendedNextAction {
   if (!input.locationExists) {
     return input.canonical.canonicalLocationId ? 'use_canonical_location_11' : 'location_not_found'
@@ -538,6 +552,7 @@ function recommendedNextAction(input: {
   if (input.gmGeneration.status === 'repair_failed') return 'inspect_gm_repair_failure'
   if (input.retryCadence.failedTickNotDue) return 'wait_for_retry'
   if (input.recentTicks.some((tick) => tick.status === 'dead')) return 'inspect_failed_tick'
+  if (input.completedBeatWithoutPublicGameMasterMessage) return 'missing_public_game_master_message'
   if (input.publicMessageCount === 0) return 'trigger_location_room_tick'
 
   const triggerBlockers = input.triggerReadiness.blockers.filter((blocker) => blocker !== 'missing_narrative_state')
@@ -641,7 +656,15 @@ export class LocationRoomAdminDiagnosticsService {
         ticks: { active: [], recent: [] },
         durableIntent,
         retryCadence,
-        publicTranscript: { messageCount: 0, latestSequence: null, latestCreatedAt: null },
+        publicTranscript: {
+          messageCount: 0,
+          latestSequence: null,
+          latestCreatedAt: null,
+          gameMasterMessageCount: 0,
+          agentMessageCount: 0,
+          latestGameMasterMessageCreatedAt: null,
+          latestAgentMessageCreatedAt: null,
+        },
         narrative: {
           enabled: config.narrativeEnabled,
           link: null,
@@ -649,6 +672,13 @@ export class LocationRoomAdminDiagnosticsService {
           stateUpdatedAt: null,
           currentObjective: null,
           latestBeat: null,
+        },
+        narrativeVisibility: {
+          latestBeatPublicNarrationPresent: null,
+          publicGameMasterMessageCount: 0,
+          publicAgentMessageCount: 0,
+          completedBeatWithoutPublicGameMasterMessage: false,
+          blocker: null,
         },
         gmGeneration,
         triggerReadiness,
@@ -676,6 +706,7 @@ export class LocationRoomAdminDiagnosticsService {
           retryCadence,
           gmGeneration,
           triggerReadiness,
+          completedBeatWithoutPublicGameMasterMessage: false,
         }),
       }
     }
@@ -691,9 +722,25 @@ export class LocationRoomAdminDiagnosticsService {
         this.roomRepository.listRecentTicksForRoom(room.id, RECENT_TICK_LIMIT),
       ])
       : [[], []]
-    const publicTranscript = room
-      ? await this.roomRepository.getPublicMessageStats(room.id)
-      : { messageCount: 0, latestSequence: null, latestCreatedAt: null }
+    const [publicMessageStats, publicAuthorMessageStats] = room
+      ? await Promise.all([
+        this.roomRepository.getPublicMessageStats(room.id),
+        this.roomRepository.getPublicAuthorMessageStats(room.id),
+      ])
+      : [{ messageCount: 0, latestSequence: null, latestCreatedAt: null }, {
+        messageCount: 0,
+        gameMasterMessageCount: 0,
+        agentMessageCount: 0,
+        latestGameMasterMessageCreatedAt: null,
+        latestAgentMessageCreatedAt: null,
+      }]
+    const publicTranscript = {
+      ...publicMessageStats,
+      gameMasterMessageCount: publicAuthorMessageStats.gameMasterMessageCount,
+      agentMessageCount: publicAuthorMessageStats.agentMessageCount,
+      latestGameMasterMessageCreatedAt: publicAuthorMessageStats.latestGameMasterMessageCreatedAt,
+      latestAgentMessageCreatedAt: publicAuthorMessageStats.latestAgentMessageCreatedAt,
+    }
 
     const [
       narrativeState,
@@ -718,6 +765,15 @@ export class LocationRoomAdminDiagnosticsService {
       : [null, [], null, null, [], [], null, []] as const
 
     const latestBeat = latestBeats[0] ?? null
+    const latestBeatPublicNarrationPresent = latestBeat
+      ? Boolean(latestBeat.publicNarration?.trim())
+      : null
+    const completedBeatWithoutPublicGameMasterMessage = Boolean(
+      latestBeat &&
+      latestBeat.status === 'completed' &&
+      publicAuthorMessageStats.gameMasterMessageCount === 0 &&
+      publicAuthorMessageStats.agentMessageCount > 0
+    )
     const durableIntent = buildDurableIntentSummary(activeTicks, recentTicks)
     const retryCadence = buildRetryCadenceSummary(room, activeTicks, now, config.tickIntervalMinutes)
     const gmGeneration = summarizeGmGeneration(latestBeat)
@@ -773,7 +829,15 @@ export class LocationRoomAdminDiagnosticsService {
           selectedTokenId: latestBeat.selectedTokenId,
           completedAt: latestBeat.completedAt,
           lastError: sanitizeStoredError(latestBeat.lastError, SAFE_NARRATIVE_ERROR),
+          publicNarrationPresent: latestBeatPublicNarrationPresent === true,
         } : null,
+      },
+      narrativeVisibility: {
+        latestBeatPublicNarrationPresent,
+        publicGameMasterMessageCount: publicAuthorMessageStats.gameMasterMessageCount,
+        publicAgentMessageCount: publicAuthorMessageStats.agentMessageCount,
+        completedBeatWithoutPublicGameMasterMessage,
+        blocker: completedBeatWithoutPublicGameMasterMessage ? 'missing_public_game_master_message' : null,
       },
       gmGeneration,
       triggerReadiness,
@@ -804,6 +868,7 @@ export class LocationRoomAdminDiagnosticsService {
       retryCadence,
       gmGeneration,
       triggerReadiness,
+      completedBeatWithoutPublicGameMasterMessage,
     })
 
     return diagnostics

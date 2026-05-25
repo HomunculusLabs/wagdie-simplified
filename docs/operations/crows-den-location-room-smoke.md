@@ -18,7 +18,10 @@ Canonical Crow's Den location is `locations.id='11'`. Do not smoke against legac
 5. If repair fails, verify the beat/tick becomes failed or dead through normal retry handling and diagnostics recommend `inspect_gm_repair_failure` or `wait_for_retry` as appropriate.
 6. Verify no gameplay combat encounter spawns without an unconsumed narrative/admin `start_combat` trigger.
 7. Trigger an admin `combat` tick; verify diagnostics show an explicit unconsumed manual trigger such as `manual:<tick_id>` and the next combat-capable processing path can create/consume it.
-8. Verify diagnostics distinguish these operator states: retry wait, normal cadence wait, missing trigger/readiness, and parse/repair failure.
+8. Verify diagnostics distinguish these operator states: retry wait, normal cadence wait, missing trigger/readiness, missing public GM message, and parse/repair failure.
+9. On a fresh/reset canonical Crow's Den room, verify the first completed narrative tick creates at least one public `author_kind='game_master'` message before/alongside character output.
+10. After repeated room activity, verify narrative state does not remain flat indefinitely: `ttrpgPhase='story'`, `combatReadiness='none'`, and `threatLevel=0|null` should escalate visibly without requiring combat.
+11. If completed narrative beats and public agent messages exist but no public GM messages exist, verify diagnostics recommend `missing_public_game_master_message`.
 
 ## Notes
 

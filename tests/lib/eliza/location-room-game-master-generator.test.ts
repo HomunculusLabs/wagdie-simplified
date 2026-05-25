@@ -24,6 +24,7 @@ jest.mock('@/lib/eliza/characterResolver', () => ({
 import {
   GameMasterBeatGenerationError,
   OfficialGameMasterBeatGenerator,
+  buildGameMasterBeatProgressionContext,
   buildGameMasterBeatPrompt,
   normalizeGameMasterBeatResponse,
 } from '@/lib/eliza/locationRooms/gameMasterGenerator'
@@ -169,6 +170,40 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('requestedGameplayAction "start_combat"')
   })
 
+  it('requires public narration in the prompt when no prior public GM message exists', () => {
+    const progressionContext = buildGameMasterBeatProgressionContext({
+      room: room(),
+      narrativeState: narrativeState(),
+      publicAuthorMessageStats: {
+        messageCount: 0,
+        gameMasterMessageCount: 0,
+        agentMessageCount: 0,
+        latestGameMasterMessageCreatedAt: null,
+        latestAgentMessageCreatedAt: null,
+      },
+    })
+
+    const prompt = buildGameMasterBeatPrompt({
+      gameMasterAgentId: 'gm-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages: [],
+      narrativeState: narrativeState(),
+      progressionContext,
+    })
+
+    expect(progressionContext).toMatchObject({
+      requirePublicNarration: true,
+      requireOpeningPublicNarration: true,
+      publicNarrationRequirementReason: 'no_prior_public_game_master_message',
+    })
+    expect(prompt).toContain('Public narration is REQUIRED for this beat.')
+    expect(prompt).toContain('Reason: no prior public Game Master message exists.')
+    expect(prompt).toContain('"publicNarration": "required public narration for observers"')
+  })
+
   it('normalizes fenced JSON and caps public/state/thread values', () => {
     const output = normalizeGameMasterBeatResponse(
       '```json\n{"publicNarration":"The ash bell tolls beyond the ruined gate.","speakerInstruction":"Answer the bell without solving it.","stateSummary":"The bell is now louder near the ruined gate and the room is wary.","currentObjective":"Follow the sound","openThreads":["Who rings the bell?","What waits below?","extra"],"ttrpgPhase":"threat","combatReadiness":"ready","threatLevel":7,"requestedGameplayAction":"start_combat","encounterSeed":{"title":"Bell Horror","summary":"A horror answers the bell.","stakes":"The gate may open."},"featuredTokenIds":[1,2],"selectedSpeakerTokenId":1}\n```',
@@ -246,6 +281,105 @@ describe('game-master beat generator helpers', () => {
       { participants, speaker: participants[0] },
       { gameMasterAgentId: 'gm-1', limits }
     )).toThrow('did not match')
+  })
+
+  it('rejects required missing public narration and repeated flat opening state without forcing combat', () => {
+    const requiredNarrationContext = buildGameMasterBeatProgressionContext({
+      room: room(),
+      narrativeState: narrativeState(),
+      publicAuthorMessageStats: {
+        messageCount: 1,
+        gameMasterMessageCount: 0,
+        agentMessageCount: 1,
+        latestGameMasterMessageCreatedAt: null,
+        latestAgentMessageCreatedAt: now,
+      },
+    })
+    expect(() => normalizeGameMasterBeatResponse(
+      '{"publicNarration":null,"speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"exploration"}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits, progressionContext: requiredNarrationContext }
+    )).toThrow('publicNarration')
+
+    const repeatedFlatNoGmContext = buildGameMasterBeatProgressionContext({
+      room: room({ tickCount: 2 }),
+      narrativeState: {
+        ...narrativeState(),
+        metadata: { ttrpgPhase: 'story', combatReadiness: 'none', threatLevel: 0 },
+      },
+      publicAuthorMessageStats: {
+        messageCount: 3,
+        gameMasterMessageCount: 0,
+        agentMessageCount: 3,
+        latestGameMasterMessageCreatedAt: null,
+        latestAgentMessageCreatedAt: now,
+      },
+    })
+    expect(repeatedFlatNoGmContext).toMatchObject({
+      requirePublicNarration: true,
+      requireOpeningPublicNarration: true,
+      requireEscalationBeyondOpening: true,
+      publicNarrationRequirementReason: 'no_prior_public_game_master_message',
+    })
+    expect(() => normalizeGameMasterBeatResponse(
+      '{"publicNarration":"The air changes.","speakerInstruction":"Notice it.","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"story","combatReadiness":"none","threatLevel":0}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits, progressionContext: repeatedFlatNoGmContext }
+    )).toThrow('visibly escalate')
+
+    const repeatedFlatContext = buildGameMasterBeatProgressionContext({
+      room: room({ tickCount: 2 }),
+      narrativeState: {
+        ...narrativeState(),
+        metadata: { ttrpgPhase: 'story', combatReadiness: 'none', threatLevel: 0 },
+      },
+      publicAuthorMessageStats: {
+        messageCount: 3,
+        gameMasterMessageCount: 1,
+        agentMessageCount: 2,
+        latestGameMasterMessageCreatedAt: now,
+        latestAgentMessageCreatedAt: now,
+      },
+    })
+    expect(repeatedFlatContext).toMatchObject({
+      requirePublicNarration: true,
+      requireEscalationBeyondOpening: true,
+      publicNarrationRequirementReason: 'repeated_activity_without_visible_escalation',
+    })
+    expect(() => normalizeGameMasterBeatResponse(
+      '{"publicNarration":"The air changes.","speakerInstruction":"Notice it.","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"story","combatReadiness":"none","threatLevel":0}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits, progressionContext: repeatedFlatContext }
+    )).toThrow('visibly escalate')
+
+    const escalated = normalizeGameMasterBeatResponse(
+      '{"publicNarration":"The ash parts around a hidden stair.","speakerInstruction":"Choose whether to descend.","stateSummary":"A hidden stair opens.","currentObjective":"Explore the stair","openThreads":["What waits?"],"ttrpgPhase":"exploration","combatReadiness":"none","threatLevel":0,"requestedGameplayAction":null}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits, progressionContext: repeatedFlatContext }
+    )
+    expect(escalated).toMatchObject({
+      ttrpgPhase: 'exploration',
+      combatReadiness: 'none',
+      requestedGameplayAction: null,
+    })
+
+    const optionalNarrationContext = buildGameMasterBeatProgressionContext({
+      room: room({ tickCount: 3 }),
+      narrativeState: narrativeState(),
+      publicAuthorMessageStats: {
+        messageCount: 4,
+        gameMasterMessageCount: 1,
+        agentMessageCount: 3,
+        latestGameMasterMessageCreatedAt: now,
+        latestAgentMessageCreatedAt: now,
+      },
+    })
+    const optional = normalizeGameMasterBeatResponse(
+      '{"speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"exploration"}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits, progressionContext: optionalNarrationContext }
+    )
+    expect(optional.publicNarration).toBeNull()
   })
 
   it('rejects structurally weak progression and unsafe combat handoff contracts', () => {
@@ -343,6 +477,18 @@ describe('game-master beat generator helpers', () => {
     }
     const generator = new OfficialGameMasterBeatGenerator(messaging as never)
 
+    const progressionContext = buildGameMasterBeatProgressionContext({
+      room: room(),
+      narrativeState: narrativeState(),
+      publicAuthorMessageStats: {
+        messageCount: 0,
+        gameMasterMessageCount: 0,
+        agentMessageCount: 0,
+        latestGameMasterMessageCreatedAt: null,
+        latestAgentMessageCreatedAt: null,
+      },
+    })
+
     const output = await generator.generateBeat({
       gameMasterAgentId: 'gm-runtime-1',
       room: room(),
@@ -351,6 +497,7 @@ describe('game-master beat generator helpers', () => {
       speaker: participants[0],
       recentMessages: [message()],
       narrativeState: narrativeState(),
+      progressionContext,
     })
 
     expect(output.stateAfter.currentObjective).toBe('Answer the toll.')
@@ -369,6 +516,8 @@ describe('game-master beat generator helpers', () => {
     expect(repairPrompt).toContain('Return only a JSON object')
     expect(repairPrompt).toContain('selectedSpeakerTokenId must be 1')
     expect(repairPrompt).toContain('Non-aftermath beats must include a concrete currentObjective')
+    expect(repairPrompt).toContain('Public narration is REQUIRED for this beat.')
+    expect(repairPrompt).toContain('publicNarration is required and must be non-empty')
     expect(repairPrompt).not.toContain('not json')
   })
 

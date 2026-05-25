@@ -12,6 +12,7 @@ import {
   type LocationRoomEncounterSeed,
   type LocationRoomMessage,
   type LocationRoomParticipant,
+  type LocationRoomPublicAuthorMessageStats,
   type LocationRoomRequestedGameplayAction,
   type LocationRoomTick,
   type LocationRoomTtrpgPhase,
@@ -85,6 +86,21 @@ export type GenerateGameMasterBeatInput = {
   speaker: LocationRoomParticipant
   recentMessages: LocationRoomMessage[]
   narrativeState: LocationRoomNarrativeState
+  progressionContext?: GameMasterBeatProgressionContext
+}
+
+export type GameMasterBeatProgressionContext = {
+  requirePublicNarration: boolean
+  requireOpeningPublicNarration: boolean
+  requireEscalationBeyondOpening: boolean
+  publicNarrationRequirementReason:
+    | 'no_prior_public_game_master_message'
+    | 'repeated_activity_without_visible_escalation'
+    | null
+  roomTickCount: number
+  publicMessageCount: number
+  publicGameMasterMessageCount: number
+  publicAgentMessageCount: number
 }
 
 type ParsedBeat = Record<string, unknown>
@@ -199,14 +215,69 @@ function parseEncounterSeed(value: unknown): LocationRoomEncounterSeed | null {
   return normalized
 }
 
+function isFlatOpeningState(input: {
+  ttrpgPhase: LocationRoomTtrpgPhase
+  combatReadiness: LocationRoomCombatReadiness
+  threatLevel: number | null
+}): boolean {
+  return input.ttrpgPhase === 'story' &&
+    input.combatReadiness === 'none' &&
+    (input.threatLevel == null || input.threatLevel <= 0)
+}
+
+export function buildGameMasterBeatProgressionContext(input: {
+  room: Pick<LocationRoom, 'tickCount'>
+  narrativeState: LocationRoomNarrativeState
+  publicAuthorMessageStats: LocationRoomPublicAuthorMessageStats
+}): GameMasterBeatProgressionContext {
+  const ttrpg = normalizeNarrativeTtrpgMetadata(input.narrativeState.metadata)
+  const requireOpeningPublicNarration = input.publicAuthorMessageStats.gameMasterMessageCount === 0
+  const flatOpeningState = isFlatOpeningState({
+    ttrpgPhase: ttrpg.ttrpgPhase,
+    combatReadiness: ttrpg.combatReadiness,
+    threatLevel: ttrpg.threatLevel,
+  })
+  const requireEscalationBeyondOpening = flatOpeningState &&
+    (input.room.tickCount >= 2 || input.publicAuthorMessageStats.messageCount >= 3)
+  const requirePublicNarration = requireOpeningPublicNarration || requireEscalationBeyondOpening
+
+  return {
+    requirePublicNarration,
+    requireOpeningPublicNarration,
+    requireEscalationBeyondOpening,
+    publicNarrationRequirementReason: requireOpeningPublicNarration
+      ? 'no_prior_public_game_master_message'
+      : requireEscalationBeyondOpening
+        ? 'repeated_activity_without_visible_escalation'
+        : null,
+    roomTickCount: input.room.tickCount,
+    publicMessageCount: input.publicAuthorMessageStats.messageCount,
+    publicGameMasterMessageCount: input.publicAuthorMessageStats.gameMasterMessageCount,
+    publicAgentMessageCount: input.publicAuthorMessageStats.agentMessageCount,
+  }
+}
+
 export function validateGameMasterBeatProgressionContract(output: {
+  publicNarration?: string | null
   stateAfter: LocationRoomNarrativeStateSnapshot
   ttrpgPhase: LocationRoomTtrpgPhase
   combatReadiness: LocationRoomCombatReadiness
   threatLevel: number | null
   requestedGameplayAction: LocationRoomRequestedGameplayAction | null
   encounterSeed: LocationRoomEncounterSeed | null
+  progressionContext?: GameMasterBeatProgressionContext
 }): void {
+  if (output.progressionContext?.requirePublicNarration && !output.publicNarration?.trim()) {
+    throw new Error('Game-master beat response publicNarration is required by progression context')
+  }
+
+  if (
+    output.progressionContext?.requireEscalationBeyondOpening &&
+    isFlatOpeningState(output)
+  ) {
+    throw new Error('Game-master beat response must visibly escalate beyond flat opening state')
+  }
+
   if (output.ttrpgPhase !== 'aftermath') {
     if (!output.stateAfter.currentObjective) {
       throw new Error('Game-master beat response missing currentObjective for non-aftermath progression')
@@ -277,6 +348,7 @@ export function normalizeGameMasterBeatResponse(
   options: {
     gameMasterAgentId: string
     limits?: GameMasterBeatLimits
+    progressionContext?: GameMasterBeatProgressionContext
   }
 ): GameMasterBeatOutput {
   const limits = options.limits ?? elizaConfig.locationRooms.narrative
@@ -323,6 +395,10 @@ export function normalizeGameMasterBeatResponse(
     parsed.requestedGameplayAction ?? parsed.requested_gameplay_action
   )
   const encounterSeed = parseEncounterSeed(parsed.encounterSeed ?? parsed.encounter_seed)
+  const publicNarration = parseOptionalString(
+    parsed.publicNarration ?? parsed.public_narration,
+    limits.publicNarrationMaxLength
+  )
   const stateAfter = {
     stateSummary,
     currentObjective,
@@ -330,20 +406,19 @@ export function normalizeGameMasterBeatResponse(
   }
 
   validateGameMasterBeatProgressionContract({
+    publicNarration,
     stateAfter,
     ttrpgPhase,
     combatReadiness,
     threatLevel,
     requestedGameplayAction,
     encounterSeed,
+    progressionContext: options.progressionContext,
   })
 
   return {
     gameMasterAgentId: options.gameMasterAgentId,
-    publicNarration: parseOptionalString(
-      parsed.publicNarration ?? parsed.public_narration,
-      limits.publicNarrationMaxLength
-    ),
+    publicNarration,
     speakerInstruction,
     stateAfter,
     ttrpgPhase,
@@ -396,11 +471,48 @@ function formatEncounterSeed(seed: LocationRoomEncounterSeed | null): string {
   ].filter(Boolean).join(' | ') || 'None.'
 }
 
-function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInput, 'participants' | 'speaker'>): string[] {
+function buildProgressionContextLines(context?: GameMasterBeatProgressionContext): string[] {
+  if (!context) {
+    return [
+      'Public narration is optional unless the current room context requires a visible game-master beat.',
+    ]
+  }
+
+  const lines = [
+    'Progression context:',
+    `Room tick count: ${context.roomTickCount}`,
+    `Public messages: ${context.publicMessageCount} total, ${context.publicGameMasterMessageCount} game-master, ${context.publicAgentMessageCount} agent.`,
+  ]
+
+  if (context.requirePublicNarration) {
+    const reason = context.publicNarrationRequirementReason === 'no_prior_public_game_master_message'
+      ? 'no prior public Game Master message exists.'
+      : 'repeated room activity is still in flat opening state.'
+    lines.push('Public narration is REQUIRED for this beat.')
+    lines.push(`Reason: ${reason}`)
+  } else {
+    lines.push('Public narration is optional for this beat because a public Game Master message already exists and the scene is not stuck in flat opening state.')
+  }
+
+  if (context.requireEscalationBeyondOpening) {
+    lines.push('This room has repeated activity while still in a flat opening state.')
+    lines.push('Do not return ttrpgPhase="story" with combatReadiness="none" and threatLevel 0/null.')
+    lines.push('Escalate visibly without forcing combat: use exploration, threat, combatReadiness "foreshadow", or threatLevel at least 1.')
+    lines.push('requestedGameplayAction may remain null unless fiction clearly demands combat.')
+  }
+
+  return lines
+}
+
+function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInput, 'participants' | 'speaker' | 'progressionContext'>): string[] {
+  const publicNarrationContract = input.progressionContext?.requirePublicNarration
+    ? '"required public narration for observers"'
+    : '"optional public narration for observers, or null"'
+
   return [
     'Return only a JSON object with this exact contract:',
     '{',
-    '  "publicNarration": "optional public narration for observers, or null",',
+    `  "publicNarration": ${publicNarrationContract},`,
     '  "speakerInstruction": "private direction for only the selected speaker",',
     '  "stateSummary": "updated private continuity summary after this beat",',
     '  "currentObjective": "concrete current objective, or null only when ttrpgPhase is aftermath",',
@@ -421,6 +533,12 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     `- selectedSpeakerTokenId must be ${input.speaker.tokenId}; do not select another speaker.`,
     '- Keep public narration suitable for public display and avoid markdown.',
     '- Non-aftermath beats must include a concrete currentObjective and at least one unresolved openThreads entry.',
+    ...(input.progressionContext?.requirePublicNarration
+      ? ['- publicNarration is required and must be non-empty for this beat.']
+      : ['- publicNarration may be null only when this beat is character-focused and no public GM narration is required.']),
+    ...(input.progressionContext?.requireEscalationBeyondOpening
+      ? ['- Do not leave repeated activity in flat story/none/0 state; visibly escalate without forcing start_combat.']
+      : []),
     '- Preserve or refine the current objective/thread, and advance the scene with a decision, clue, complication, changed threat/readiness, or explicit consequence.',
     '- Do not spawn combat by default. Most beats should keep requestedGameplayAction null.',
     '- Use ttrpgPhase "threat" and combatReadiness "foreshadow" with threatLevel at least 1 to hint at danger without starting combat.',
@@ -467,6 +585,8 @@ export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): s
     '',
     ...buildNarrativeStateLines(input),
     '',
+    ...buildProgressionContextLines(input.progressionContext),
+    '',
     ...buildGameMasterBeatContractLines(input),
   ].join('\n')
 }
@@ -488,7 +608,7 @@ function categorizeBeatResponseError(error: unknown): string {
   if (/invalid JSON/i.test(message)) return 'invalid_json'
   if (/selectedSpeakerTokenId|selected speaker/i.test(message)) return 'speaker_constraint'
   if (/token id|featuredTokenIds/i.test(message)) return 'token_constraint'
-  if (/currentObjective|openThreads|start_combat|combatReadiness|ttrpgPhase|threatLevel|encounterSeed|requestedGameplayAction/i.test(message)) {
+  if (/currentObjective|openThreads|start_combat|combatReadiness|ttrpgPhase|threatLevel|encounterSeed|requestedGameplayAction|publicNarration|flat opening|visibly escalate/i.test(message)) {
     return 'progression_contract'
   }
   if (/missing .*speakerInstruction|missing .*stateSummary/i.test(message)) return 'missing_required_field'
@@ -522,6 +642,8 @@ function buildGameMasterBeatRepairPrompt(
     formatParticipants(input.participants),
     '',
     ...buildNarrativeStateLines(input),
+    '',
+    ...buildProgressionContextLines(input.progressionContext),
     '',
     ...buildGameMasterBeatContractLines(input),
   ].join('\n')
@@ -607,6 +729,7 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
       try {
         return withGenerationDiagnostics(normalizeGameMasterBeatResponse(collected.text, input, {
           gameMasterAgentId,
+          progressionContext: input.progressionContext,
         }), {
           status: 'accepted',
           repairAttempted: false,
@@ -657,6 +780,7 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
         try {
           return withGenerationDiagnostics(normalizeGameMasterBeatResponse(repairText, input, {
             gameMasterAgentId,
+            progressionContext: input.progressionContext,
           }), {
             ...diagnostics,
             status: 'repaired',

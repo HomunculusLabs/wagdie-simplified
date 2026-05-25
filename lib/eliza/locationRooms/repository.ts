@@ -10,6 +10,7 @@ import type {
   LocationRoomLocation,
   LocationRoomLocationDetails,
   LocationRoomMessage,
+  LocationRoomPublicAuthorMessageStats,
   LocationRoomPublicMessageStats,
   LocationRoomTick,
   LocationRoomTriggerType,
@@ -263,6 +264,7 @@ export interface LocationRoomRepository {
   listActiveTicksForRoom(roomId: string, limit: number): Promise<LocationRoomTick[]>
   listRecentTicksForRoom(roomId: string, limit: number): Promise<LocationRoomTick[]>
   getPublicMessageStats(roomId: string): Promise<LocationRoomPublicMessageStats>
+  getPublicAuthorMessageStats(roomId: string): Promise<LocationRoomPublicAuthorMessageStats>
   markTickSelected(tickId: string, tokenId: number): Promise<LocationRoomTick>
   appendMessage(input: CreateLocationRoomMessageInput): Promise<LocationRoomMessage>
   markTickCompleted(tickId: string): Promise<LocationRoomTick>
@@ -653,6 +655,22 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     }
   }
 
+  async getPublicAuthorMessageStats(roomId: string): Promise<LocationRoomPublicAuthorMessageStats> {
+    const [publicStats, gameMasterStats, agentStats] = await Promise.all([
+      this.getPublicMessageStats(roomId),
+      this.getPublicAuthorKindStats(roomId, 'game_master'),
+      this.getPublicAuthorKindStats(roomId, 'agent'),
+    ])
+
+    return {
+      messageCount: publicStats.messageCount,
+      gameMasterMessageCount: gameMasterStats.messageCount,
+      agentMessageCount: agentStats.messageCount,
+      latestGameMasterMessageCreatedAt: gameMasterStats.latestCreatedAt,
+      latestAgentMessageCreatedAt: agentStats.latestCreatedAt,
+    }
+  }
+
   async markTickSelected(tickId: string, tokenId: number): Promise<LocationRoomTick> {
     return this.updateTick(tickId, { selected_token_id: tokenId })
   }
@@ -819,6 +837,27 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
 
     if (error) throw new Error(error.message)
     return (data ?? []).map(mapMessage).reverse()
+  }
+
+  private async getPublicAuthorKindStats(
+    roomId: string,
+    authorKind: LocationRoomMessage['authorKind']
+  ): Promise<{ messageCount: number; latestCreatedAt: string | null }> {
+    const { data, error, count } = (await table(MESSAGES_TABLE)
+      .select(MESSAGE_COLUMNS, { count: 'exact' })
+      .eq('room_id', roomId)
+      .eq('visibility', 'public')
+      .eq('author_kind', authorKind)
+      .order('created_at', { ascending: false })
+      .limit(1)) as QueryResult<MessageRow[]>
+
+    if (error) throw new Error(error.message)
+    const latest = data?.[0] ? mapMessage(data[0]) : null
+
+    return {
+      messageCount: count ?? data?.length ?? 0,
+      latestCreatedAt: latest?.createdAt ?? null,
+    }
   }
 
   private async updateTick(tickId: string, values: Record<string, unknown>): Promise<LocationRoomTick> {

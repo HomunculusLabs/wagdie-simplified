@@ -107,6 +107,14 @@ export type LocationRoomPublicMessageStats = {
   latestCreatedAt: string | null
 }
 
+export type LocationRoomPublicAuthorMessageStats = {
+  messageCount: number
+  gameMasterMessageCount: number
+  agentMessageCount: number
+  latestGameMasterMessageCreatedAt: string | null
+  latestAgentMessageCreatedAt: string | null
+}
+
 export type LocationRoomParticipant = {
   tokenId: number
   name: string

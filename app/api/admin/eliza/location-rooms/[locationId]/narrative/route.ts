@@ -108,6 +108,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
         status: beat.status,
         selectedTokenId: beat.selectedTokenId,
         publicNarration: beat.publicNarration,
+        publicNarrationPresent: Boolean(beat.publicNarration?.trim()),
         ...summarizeBeatState(beat),
         lastError: beat.lastError ? SAFE_NARRATIVE_ERROR_MESSAGE : null,
         createdAt: beat.createdAt,

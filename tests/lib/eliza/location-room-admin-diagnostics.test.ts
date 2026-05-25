@@ -212,6 +212,13 @@ function makeRoomRepository(overrides: Partial<jest.Mocked<LocationRoomRepositor
       latestSequence: 4,
       latestCreatedAt: '2026-05-23T11:01:00.000Z',
     })),
+    getPublicAuthorMessageStats: jest.fn(async () => ({
+      messageCount: 1,
+      gameMasterMessageCount: 1,
+      agentMessageCount: 0,
+      latestGameMasterMessageCreatedAt: '2026-05-23T11:01:00.000Z',
+      latestAgentMessageCreatedAt: null,
+    })),
     markTickSelected: jest.fn(),
     appendMessage: jest.fn(),
     markTickCompleted: jest.fn(),
@@ -582,6 +589,55 @@ describe('LocationRoomAdminDiagnosticsService', () => {
       'missing_combat_trigger',
     ]))
     expect(result.recommendedNextAction).toBe('missing_trigger_readiness')
+  })
+
+  it('reports public author counts, latest beat narration presence, and missing public GM action', async () => {
+    mutableNarrative.enabled = true
+    const roomRepository = makeRoomRepository({
+      getPublicMessageStats: jest.fn(async () => ({
+        messageCount: 1,
+        latestSequence: 5,
+        latestCreatedAt: '2026-05-23T11:02:00.000Z',
+      })),
+      getPublicAuthorMessageStats: jest.fn(async () => ({
+        messageCount: 1,
+        gameMasterMessageCount: 0,
+        agentMessageCount: 1,
+        latestGameMasterMessageCreatedAt: null,
+        latestAgentMessageCreatedAt: '2026-05-23T11:02:00.000Z',
+      })),
+    })
+    const narrativeRepository = makeNarrativeRepository({
+      findStateByRoomId: jest.fn(async () => narrativeState()),
+      listRecentBeatsByRoomId: jest.fn(async () => [narrativeBeat({
+        status: 'completed',
+        publicNarration: null,
+        metadata: { rawResponseText: 'do not expose' },
+      })]),
+    })
+
+    const result = await makeService({ roomRepository, narrativeRepository }).inspectLocation('11')
+
+    expect(result.publicTranscript).toMatchObject({
+      messageCount: 1,
+      gameMasterMessageCount: 0,
+      agentMessageCount: 1,
+      latestGameMasterMessageCreatedAt: null,
+      latestAgentMessageCreatedAt: '2026-05-23T11:02:00.000Z',
+    })
+    expect(result.narrative.latestBeat).toMatchObject({
+      status: 'completed',
+      publicNarrationPresent: false,
+    })
+    expect(result.narrativeVisibility).toEqual({
+      latestBeatPublicNarrationPresent: false,
+      publicGameMasterMessageCount: 0,
+      publicAgentMessageCount: 1,
+      completedBeatWithoutPublicGameMasterMessage: true,
+      blocker: 'missing_public_game_master_message',
+    })
+    expect(result.recommendedNextAction).toBe('missing_public_game_master_message')
+    expect(JSON.stringify(result)).not.toContain('do not expose')
   })
 
   it('reports dead recent ticks as failed ticks to inspect', async () => {

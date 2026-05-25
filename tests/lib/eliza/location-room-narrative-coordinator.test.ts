@@ -39,7 +39,7 @@ import type { LocationRoom, LocationRoomMessage, LocationRoomParticipant, Locati
 
 const now = '2026-05-22T12:00:00.000Z'
 
-function room(): LocationRoom {
+function room(overrides: Partial<LocationRoom> = {}): LocationRoom {
   return {
     id: 'room-1',
     locationId: 'loc-1',
@@ -54,6 +54,7 @@ function room(): LocationRoom {
     lastError: null,
     createdAt: now,
     updatedAt: now,
+    ...overrides,
   }
 }
 
@@ -168,6 +169,13 @@ function makeRepository(): jest.Mocked<LocationRoomRepository> {
     listActiveTicksForRoom: jest.fn(),
     listRecentTicksForRoom: jest.fn(),
     getPublicMessageStats: jest.fn(),
+    getPublicAuthorMessageStats: jest.fn(async () => ({
+      messageCount: 0,
+      gameMasterMessageCount: 0,
+      agentMessageCount: 0,
+      latestGameMasterMessageCreatedAt: null,
+      latestAgentMessageCreatedAt: null,
+    })),
     markTickSelected: jest.fn(),
     appendMessage: jest.fn(async (input) => message({
       id: input.authorKind === 'game_master' ? 'msg-gm' : 'msg-character',
@@ -424,6 +432,51 @@ describe('location room narrative coordinator', () => {
     }))
   })
 
+  it('rejects a first/no-prior-GM beat missing public narration before character output', async () => {
+    const repository = makeRepository()
+    const narrativeRepository = makeNarrativeRepository()
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Speak into the silence.',
+        stateAfter: {
+          stateSummary: 'The room remains silent.',
+          currentObjective: 'Find the bell.',
+          openThreads: ['Who rang it?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    await expect(coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [],
+    })).rejects.toThrow('publicNarration')
+
+    expect(repository.appendMessage).not.toHaveBeenCalled()
+    expect(turnGenerator.generateTurn).not.toHaveBeenCalled()
+    expect(narrativeRepository.storeBeatGameMasterOutput).not.toHaveBeenCalled()
+  })
+
   it('marks a failed game-master repair on the beat without appending public output', async () => {
     const repository = makeRepository()
     const narrativeRepository = makeNarrativeRepository()
@@ -484,6 +537,47 @@ describe('location room narrative coordinator', () => {
     expect(narrativeRepository.storeBeatGameMasterOutput).not.toHaveBeenCalled()
   })
 
+  it('rejects stored generated output missing required first public narration', async () => {
+    const repository = makeRepository()
+    const narrativeRepository = makeNarrativeRepository(beat({
+      status: 'failed',
+      gameMasterAgentId: 'gm-1',
+      publicNarration: null,
+      speakerInstruction: 'Use the stored instruction.',
+      stateAfter: {
+        stateSummary: 'The stored state has no public GM narration.',
+        currentObjective: 'Keep retry idempotent.',
+        openThreads: ['Stored unresolved thread.'],
+      },
+    }))
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    await expect(coordinator.processTurn({
+      room: room(),
+      tick: tick({ attempts: 2 }),
+      speaker: participants[0],
+      participants,
+      recentMessages: [],
+    })).rejects.toThrow('publicNarration')
+
+    expect(gameMasterGenerator.generateBeat).not.toHaveBeenCalled()
+    expect(repository.appendMessage).not.toHaveBeenCalled()
+    expect(turnGenerator.generateTurn).not.toHaveBeenCalled()
+    expect(narrativeRepository.updateState).not.toHaveBeenCalled()
+  })
+
   it('rejects stored generated output that no longer satisfies the guided progression contract', async () => {
     const repository = makeRepository()
     const narrativeRepository = makeNarrativeRepository(beat({
@@ -525,8 +619,68 @@ describe('location room narrative coordinator', () => {
     expect(narrativeRepository.updateState).not.toHaveBeenCalled()
   })
 
+  it('rejects stored generated output that remains flat when repeated activity requires escalation', async () => {
+    const repository = makeRepository()
+    repository.getPublicAuthorMessageStats.mockResolvedValueOnce({
+      messageCount: 3,
+      gameMasterMessageCount: 1,
+      agentMessageCount: 2,
+      latestGameMasterMessageCreatedAt: now,
+      latestAgentMessageCreatedAt: now,
+    })
+    const narrativeRepository = makeNarrativeRepository(beat({
+      status: 'failed',
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'The stored bell repeats.',
+      speakerInstruction: 'Use the stored instruction.',
+      stateAfter: {
+        stateSummary: 'The stored state remains flat.',
+        currentObjective: 'Keep retry idempotent.',
+        openThreads: ['Stored unresolved thread.'],
+      },
+      metadata: {
+        ttrpgPhase: 'story',
+        combatReadiness: 'none',
+        threatLevel: 0,
+      },
+    }))
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    await expect(coordinator.processTurn({
+      room: room({ tickCount: 2 }),
+      tick: tick({ attempts: 2 }),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })).rejects.toThrow('visibly escalate')
+
+    expect(gameMasterGenerator.generateBeat).not.toHaveBeenCalled()
+    expect(repository.appendMessage).not.toHaveBeenCalled()
+    expect(turnGenerator.generateTurn).not.toHaveBeenCalled()
+    expect(narrativeRepository.updateState).not.toHaveBeenCalled()
+  })
+
   it('returns the appended character message even when post-append narrative bookkeeping fails', async () => {
     const repository = makeRepository()
+    repository.getPublicAuthorMessageStats.mockResolvedValueOnce({
+      messageCount: 2,
+      gameMasterMessageCount: 1,
+      agentMessageCount: 1,
+      latestGameMasterMessageCreatedAt: now,
+      latestAgentMessageCreatedAt: now,
+    })
     const narrativeRepository = makeNarrativeRepository()
     narrativeRepository.updateState.mockRejectedValueOnce(new Error('state unavailable'))
     const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
@@ -536,8 +690,8 @@ describe('location room narrative coordinator', () => {
         speakerInstruction: 'Speak once.',
         stateAfter: {
           stateSummary: 'State after public character output.',
-          currentObjective: null,
-          openThreads: [],
+          currentObjective: 'Follow the existing GM lead.',
+          openThreads: ['Who answers next?'],
         },
         ttrpgPhase: 'story',
         combatReadiness: 'none',

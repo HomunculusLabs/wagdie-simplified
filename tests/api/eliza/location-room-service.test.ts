@@ -237,6 +237,13 @@ function makeRepository(overrides: Partial<jest.Mocked<LocationRoomRepository>> 
     listActiveTicksForRoom: jest.fn(async () => [baseTick]),
     listRecentTicksForRoom: jest.fn(async () => [baseTick]),
     getPublicMessageStats: jest.fn(async () => ({ messageCount: 0, latestSequence: null, latestCreatedAt: null })),
+    getPublicAuthorMessageStats: jest.fn(async () => ({
+      messageCount: 0,
+      gameMasterMessageCount: 0,
+      agentMessageCount: 0,
+      latestGameMasterMessageCreatedAt: null,
+      latestAgentMessageCreatedAt: null,
+    })),
     markTickSelected: jest.fn(async (_tickId, tokenId) => tick({ selectedTokenId: tokenId })),
     appendMessage: jest.fn(async () => appended),
     markTickCompleted: jest.fn(async () => tick({ status: 'completed', completedAt: now })),

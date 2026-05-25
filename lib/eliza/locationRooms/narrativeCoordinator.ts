@@ -2,10 +2,12 @@ import { gameMasterAgentService } from '@/lib/eliza/gameMasterAgent/service'
 import {
   GAME_MASTER_AUTHOR_NAME,
   GameMasterBeatGenerationError,
+  buildGameMasterBeatProgressionContext,
   officialGameMasterBeatGenerator,
   validateGameMasterBeatProgressionContract,
   type GameMasterBeatGenerator,
   type GameMasterBeatOutput,
+  type GameMasterBeatProgressionContext,
   type GameMasterGenerationDiagnostics,
   type GameMasterGenerationResponseFlags,
 } from './gameMasterGenerator'
@@ -96,7 +98,8 @@ function getStateAfterSnapshot(value: unknown): LocationRoomNarrativeStateSnapsh
 
 function beatToOutput(
   beat: LocationRoomNarrativeBeat,
-  fallbackGameMasterAgentId: string
+  fallbackGameMasterAgentId: string,
+  progressionContext: GameMasterBeatProgressionContext
 ): GameMasterBeatOutput {
   const stateAfter = getStateAfterSnapshot(beat.stateAfter)
   if (!beat.speakerInstruction || !stateAfter) {
@@ -118,7 +121,10 @@ function beatToOutput(
     metadata: beat.metadata,
   }
 
-  validateGameMasterBeatProgressionContract(output)
+  validateGameMasterBeatProgressionContract({
+    ...output,
+    progressionContext,
+  })
   return output
 }
 
@@ -234,6 +240,12 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
   async processTurn(input: ProcessNarrativeLocationRoomTurnInput): Promise<ProcessNarrativeLocationRoomTurnResult> {
     const resolvedGameMasterAgentId = await this.gameMasterAgentResolver.resolveRuntimeGameMasterAgentId()
     const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room: input.room })
+    const publicAuthorMessageStats = await this.repository.getPublicAuthorMessageStats(input.room.id)
+    const progressionContext = buildGameMasterBeatProgressionContext({
+      room: input.room,
+      narrativeState,
+      publicAuthorMessageStats,
+    })
     const stateBefore = toNarrativeStateSnapshot(narrativeState)
     let beat = await this.narrativeRepository.createOrReuseBeat({
       room: input.room,
@@ -251,7 +263,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
 
     let gameMasterOutput: GameMasterBeatOutput
     if (isUsableGeneratedBeat(beat)) {
-      gameMasterOutput = beatToOutput(beat, beatGameMasterAgentId)
+      gameMasterOutput = beatToOutput(beat, beatGameMasterAgentId, progressionContext)
     } else {
       try {
         gameMasterOutput = await this.gameMasterGenerator.generateBeat({
@@ -262,6 +274,11 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           speaker: input.speaker,
           recentMessages: input.recentMessages,
           narrativeState,
+          progressionContext,
+        })
+        validateGameMasterBeatProgressionContract({
+          ...gameMasterOutput,
+          progressionContext,
         })
       } catch (error) {
         const gmGeneration = getGameMasterGenerationDiagnostics(error)

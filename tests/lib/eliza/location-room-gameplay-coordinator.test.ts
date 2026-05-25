@@ -391,6 +391,7 @@ function makeRoomRepository(): jest.Mocked<LocationRoomRepository> & { messages:
     listActiveTicksForRoom: jest.fn(),
     listRecentTicksForRoom: jest.fn(),
     getPublicMessageStats: jest.fn(),
+    getPublicAuthorMessageStats: jest.fn(),
     markTickSelected: jest.fn(async (_tickId, _tokenId) => tick({ selectedTokenId: _tokenId })),
     appendMessage: jest.fn(async (input) => {
       const existing = messages.find((message) =>
