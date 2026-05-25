@@ -234,6 +234,11 @@ export const elizaConfig = {
         min: 1,
         integer: true,
       }) ?? 360,
+    activeNarrativeTickIntervalMinutes:
+      optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_ACTIVE_NARRATIVE_TICK_INTERVAL_MINUTES, {
+        min: 1,
+        integer: true,
+      }) ?? 15,
     maxTicksPerRun:
       optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_MAX_TICKS_PER_RUN, {
         min: 1,

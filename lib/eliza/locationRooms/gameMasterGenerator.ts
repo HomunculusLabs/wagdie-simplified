@@ -106,6 +106,16 @@ export type GameMasterBeatProgressionContext = {
 type ParsedBeat = Record<string, unknown>
 
 const DEFAULT_GM_AUTHOR_NAME = 'Game Master'
+const OPENING_PUBLIC_NARRATION_MIN_CHARS = 280
+const OPENING_PUBLIC_NARRATION_MIN_SENTENCES = 4
+
+function countSentenceLikeSegments(value: string): number {
+  return value
+    .split(/[.!?]+\s+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .length
+}
 
 function trimToLimit(value: unknown, limit: number): string | null {
   if (typeof value !== 'string') return null
@@ -269,6 +279,16 @@ export function validateGameMasterBeatProgressionContract(output: {
 }): void {
   if (output.progressionContext?.requirePublicNarration && !output.publicNarration?.trim()) {
     throw new Error('Game-master beat response publicNarration is required by progression context')
+  }
+
+  if (output.progressionContext?.requireOpeningPublicNarration) {
+    const publicNarration = output.publicNarration?.trim() ?? ''
+    if (publicNarration.length < OPENING_PUBLIC_NARRATION_MIN_CHARS) {
+      throw new Error('Game-master beat response opening publicNarration is too short for a useful scene opener')
+    }
+    if (countSentenceLikeSegments(publicNarration) < OPENING_PUBLIC_NARRATION_MIN_SENTENCES) {
+      throw new Error('Game-master beat response opening publicNarration must include a fuller multi-sentence scene opener')
+    }
   }
 
   if (
@@ -532,6 +552,14 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     '- Reference only eligible current participant token ids.',
     `- selectedSpeakerTokenId must be ${input.speaker.tokenId}; do not select another speaker.`,
     '- Keep public narration suitable for public display and avoid markdown.',
+    ...(input.progressionContext?.requireOpeningPublicNarration
+      ? [
+        '- Opening publicNarration must be a rich table-setting GM beat: 4-6 sentences and roughly 300-650 characters.',
+        '- Opening publicNarration must give players material to act on: sensory location detail, immediate situation, 2-3 interactable hooks, stakes/tension, and an unresolved prompt.',
+        '- Do not make the opener a two-sentence summary. Do not solve the mystery, start combat, or speak for the selected character.',
+        '- Opening speakerInstruction should give the selected character 2-3 concrete ways to respond in their own voice.',
+      ]
+      : []),
     '- Non-aftermath beats must include a concrete currentObjective and at least one unresolved openThreads entry.',
     ...(input.progressionContext?.requirePublicNarration
       ? ['- publicNarration is required and must be non-empty for this beat.']

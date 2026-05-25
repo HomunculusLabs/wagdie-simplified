@@ -44,6 +44,7 @@ const limits = {
   openThreadsMaxCount: 2,
   openThreadMaxLength: 12,
 }
+const richOpeningNarration = 'Ash drifts through the broken orchard in slow gray curtains, muting every sound except the scrape of dead branches overhead. A half-buried bell rope hangs from a blackened arch, swaying though no wind touches it. Three paths offer themselves: the rope, a narrow animal trail, and a root-choked cellar door breathing warm smoke. Somewhere below, something knocks twice and waits for an answer.'
 
 function room(overrides: Partial<LocationRoom> = {}): LocationRoom {
   return {
@@ -202,6 +203,8 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Public narration is REQUIRED for this beat.')
     expect(prompt).toContain('Reason: no prior public Game Master message exists.')
     expect(prompt).toContain('"publicNarration": "required public narration for observers"')
+    expect(prompt).toContain('Opening publicNarration must be a rich table-setting GM beat')
+    expect(prompt).toContain('2-3 interactable hooks')
   })
 
   it('normalizes fenced JSON and caps public/state/thread values', () => {
@@ -301,6 +304,12 @@ describe('game-master beat generator helpers', () => {
       { gameMasterAgentId: 'gm-1', limits, progressionContext: requiredNarrationContext }
     )).toThrow('publicNarration')
 
+    expect(() => normalizeGameMasterBeatResponse(
+      '{"publicNarration":"The air changes.","speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"exploration"}',
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 }, progressionContext: requiredNarrationContext }
+    )).toThrow('too short')
+
     const repeatedFlatNoGmContext = buildGameMasterBeatProgressionContext({
       room: room({ tickCount: 2 }),
       narrativeState: {
@@ -322,9 +331,9 @@ describe('game-master beat generator helpers', () => {
       publicNarrationRequirementReason: 'no_prior_public_game_master_message',
     })
     expect(() => normalizeGameMasterBeatResponse(
-      '{"publicNarration":"The air changes.","speakerInstruction":"Notice it.","stateSummary":"State","currentObjective":"Follow the bell","openThreads":["Who waits?"],"ttrpgPhase":"story","combatReadiness":"none","threatLevel":0}',
+      JSON.stringify({ publicNarration: richOpeningNarration, speakerInstruction: 'Notice it.', stateSummary: 'State', currentObjective: 'Follow the bell', openThreads: ['Who waits?'], ttrpgPhase: 'story', combatReadiness: 'none', threatLevel: 0 }),
       { participants, speaker: participants[0] },
-      { gameMasterAgentId: 'gm-1', limits, progressionContext: repeatedFlatNoGmContext }
+      { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 }, progressionContext: repeatedFlatNoGmContext }
     )).toThrow('visibly escalate')
 
     const repeatedFlatContext = buildGameMasterBeatProgressionContext({
@@ -471,7 +480,7 @@ describe('game-master beat generator helpers', () => {
         .mockResolvedValueOnce({ message: null, text: 'not json' })
         .mockResolvedValueOnce({
           message: null,
-          text: '{"publicNarration":"The bell tolls.","speakerInstruction":"Speak with dread.","stateSummary":"The bell has called Ash.","currentObjective":"Answer the toll.","openThreads":["Who answers the bell?"],"ttrpgPhase":"exploration","combatReadiness":"none","threatLevel":0,"requestedGameplayAction":null,"encounterSeed":null,"selectedSpeakerTokenId":1}',
+          text: JSON.stringify({ publicNarration: richOpeningNarration, speakerInstruction: 'Speak with dread, choose one of the three hooks, and leave the mystery unresolved.', stateSummary: 'The bell has called Ash.', currentObjective: 'Answer the toll.', openThreads: ['Who answers the bell?'], ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 0, requestedGameplayAction: null, encounterSeed: null, selectedSpeakerTokenId: 1 }),
         }),
       deleteSession: jest.fn(async () => undefined),
     }

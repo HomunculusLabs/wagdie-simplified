@@ -1512,7 +1512,7 @@ export class LocationRoomService {
         appendedMessageId = narrativeResult.messageId
         await this.repository.markTickCompleted(tick.id)
         await this.repository.updateRoomAfterProcessedTick(room, {
-          tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
+          tickIntervalMinutes: elizaConfig.locationRooms.activeNarrativeTickIntervalMinutes,
           now,
         })
 
@@ -1579,7 +1579,9 @@ export class LocationRoomService {
       if (appendedMessageId) {
         await this.repository.markTickCompleted(tick.id).catch(() => null)
         await this.repository.updateRoomAfterProcessedTick(room, {
-          tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
+          tickIntervalMinutes: narrativeEnabled
+            ? elizaConfig.locationRooms.activeNarrativeTickIntervalMinutes
+            : elizaConfig.locationRooms.tickIntervalMinutes,
           now,
         }).catch(() => null)
         return {

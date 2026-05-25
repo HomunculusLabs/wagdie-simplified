@@ -1647,7 +1647,10 @@ describe('location room domain service', () => {
     expect(turnGenerator.generateTurn).not.toHaveBeenCalled()
     expect(repository.appendMessage).not.toHaveBeenCalled()
     expect(repository.markTickCompleted).toHaveBeenCalledWith('tick-1')
-    expect(repository.updateRoomAfterProcessedTick).toHaveBeenCalled()
+    expect(repository.updateRoomAfterProcessedTick).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), {
+      tickIntervalMinutes: elizaConfig.locationRooms.activeNarrativeTickIntervalMinutes,
+      now: new Date(now),
+    })
   })
 
   it('routes an allowlisted gameplay room through narrative when no encounter or trigger exists', async () => {
