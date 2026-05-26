@@ -1,6 +1,7 @@
 import type {
   LocationRoomAdventureDecision,
   LocationRoomDeclaredAction,
+  LocationRoomSpatialContext,
 } from './narrativeTypes'
 import type {
   GameplayCheckType,
@@ -433,6 +434,8 @@ export type ProcessLocationRoomTickResult = {
   messageIds?: string[]
   /** Durable scene-check id when a narrative scene check resolved during this tick. */
   sceneCheckId?: string | null
+  /** True when this tick appended a public Game Master narrative beat before character/roll output. */
+  publicGameMasterBeatAppended?: boolean
   reason?: string
   gameplayRun?: LocationRoomGameplayRunSummary
 }
@@ -514,6 +517,7 @@ export type LocationRoomNarrativeTurnContext = {
   speakerInstruction: string
   publicNarration?: string | null
   activeDecision?: LocationRoomAdventureDecision | null
+  spatialContext?: LocationRoomSpatialContext
   sceneCheck?: LocationRoomNarrativeTurnSceneCheckContext | null
 }
 

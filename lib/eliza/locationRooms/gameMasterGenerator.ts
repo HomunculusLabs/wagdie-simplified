@@ -39,6 +39,7 @@ import {
   type LocationRoomAdventurePatch,
   type LocationRoomNarrativeState,
   type LocationRoomNarrativeStateSnapshot,
+  type LocationRoomSpatialContext,
 } from './narrativeTypes'
 
 export type GameMasterBeatLimits = {
@@ -145,11 +146,16 @@ export type GameMasterBeatProgressionContext = {
   publicNarrationRequirementReason:
     | 'no_prior_public_game_master_message'
     | 'repeated_activity_without_visible_escalation'
+    | 'recurring_public_gm_beat_cadence'
     | null
   roomTickCount: number
   publicMessageCount: number
   publicGameMasterMessageCount: number
   publicAgentMessageCount: number
+  publicGmBeatCadenceDue: boolean
+  publicMessagesSinceLastGmBeat: number
+  publicAgentMessagesSinceLastGmBeat: number
+  publicSceneChecksSinceLastGmBeat: number
 }
 
 type ParsedBeat = Record<string, unknown>
@@ -304,10 +310,53 @@ function isFlatOpeningState(input: {
     (input.threatLevel == null || input.threatLevel <= 0)
 }
 
+function publicMessageKind(message: LocationRoomMessage): string | null {
+  const metadata = messageMetadataRecord(message)
+  const kind = metadata.messageKind
+  if (typeof kind === 'string' && kind.trim()) return kind.trim()
+  if (message.authorKind === 'game_master') return 'gm_beat'
+  if (message.authorKind === 'agent') return 'character_reaction'
+  return null
+}
+
+function publicGameMasterBeatCadence(
+  recentMessages: LocationRoomMessage[],
+  hasPriorPublicGameMasterBeat: boolean
+): {
+  due: boolean
+  messagesSinceLastGmBeat: number
+  agentMessagesSinceLastGmBeat: number
+  sceneChecksSinceLastGmBeat: number
+} {
+  const latestPublicMessages = recentMessages.filter((message) => message.visibility === 'public')
+  const lastGmBeatIndex = latestPublicMessages.map(publicMessageKind).lastIndexOf('gm_beat')
+  if (lastGmBeatIndex < 0 && !hasPriorPublicGameMasterBeat) {
+    return { due: false, messagesSinceLastGmBeat: 0, agentMessagesSinceLastGmBeat: 0, sceneChecksSinceLastGmBeat: 0 }
+  }
+
+  const sinceLastGmBeat = lastGmBeatIndex >= 0
+    ? latestPublicMessages.slice(lastGmBeatIndex + 1)
+    : latestPublicMessages
+  const messageKinds = sinceLastGmBeat.map(publicMessageKind)
+  const agentMessagesSinceLastGmBeat = messageKinds.filter((kind) => kind === 'character_reaction' || kind === 'character_action').length
+  const sceneChecksSinceLastGmBeat = messageKinds.filter((kind) => kind === 'roll_card' || kind === 'gm_outcome').length
+  const messagesSinceLastGmBeat = sinceLastGmBeat.length
+  const cadenceConfig = elizaConfig.locationRooms.narrative
+  const thresholdMet = agentMessagesSinceLastGmBeat >= cadenceConfig.publicGmBeatMaxAgentMessages ||
+    sceneChecksSinceLastGmBeat >= cadenceConfig.publicGmBeatMaxSceneChecks
+  return {
+    due: thresholdMet && messagesSinceLastGmBeat >= cadenceConfig.publicGmBeatMinMessagesBetween,
+    messagesSinceLastGmBeat,
+    agentMessagesSinceLastGmBeat,
+    sceneChecksSinceLastGmBeat,
+  }
+}
+
 export function buildGameMasterBeatProgressionContext(input: {
   room: Pick<LocationRoom, 'tickCount'>
   narrativeState: LocationRoomNarrativeState
   publicAuthorMessageStats: LocationRoomPublicAuthorMessageStats
+  recentMessages?: LocationRoomMessage[]
 }): GameMasterBeatProgressionContext {
   const ttrpg = normalizeNarrativeTtrpgMetadata(input.narrativeState.metadata)
   const requireOpeningPublicNarration = input.publicAuthorMessageStats.gameMasterMessageCount === 0
@@ -318,7 +367,8 @@ export function buildGameMasterBeatProgressionContext(input: {
   })
   const requireEscalationBeyondOpening = flatOpeningState &&
     (input.room.tickCount >= 2 || input.publicAuthorMessageStats.messageCount >= 3)
-  const requirePublicNarration = requireOpeningPublicNarration || requireEscalationBeyondOpening
+  const cadence = publicGameMasterBeatCadence(input.recentMessages ?? [], input.publicAuthorMessageStats.gameMasterMessageCount > 0)
+  const requirePublicNarration = requireOpeningPublicNarration || requireEscalationBeyondOpening || cadence.due
 
   return {
     requirePublicNarration,
@@ -328,11 +378,17 @@ export function buildGameMasterBeatProgressionContext(input: {
       ? 'no_prior_public_game_master_message'
       : requireEscalationBeyondOpening
         ? 'repeated_activity_without_visible_escalation'
-        : null,
+        : cadence.due
+          ? 'recurring_public_gm_beat_cadence'
+          : null,
     roomTickCount: input.room.tickCount,
     publicMessageCount: input.publicAuthorMessageStats.messageCount,
     publicGameMasterMessageCount: input.publicAuthorMessageStats.gameMasterMessageCount,
     publicAgentMessageCount: input.publicAuthorMessageStats.agentMessageCount,
+    publicGmBeatCadenceDue: cadence.due,
+    publicMessagesSinceLastGmBeat: cadence.messagesSinceLastGmBeat,
+    publicAgentMessagesSinceLastGmBeat: cadence.agentMessagesSinceLastGmBeat,
+    publicSceneChecksSinceLastGmBeat: cadence.sceneChecksSinceLastGmBeat,
   }
 }
 
@@ -853,14 +909,20 @@ function buildProgressionContextLines(context?: GameMasterBeatProgressionContext
     'Progression context:',
     `Room tick count: ${context.roomTickCount}`,
     `Public messages: ${context.publicMessageCount} total, ${context.publicGameMasterMessageCount} game-master, ${context.publicAgentMessageCount} agent.`,
+    `Since last public GM beat: ${context.publicMessagesSinceLastGmBeat} public messages, ${context.publicAgentMessagesSinceLastGmBeat} character/action messages, ${context.publicSceneChecksSinceLastGmBeat} roll/outcome messages.`,
   ]
 
   if (context.requirePublicNarration) {
     const reason = context.publicNarrationRequirementReason === 'no_prior_public_game_master_message'
       ? 'no prior public Game Master message exists.'
-      : 'repeated room activity is still in flat opening state.'
+      : context.publicNarrationRequirementReason === 'recurring_public_gm_beat_cadence'
+        ? 'recurring public GM beat cadence is due after character/roll/outcome activity.'
+        : 'repeated room activity is still in flat opening state.'
     lines.push('Public narration is REQUIRED for this beat.')
     lines.push(`Reason: ${reason}`)
+    if (context.publicNarrationRequirementReason === 'recurring_public_gm_beat_cadence') {
+      lines.push('Cadence beat guidance: re-frame visible space, pressure, routes, and options without starting combat unless an explicit combat trigger is already justified.')
+    }
   } else {
     lines.push('Public narration is optional for this beat because a public Game Master message already exists and the scene is not stuck in flat opening state.')
   }
@@ -878,10 +940,8 @@ function buildProgressionContextLines(context?: GameMasterBeatProgressionContext
 function buildSceneCheckContractLines(): string[] {
   return [
     'Optional non-combat scene checks:',
-    '- sceneCheckRequest: one non-combat roll/null for risky inspect/search/examine/decipher actions; actionIntent options; fixed rollChoice.checkType options.',
-    `- fixed rollChoice.checkType options: ${GAMEPLAY_CHECK_TYPES.join(', ')}.`,
-    `- actionIntent options: ${SCENE_CHECK_ACTION_INTENTS.join(', ')}.`,
-    '- contextualChecks: public-safe id/label/checkType/dc/description; backend sanitizes.',
+    '- sceneCheckRequest: one non-combat roll/null for risky inspect/search/examine/decipher actions; actionIntent options and fixed rollChoice.checkType options are allowed.',
+    '- contextualChecks: use only provided public-safe id/label/checkType/dc/description; backend sanitizes.',
     '- requestedGameplayAction is combat-only; never combine start_combat with sceneCheckRequest.',
   ]
 }
@@ -893,13 +953,13 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
 
   return [
     'Return only JSON with this contract:',
-    `{ "publicNarration": ${publicNarrationContract}, "speakerInstruction": "speaker-only direction", "stateSummary": "updated continuity", "currentObjective": "objective or null", "openThreads": ["thread"], "ttrpgPhase": "story | exploration | threat | aftermath", "combatReadiness": "none | foreshadow | ready", "threatLevel": 0, "requestedGameplayAction": null, "encounterSeed": null, "sceneCheckRequest": null, "adventurePatch": {"currentStakes":"risk","consequence":{"summary":"aftermath","status":"open"},"discoveries":["clue"],"clockUpdates":[{"id":"id","value":1,"max":6}]}, "featuredTokenIds": [123], "selectedSpeakerTokenId": ${input.speaker.tokenId} }`,
+    `{ "publicNarration": ${publicNarrationContract}, "speakerInstruction": "speaker-only direction", "stateSummary": "updated continuity", "currentObjective": "objective or null", "openThreads": ["thread"], "ttrpgPhase": "story | exploration | threat | aftermath", "combatReadiness": "none | foreshadow | ready", "threatLevel": 0, "requestedGameplayAction": null, "encounterSeed": null, "sceneCheckRequest": null, "adventurePatch": {"currentStakes":"risk","consequence":{"summary":"aftermath","status":"open"},"discoveries":["clue"],"clockUpdates":[{"id":"id","value":1,"max":6}],"spatialContext":{"currentArea":null,"landmarks":[],"routes":[],"unresolvedSpatialQuestions":[]}}, "featuredTokenIds": [123], "selectedSpeakerTokenId": ${input.speaker.tokenId} }`,
     '',
     'Rules:',
-    '- Output JSON only; no markdown/prose outside object.',
+    '- JSON only; no markdown/prose outside object.',
     '- speakerInstruction/stateSummary required; use eligible token ids.',
     `- selectedSpeakerTokenId must be ${input.speaker.tokenId}.`,
-    '- Keep public narration public-safe and avoid markdown.',
+    '- Keep public narration public-safe.',
     ...(input.progressionContext?.requireOpeningPublicNarration
       ? [
         '- Opening publicNarration must be a rich table-setting GM beat: 4-6 sentences and roughly 300-650 characters.',
@@ -909,19 +969,20 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
       ]
       : []),
     '- Non-aftermath beats must include a concrete currentObjective and at least one unresolved openThreads entry.',
-    '- Non-aftermath beats need narrated story pressure: private adventurePatch update reflected in prose/character direction, sceneCheckRequest, or combat.',
-    '- adventurePatch is private continuity memory, not public UI copy; activeDecision is rare and only for a clear fictional fork.',
-    '- Keep publicNarration natural GM prose. Do not list stakes, options, clocks, catalog entries, or hidden memory labels.',
-    '- clockUpdates use absolute values when a private clock actually changes.',
+    '- Non-aftermath beats need narrated story pressure: adventurePatch reflected in prose/character direction, sceneCheckRequest, or combat.',
+    '- adventurePatch is private continuity memory, not public UI copy; activeDecision is rare.',
+    '- Keep publicNarration natural GM prose; do not list hidden memory labels.',
+    '- clockUpdates use absolute values when a private clock changes.',
+    '- Use adventurePatch.spatialContext additively for visible currentArea, landmarks, routes, and spatial questions; keep entries public-safe/bounded.',
     ...(input.progressionContext?.requirePublicNarration
-      ? ['- publicNarration is required and must be non-empty for this beat.']
+      ? ['- publicNarration is required and must be non-empty for this beat; if this is cadence-only, re-anchor the visible scene without forcing combat.']
       : ['- publicNarration should be null for routine post-opener beats; use it only for visible transition/escalation, combat handoff, or explicitly necessary public narration.']),
     ...(input.progressionContext?.requireEscalationBeyondOpening
       ? ['- Do not leave repeated activity in flat story/none/0 state; visibly escalate without forcing start_combat.']
       : []),
-    '- Use catalog entries only as bounded private inspiration/constraints; live adventure memory is more authoritative. Do not name catalog items as a public checklist.',
-    '- Do not spawn combat by default. Most beats keep requestedGameplayAction null.',
-    '- Use requestedGameplayAction "start_combat" only for clear fights; requires threat/ready/threatLevel >= 3 and encounterSeed.',
+    '- Use catalog entries only as bounded private inspiration; live adventure memory is more authoritative.',
+    '- Do not spawn combat by default; most beats keep requestedGameplayAction null.',
+    '- requestedGameplayAction "start_combat" requires clear fights plus threat/ready/threatLevel >= 3 and encounterSeed.',
     ...buildSceneCheckContractLines(),
   ]
 }
@@ -933,6 +994,31 @@ function formatAdventureDecision(decision: ReturnType<typeof normalizeAdventureM
     .join(' | ')
   const selected = decision.selectedOptionId ? ` | selected: ${decision.selectedOptionId}` : ''
   return truncatePromptValue(`${decision.id}: ${decision.prompt} | options: ${options}${selected}`, 140)
+}
+
+function formatSpatialContext(context: LocationRoomSpatialContext): string[] {
+  const hasSpatialSignal = Boolean(
+    context.currentArea ||
+    context.landmarks.length > 0 ||
+    context.routes.length > 0 ||
+    context.unresolvedSpatialQuestions.length > 0
+  )
+  if (!hasSpatialSignal) return ['Spatial context: None.']
+  return [
+    'Spatial context (public-safe visible continuity; use as additive guidance):',
+    `Current area: ${truncatePromptValue(context.currentArea || 'Unknown.', 160)}`,
+    `Landmarks: ${context.landmarks.length > 0 ? truncatePromptValue(context.landmarks.join(' | '), 360) : 'None.'}`,
+    `Routes: ${context.routes.length > 0 ? truncatePromptValue(context.routes.join(' | '), 420) : 'None.'}`,
+    `Unresolved spatial questions: ${context.unresolvedSpatialQuestions.length > 0 ? truncatePromptValue(context.unresolvedSpatialQuestions.join(' | '), 320) : 'None.'}`,
+  ]
+}
+
+function formatCompactSpatialContext(context: LocationRoomSpatialContext): string[] {
+  const hasSpatialSignal = Boolean(context.currentArea || context.landmarks.length > 0 || context.routes.length > 0)
+  if (!hasSpatialSignal) return []
+  return [
+    `Spatial context: area ${truncatePromptValue(context.currentArea || 'Unknown.', 80)}; landmarks ${truncatePromptValue(context.landmarks.join(' | ') || 'None.', 120)}; routes ${truncatePromptValue(context.routes.join(' | ') || 'None.', 140)}.`,
+  ]
 }
 
 function formatAdventureMemoryLines(input: Pick<GenerateGameMasterBeatInput, 'narrativeState' | 'speaker'>): string[] {
@@ -953,6 +1039,7 @@ function formatAdventureMemoryLines(input: Pick<GenerateGameMasterBeatInput, 'na
   return [
     'Quiet private adventure memory (continuity guidance, not public panel copy):',
     `Active decision: ${formatAdventureDecision(adventure.activeDecision)}`,
+    ...formatSpatialContext(adventure.spatialContext),
     'Relevant catalog inspiration (private; do not recite):',
     catalogEntries.length > 0
       ? catalogEntries.slice(0, 3).map((entry) => `- [${entry.section}] ${entry.id}${entry.title ? ` ${entry.title}` : ''}: ${truncatePromptValue(entry.summary, 90)}${entry.tags.length ? ` (tags: ${entry.tags.slice(0, 3).join(', ')})` : ''}`).join('\n')
@@ -1010,6 +1097,11 @@ export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): s
     'Eligible current participants:',
     formatParticipants(input.participants),
     '',
+    ...formatCompactSpatialContext(normalizeAdventureMemory(input.narrativeState.metadata).spatialContext),
+    ...(input.progressionContext?.publicGmBeatCadenceDue
+      ? ['', 'Cadence due: recurring public GM beat cadence is due; re-anchor visible space without starting combat unless an explicit combat trigger is justified.']
+      : []),
+    '',
     ...buildRecentSceneCheckPatternLines(input.recentMessages),
     '',
     'Recent public transcript:',
@@ -1054,7 +1146,8 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '    "activeDecision": {"id":"decision-id","prompt":"rare fictional fork prompt","options":[{"id":"option-id","label":"option"}]},',
     '    "consequence": {"id":"scene-check-consequence","summary":"tier-appropriate durable consequence","status":"open | resolved | advantage | complication","tier":"success"},',
     '    "discoveries": ["durable clue or reveal"],',
-    '    "clockUpdates": [{"id":"clock-id","label":"clock label","value":1,"max":6,"summary":"absolute pressure after the roll"}]',
+    '    "clockUpdates": [{"id":"clock-id","label":"clock label","value":1,"max":6,"summary":"absolute pressure after the roll"}],',
+    '    "spatialContext": {"currentArea":null,"landmarks":[],"routes":[],"unresolvedSpatialQuestions":[]}',
     '  }',
     '}',
     '',
@@ -1066,6 +1159,7 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '- Vary the first sentence/opening from recent GM outcome openings while preserving roll facts; do not reuse an exact opening.',
     '- For partial_success, failure, and critical_failure, publicNarration must be substantive (roughly 180+ characters), show a visible consequence such as cost, complication, pressure, danger, blocked route, lost opportunity, harder choice, hostile response, or obligation, and leave a changed situation or next choice rather than finality.',
     '- Treat adventurePatch as private durable memory for the resolved roll. activeDecision remains rare and only for a genuine new fork.',
+    '- Use adventurePatch.spatialContext additively when the roll reveals, opens, blocks, narrows, or questions visible areas/routes/landmarks.',
     '- Tier rules for adventurePatch:',
     '  - critical_success: major discovery, advantage, opened route, or reduced pressure.',
     '  - success: progress with low/no cost; include a discovery, advantage, clarified decision, stakes update, or clock change.',
@@ -1098,6 +1192,8 @@ export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMaster
     '',
     'Backend-computed roll facts:',
     ...formatSceneCheckRollFacts(input),
+    '',
+    ...formatSpatialContext(normalizeAdventureMemory(input.narrativeState.metadata).spatialContext),
     '',
     ...buildRecentSceneCheckPatternLines(input.recentMessages),
     '',

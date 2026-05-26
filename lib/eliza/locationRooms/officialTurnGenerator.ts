@@ -11,7 +11,7 @@ import { GAMEPLAY_CHECK_TYPES } from './gameplay/types'
 import { normalizeSceneCheckProposal } from './sceneChecks/rules'
 import { SCENE_CHECK_ACTION_INTENTS } from './sceneChecks/types'
 import { normalizeDeclaredAction } from './narrativeTypes'
-import type { LocationRoomAdventureDecision } from './narrativeTypes'
+import type { LocationRoomAdventureDecision, LocationRoomSpatialContext } from './narrativeTypes'
 import type {
   GenerateOfficialLocationRoomTurnInput,
   GenerateOfficialLocationRoomTurnResult,
@@ -112,6 +112,18 @@ function formatActiveDecision(decision: LocationRoomAdventureDecision | null | u
   ]
 }
 
+function formatVisibleSpatialContext(context: LocationRoomSpatialContext | null | undefined): string[] {
+  if (!context || (!context.currentArea && context.landmarks.length === 0 && context.routes.length === 0)) {
+    return ['Visible spatial context: None.']
+  }
+  return [
+    'Visible spatial context:',
+    `Current area: ${truncatePromptValue(context.currentArea || 'Unknown.', 140)}`,
+    `Visible landmarks: ${context.landmarks.length > 0 ? truncatePromptValue(context.landmarks.join(' | '), 300) : 'None.'}`,
+    `Known routes: ${context.routes.length > 0 ? truncatePromptValue(context.routes.join(' | '), 360) : 'None.'}`,
+  ]
+}
+
 function formatNarrativeTurnContract(context: GenerateOfficialLocationRoomTurnInput['narrativeContext']): string[] {
   if (!context) return []
   const allowsSceneCheck = Boolean(context.sceneCheck)
@@ -150,6 +162,7 @@ function formatNarrativeContext(input: GenerateOfficialLocationRoomTurnInput): s
     context.publicNarration
       ? `Public game-master narration just posted: ${truncatePromptValue(context.publicNarration, CHARACTER_PROMPT_NARRATION_MAX_CHARS)}`
       : 'No public game-master narration was posted for this beat.',
+    ...formatVisibleSpatialContext(context.spatialContext),
     ...formatActiveDecision(context.activeDecision),
     ...formatSceneCheckContext(context.sceneCheck),
     ...formatNarrativeTurnContract(context),

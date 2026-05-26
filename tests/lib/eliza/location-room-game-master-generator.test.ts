@@ -39,7 +39,12 @@ import type {
   LocationRoomParticipant,
   LocationRoomTick,
 } from '@/lib/eliza/locationRooms/types'
-import type { LocationRoomNarrativeState } from '@/lib/eliza/locationRooms/narrativeTypes'
+import {
+  mergeAdventureMetadata,
+  normalizeAdventureMemory,
+  normalizeAdventurePatch,
+  type LocationRoomNarrativeState,
+} from '@/lib/eliza/locationRooms/narrativeTypes'
 import {
   normalizeSceneCheckRequest,
   resolveSceneCheck,
@@ -202,6 +207,25 @@ function narrativeState(): LocationRoomNarrativeState {
   }
 }
 
+function spatialNarrativeState(): LocationRoomNarrativeState {
+  const state = narrativeState()
+  return {
+    ...state,
+    metadata: {
+      ...state.metadata,
+      adventure: {
+        ...(state.metadata.adventure as Record<string, unknown>),
+        spatialContext: {
+          currentArea: 'Ash-choked taproom threshold',
+          landmarks: ['half-buried bell rope', 'root-choked cellar door'],
+          routes: ['animal trail through ash', 'cellar stair under the arch'],
+          unresolvedSpatialQuestions: ['Whether the cellar stair still opens from below'],
+        },
+      },
+    },
+  }
+}
+
 function sceneCheckOutcomeInput(tier: 'critical_success' | 'success' | 'partial_success' | 'failure' | 'critical_failure' = 'partial_success') {
   const participants = [participant(1, 'Ash'), participant(2, 'Bone')]
   const request = normalizeSceneCheckRequest({
@@ -286,6 +310,23 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('requestedGameplayAction "start_combat"')
   })
 
+  it('includes bounded spatial context in GM beat prompts when present', () => {
+    const prompt = buildGameMasterBeatPrompt({
+      gameMasterAgentId: 'gm-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages: [],
+      narrativeState: spatialNarrativeState(),
+    })
+
+    expect(prompt).toContain('Spatial context')
+    expect(prompt).toContain('Ash-choked taproom threshold')
+    expect(prompt).toContain('cellar stair under the arch')
+    expect(prompt).toContain('adventurePatch.spatialContext')
+  })
+
   it('requires public narration in the prompt when no prior public GM message exists', () => {
     const progressionContext = buildGameMasterBeatProgressionContext({
       room: room(),
@@ -352,6 +393,102 @@ describe('game-master beat generator helpers', () => {
     expect(outcomePrompt).toContain('repeated run perception x2')
     expect(outcomePrompt).toContain('GM outcome openings')
     expect(outcomePrompt).toContain('Vary the first sentence/opening')
+  })
+
+  it('computes recurring public GM beat cadence from public messages since the last gm beat', () => {
+    const recentMessages = [
+      message({ id: 'msg-gm-1', sequence: 1, authorKind: 'game_master', tokenId: null, metadata: { messageKind: 'gm_beat' } }),
+      message({ id: 'msg-agent-1', sequence: 2, metadata: { messageKind: 'character_reaction' } }),
+      message({ id: 'msg-agent-2', sequence: 3, metadata: { messageKind: 'character_action' } }),
+      sceneCheckRollMessage('perception', 4),
+      sceneCheckOutcomeMessage('The cellar route narrows but remains open.', 5),
+      message({ id: 'msg-agent-3', sequence: 6, metadata: { messageKind: 'character_reaction' } }),
+      message({ id: 'msg-agent-4', sequence: 7, metadata: { messageKind: 'character_reaction' } }),
+      message({ id: 'msg-agent-5', sequence: 8, metadata: { messageKind: 'character_reaction' } }),
+    ]
+
+    const context = buildGameMasterBeatProgressionContext({
+      room: room({ tickCount: 9 }),
+      narrativeState: narrativeState(),
+      publicAuthorMessageStats: {
+        messageCount: recentMessages.length,
+        gameMasterMessageCount: 3,
+        agentMessageCount: 3,
+        latestGameMasterMessageCreatedAt: now,
+        latestAgentMessageCreatedAt: now,
+      },
+      recentMessages,
+    })
+
+    expect(context).toMatchObject({
+      requirePublicNarration: true,
+      requireOpeningPublicNarration: false,
+      requireEscalationBeyondOpening: false,
+      publicNarrationRequirementReason: 'recurring_public_gm_beat_cadence',
+      publicGmBeatCadenceDue: true,
+      publicMessagesSinceLastGmBeat: 7,
+      publicAgentMessagesSinceLastGmBeat: 5,
+      publicSceneChecksSinceLastGmBeat: 2,
+    })
+
+    const prompt = buildGameMasterBeatPrompt({
+      gameMasterAgentId: 'gm-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages,
+      narrativeState: narrativeState(),
+      progressionContext: context,
+    })
+    expect(prompt).toContain('recurring public GM beat cadence is due')
+    expect(prompt).toContain('without starting combat unless an explicit combat trigger')
+  })
+
+  it('normalizes old and patched spatial adventure metadata safely and merges newest bounded entries', () => {
+    expect(normalizeAdventureMemory({ adventure: { currentStakes: 'Old stakes' } }).spatialContext).toEqual({
+      currentArea: null,
+      landmarks: [],
+      routes: [],
+      unresolvedSpatialQuestions: [],
+    })
+
+    const oldMetadata = normalizeAdventureMemory({
+      adventure: {
+        spatial_context: {
+          current_area: `${'A'.repeat(140)} doorway`,
+          landmarks: ['North Door', 'north door', 'wallet plaque', 'Cracked table'],
+          routes: ['Stair to cellar', 'stair to cellar', 'Passage under arch'],
+          unresolved_spatial_questions: ['Does the wall passage turn downward?', 'Does the wall passage turn downward?'],
+        },
+      },
+    })
+    expect(oldMetadata.spatialContext.currentArea).toHaveLength(120)
+    expect(oldMetadata.spatialContext.landmarks).toEqual(['north door', 'Cracked table'])
+    expect(oldMetadata.spatialContext.routes).toEqual(['stair to cellar', 'Passage under arch'])
+    expect(oldMetadata.spatialContext.unresolvedSpatialQuestions).toEqual(['Does the wall passage turn downward?'])
+
+    const patch = normalizeAdventurePatch({
+      spatial_context: {
+        current_area: 'Lower cellar landing',
+        landmarks: ['North Door', 'Bell arch', 'Soot table', 'Cracked wall', 'Iron grate', 'Low tunnel', 'Salt window'],
+        routes: ['Stair to cellar', 'Collapsed pantry route', 'Low tunnel east', 'Bell arch west', 'Iron grate north', 'Salt window ledge', 'Cracked wall squeeze'],
+        unresolved_spatial_questions: ['Whether the low tunnel returns to the taproom'],
+      },
+    })
+    const merged = normalizeAdventureMemory(mergeAdventureMetadata({
+      adventure: {
+        spatialContext: oldMetadata.spatialContext,
+      },
+    }, patch))
+
+    expect(merged.spatialContext.currentArea).toBe('Lower cellar landing')
+    expect(merged.spatialContext.landmarks).toEqual(['North Door', 'Bell arch', 'Soot table', 'Cracked wall', 'Iron grate', 'Low tunnel', 'Salt window'].slice(-6))
+    expect(merged.spatialContext.routes).toEqual(['Collapsed pantry route', 'Low tunnel east', 'Bell arch west', 'Iron grate north', 'Salt window ledge', 'Cracked wall squeeze'])
+    expect(merged.spatialContext.unresolvedSpatialQuestions).toEqual([
+      'Does the wall passage turn downward?',
+      'Whether the low tunnel returns to the taproom',
+    ])
   })
 
   it('includes optional scene-check request guidance and normalizes sanitized GM requests', () => {
@@ -881,6 +1018,12 @@ describe('game-master beat generator helpers', () => {
         openThreads: ['Who first heard it?'],
         speakerInstruction: 'Search the marks, but leave the omen uncertain.',
         publicNarration: 'The ash marks shine.',
+        spatialContext: {
+          currentArea: 'Taproom threshold',
+          landmarks: ['ash-marked seam'],
+          routes: ['cellar stair below the seam'],
+          unresolvedSpatialQuestions: ['Where the stair opens'],
+        },
         sceneCheck: sceneCheckContext,
       },
     }
@@ -890,6 +1033,8 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('"publicSpeech"')
     expect(prompt).toContain('"declaredAction"')
     expect(prompt).toContain('"sceneCheckProposal": null')
+    expect(prompt).toContain('Visible spatial context')
+    expect(prompt).toContain('Known routes: cellar stair below the seam')
     expect(prompt).toContain('ash-marks: Read the Ash Marks')
 
     const prose = normalizeOfficialLocationRoomTurnResponse('I kneel beside the ash and listen before touching it.', {
@@ -982,7 +1127,7 @@ describe('game-master beat generator helpers', () => {
       participants,
       speaker: participants[0],
       recentMessages: [message()],
-      narrativeState: narrativeState(),
+      narrativeState: spatialNarrativeState(),
       characterAction: 'I search the ash marks for the hidden route.',
       sceneCheckId: 'scene_check:beat-1',
       resolution,
@@ -998,6 +1143,9 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Use only the backend roll facts')
     expect(prompt).toContain('Tier rules for adventurePatch')
     expect(prompt).toContain('partial_success: progress plus complication')
+    expect(prompt).toContain('Spatial context')
+    expect(prompt).toContain('cellar stair under the arch')
+    expect(prompt).toContain('adventurePatch.spatialContext')
     expect(prompt).toContain('For partial_success, failure, and critical_failure, publicNarration must be substantive')
     expect(prompt).toContain('Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality')
 
@@ -1014,6 +1162,12 @@ describe('game-master beat generator helpers', () => {
           tier: resolution.roll.tier,
         },
         discoveries: ['A hidden stair lies under the ash marks.'],
+        spatialContext: {
+          currentArea: 'Hidden stair below the ash marks',
+          landmarks: ['ash-marked seam'],
+          routes: ['hidden stair descending from the taproom'],
+          unresolvedSpatialQuestions: ['Where the descending stair opens below'],
+        },
       },
     }), outcomeInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })
 
@@ -1031,6 +1185,10 @@ describe('game-master beat generator helpers', () => {
           source: 'scene_check:beat-1',
           tier: resolution.roll.tier,
         })],
+        spatialContext: expect.objectContaining({
+          currentArea: 'Hidden stair below the ash marks',
+          routes: ['hidden stair descending from the taproom'],
+        }),
       }),
     }))
     expect(output.metadata.adventurePatch).toEqual(output.adventurePatch)

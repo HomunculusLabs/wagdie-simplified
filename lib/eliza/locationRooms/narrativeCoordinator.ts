@@ -77,6 +77,7 @@ export type ProcessNarrativeLocationRoomTurnResult = {
   /** Scene-check subflow public message ids, in order: character_action, roll_card, gm_outcome. */
   messageIds?: string[]
   sceneCheckId?: string | null
+  publicGameMasterBeatAppended?: boolean
   /** Public-safe routing diagnostics for service logs; contains no prompt or payload bodies. */
   sceneCheckDiagnostics?: {
     requestPresent: boolean
@@ -427,7 +428,8 @@ function isOptionalSceneCheckPhase(output: GameMasterBeatOutput): boolean {
 function toCharacterNarrativeContext(
   output: GameMasterBeatOutput,
   activeDecision: LocationRoomAdventureMemory['activeDecision'],
-  visiblePublicNarration: string | null
+  visiblePublicNarration: string | null,
+  adventureMemory: LocationRoomAdventureMemory
 ): LocationRoomNarrativeTurnContext {
   return {
     stateSummary: output.stateAfter.stateSummary,
@@ -436,6 +438,7 @@ function toCharacterNarrativeContext(
     speakerInstruction: output.speakerInstruction,
     publicNarration: visiblePublicNarration,
     activeDecision,
+    spatialContext: adventureMemory.spatialContext,
     sceneCheck: output.sceneCheckRequest
       ? {
         mode: 'requested',
@@ -668,6 +671,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       room: input.room,
       narrativeState,
       publicAuthorMessageStats,
+      recentMessages: input.recentMessages,
     })
     const stateBefore = toNarrativeStateSnapshot(narrativeState)
     let beat = await this.narrativeRepository.createOrReuseBeat({
@@ -803,7 +807,8 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         narrativeContext: toCharacterNarrativeContext(
           gameMasterOutput,
           adventureAfterGameMasterPatch.activeDecision,
-          visiblePublicNarrationForBeat
+          visiblePublicNarrationForBeat,
+          adventureAfterGameMasterPatch
         ),
       })
       content = normalizeLocationRoomGeneratedContent(generated.content)
@@ -953,6 +958,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       return {
         selectedTokenId: input.speaker.tokenId,
         messageId: message.id,
+        ...(shouldAppendPublicGameMasterBeat ? { publicGameMasterBeatAppended: true } : {}),
         ...(hasSceneCheckSignal
           ? {
             sceneCheckDiagnostics: {
@@ -1208,6 +1214,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       messageId: outcomeMessage.id,
       messageIds,
       sceneCheckId,
+      ...(shouldAppendPublicGameMasterBeat ? { publicGameMasterBeatAppended: true } : {}),
       sceneCheckDiagnostics: {
         requestPresent: Boolean(storedSceneCheck.request),
         proposalPresent: Boolean(storedSceneCheck.proposal),

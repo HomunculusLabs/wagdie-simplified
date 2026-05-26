@@ -322,7 +322,7 @@ describe('location room narrative coordinator', () => {
       recentMessages: [],
     })
 
-    expect(result).toEqual({ selectedTokenId: 1, messageId: 'msg-character' })
+    expect(result).toEqual({ selectedTokenId: 1, messageId: 'msg-character', publicGameMasterBeatAppended: true })
     expect(gameMasterGenerator.generateBeat).toHaveBeenCalledWith(expect.objectContaining({
       gameMasterAgentId: 'gm-1',
       tick: expect.objectContaining({ id: 'tick-1' }),
@@ -498,6 +498,126 @@ describe('location room narrative coordinator', () => {
     }))
   })
 
+  it('forces a recurring public game-master beat when cadence thresholds are crossed without starting combat', async () => {
+    const repository = makeRepository()
+    repository.getPublicAuthorMessageStats.mockResolvedValueOnce({
+      messageCount: 6,
+      gameMasterMessageCount: 1,
+      agentMessageCount: 5,
+      latestGameMasterMessageCreatedAt: now,
+      latestAgentMessageCreatedAt: now,
+    })
+    const narrativeRepository = makeNarrativeRepository()
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: {
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 1,
+        adventure: {
+          spatialContext: {
+            currentArea: 'Crow\'s Den taproom threshold',
+            landmarks: ['ash-marked bar'],
+            routes: ['cellar stair behind the bar'],
+            unresolvedSpatialQuestions: [],
+          },
+        },
+      },
+    })
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: 'The Crow\'s Den settles back into view: the ash-marked bar, the cellar stair behind it, and the cold threshold all wait for a choice.',
+        speakerInstruction: 'Answer from the re-anchored taproom without starting combat.',
+        stateAfter: {
+          stateSummary: 'The Crow\'s Den taproom is re-anchored around the bar and cellar stair.',
+          currentObjective: 'Choose whether to test the cellar stair or hold the threshold.',
+          openThreads: ['What waits below the cellar stair?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 1,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: null,
+        adventurePatch: {
+          currentStakes: 'The taproom pressure is visible but not yet combat.',
+          spatialContext: {
+            currentArea: 'Crow\'s Den taproom threshold',
+            landmarks: ['ash-marked bar'],
+            routes: ['cellar stair behind the bar'],
+            unresolvedSpatialQuestions: ['What waits below the cellar stair?'],
+          },
+        },
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I keep one hand on the bar and watch the cellar stair.',
+        declaredAction: { summary: 'Ash watches the cellar stair from the bar.', actionIntent: 'watch' },
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+    const recentMessages = [
+      message({ id: 'msg-gm-1', sequence: 1, authorKind: 'game_master', tokenId: null, metadata: { messageKind: 'gm_beat' } }),
+      ...[2, 3, 4, 5, 6].map((sequence) => message({
+        id: `msg-agent-${sequence}`,
+        sequence,
+        metadata: { messageKind: sequence === 3 ? 'character_action' : 'character_reaction' },
+      })),
+    ]
+
+    const result = await coordinator.processTurn({
+      room: room({ tickCount: 12 }),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages,
+    })
+
+    expect(result).toEqual({ selectedTokenId: 1, messageId: 'msg-character', publicGameMasterBeatAppended: true })
+    expect(gameMasterGenerator.generateBeat).toHaveBeenCalledWith(expect.objectContaining({
+      progressionContext: expect.objectContaining({
+        requirePublicNarration: true,
+        publicNarrationRequirementReason: 'recurring_public_gm_beat_cadence',
+        publicGmBeatCadenceDue: true,
+      }),
+    }))
+    expect(repository.appendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      authorKind: 'game_master',
+      content: expect.stringContaining('cellar stair'),
+      metadata: expect.objectContaining({ messageKind: 'gm_beat' }),
+    }))
+    expect(turnGenerator.generateTurn).toHaveBeenCalledWith(expect.objectContaining({
+      narrativeContext: expect.objectContaining({
+        spatialContext: expect.objectContaining({
+          currentArea: 'Crow\'s Den taproom threshold',
+          routes: ['cellar stair behind the bar'],
+        }),
+      }),
+    }))
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        requestedGameplayAction: null,
+        lastCombatTriggerBeatId: null,
+        adventure: expect.objectContaining({
+          spatialContext: expect.objectContaining({
+            currentArea: 'Crow\'s Den taproom threshold',
+            routes: ['cellar stair behind the bar'],
+          }),
+        }),
+      }),
+    }))
+  })
+
   it('suppresses routine optional public game-master narration after the opener while keeping private direction', async () => {
     const repository = makeRepository()
     usePriorGameMasterMessage(repository)
@@ -565,9 +685,15 @@ describe('location room narrative coordinator', () => {
     }))
   })
 
-  it('reuses a previously appended game-master beat on retry without regenerating it', async () => {
+  it('reuses a previously appended game-master beat on retry without regenerating or duplicating cadence narration', async () => {
     const repository = makeRepository()
-    usePriorGameMasterMessage(repository)
+    repository.getPublicAuthorMessageStats.mockResolvedValueOnce({
+      messageCount: 6,
+      gameMasterMessageCount: 1,
+      agentMessageCount: 5,
+      latestGameMasterMessageCreatedAt: now,
+      latestAgentMessageCreatedAt: now,
+    })
     const narrativeRepository = makeNarrativeRepository(beat({
       status: 'game_master_message_appended',
       gameMasterAgentId: 'gm-1',
@@ -579,6 +705,10 @@ describe('location room narrative coordinator', () => {
         openThreads: ['Who rang it?'],
       },
     }))
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: { ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 1 },
+    })
     const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
       generateBeat: jest.fn(),
     }
@@ -598,7 +728,14 @@ describe('location room narrative coordinator', () => {
       tick: tick({ attempts: 2 }),
       speaker: participants[0],
       participants,
-      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+      recentMessages: [
+        message({ id: 'msg-gm-1', sequence: 1, authorKind: 'game_master', tokenId: null, metadata: { messageKind: 'gm_beat' } }),
+        ...[2, 3, 4, 5, 6].map((sequence) => message({
+          id: `msg-agent-${sequence}`,
+          sequence,
+          metadata: { messageKind: 'character_reaction' },
+        })),
+      ],
     })
 
     expect(gameMasterGenerator.generateBeat).not.toHaveBeenCalled()

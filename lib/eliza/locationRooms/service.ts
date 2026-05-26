@@ -1659,6 +1659,7 @@ export class LocationRoomService {
           messageId: narrativeResult.messageId,
           ...(narrativeResult.messageIds ? { messageIds: narrativeResult.messageIds } : {}),
           ...(narrativeResult.sceneCheckId ? { sceneCheckId: narrativeResult.sceneCheckId } : {}),
+          ...(narrativeResult.publicGameMasterBeatAppended ? { publicGameMasterBeatAppended: true } : {}),
         }
       }
 

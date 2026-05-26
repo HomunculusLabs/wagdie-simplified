@@ -153,6 +153,9 @@ export type LocationRoomNarrativeSceneCheckMetadataPatch = Partial<LocationRoomN
 export const ADVENTURE_MEMORY_LEDGER_LIMIT = 8
 export const ADVENTURE_MEMORY_DISCOVERY_LIMIT = 10
 export const ADVENTURE_MEMORY_CLOCK_LIMIT = 6
+export const ADVENTURE_SPATIAL_LANDMARK_LIMIT = 6
+export const ADVENTURE_SPATIAL_ROUTE_LIMIT = 6
+export const ADVENTURE_SPATIAL_QUESTION_LIMIT = 4
 export const ADVENTURE_DECISION_OPTION_LIMIT = 4
 export const ADVENTURE_CATALOG_RETRIEVAL_LIMIT = 6
 
@@ -214,6 +217,13 @@ export type LocationRoomAdventureLastOutcome = {
   summary: string
 }
 
+export type LocationRoomSpatialContext = {
+  currentArea: string | null
+  landmarks: string[]
+  routes: string[]
+  unresolvedSpatialQuestions: string[]
+}
+
 export type LocationRoomAdventureMemory = {
   arcSummary: string | null
   currentStakes: string | null
@@ -221,6 +231,7 @@ export type LocationRoomAdventureMemory = {
   consequenceLedger: LocationRoomAdventureConsequence[]
   discoveries: string[]
   clocks: LocationRoomAdventureClock[]
+  spatialContext: LocationRoomSpatialContext
   lastDeclaredAction: LocationRoomAdventureDeclaredAction | null
   lastOutcome: LocationRoomAdventureLastOutcome | null
 }
@@ -232,6 +243,7 @@ export type LocationRoomAdventurePatch = {
   consequenceLedger?: LocationRoomAdventureConsequence[]
   discoveries?: string[]
   clocks?: LocationRoomAdventureClock[]
+  spatialContext?: LocationRoomSpatialContext
   lastDeclaredAction?: LocationRoomAdventureDeclaredAction | null
   lastOutcome?: LocationRoomAdventureLastOutcome | null
 }
@@ -317,6 +329,80 @@ function normalizeAdventureStringArray(value: unknown, maxItems: number, maxLeng
     if (result.length >= maxItems) break
   }
   return result
+}
+
+function normalizeSpatialStringArray(value: unknown, maxItems: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) return []
+  const byKey = new Map<string, string>()
+  for (const item of value) {
+    const text = nullableAdventureText(item, maxLength)
+    if (!text) continue
+    const key = text.toLowerCase()
+    byKey.delete(key)
+    byKey.set(key, text)
+  }
+  return Array.from(byKey.values()).slice(-maxItems)
+}
+
+function emptySpatialContext(): LocationRoomSpatialContext {
+  return {
+    currentArea: null,
+    landmarks: [],
+    routes: [],
+    unresolvedSpatialQuestions: [],
+  }
+}
+
+function normalizeSpatialContext(value: unknown): LocationRoomSpatialContext | null {
+  if (!isRecord(value)) return null
+  const currentArea = nullableAdventureText(value.currentArea ?? value.current_area, 120)
+  return {
+    currentArea,
+    landmarks: normalizeSpatialStringArray(value.landmarks, ADVENTURE_SPATIAL_LANDMARK_LIMIT, 140),
+    routes: normalizeSpatialStringArray(value.routes, ADVENTURE_SPATIAL_ROUTE_LIMIT, 160),
+    unresolvedSpatialQuestions: normalizeSpatialStringArray(
+      value.unresolvedSpatialQuestions ?? value.unresolved_spatial_questions,
+      ADVENTURE_SPATIAL_QUESTION_LIMIT,
+      180
+    ),
+  }
+}
+
+function hasSpatialContextSignal(context: LocationRoomSpatialContext): boolean {
+  return Boolean(
+    context.currentArea ||
+    context.landmarks.length > 0 ||
+    context.routes.length > 0 ||
+    context.unresolvedSpatialQuestions.length > 0
+  )
+}
+
+function mergeSpatialLists(current: string[], incoming: string[], maxItems: number): string[] {
+  const byKey = new Map<string, string>()
+  for (const item of current) byKey.set(item.toLowerCase(), item)
+  for (const item of incoming) {
+    const key = item.toLowerCase()
+    byKey.delete(key)
+    byKey.set(key, item)
+  }
+  return Array.from(byKey.values()).slice(-maxItems)
+}
+
+function mergeSpatialContext(
+  current: LocationRoomSpatialContext,
+  incoming: LocationRoomSpatialContext | undefined
+): LocationRoomSpatialContext {
+  if (!incoming) return current
+  return {
+    currentArea: incoming.currentArea ?? current.currentArea,
+    landmarks: mergeSpatialLists(current.landmarks, incoming.landmarks, ADVENTURE_SPATIAL_LANDMARK_LIMIT),
+    routes: mergeSpatialLists(current.routes, incoming.routes, ADVENTURE_SPATIAL_ROUTE_LIMIT),
+    unresolvedSpatialQuestions: mergeSpatialLists(
+      current.unresolvedSpatialQuestions,
+      incoming.unresolvedSpatialQuestions,
+      ADVENTURE_SPATIAL_QUESTION_LIMIT
+    ),
+  }
 }
 
 function normalizeAdventureOutcomeTier(value: unknown): LocationRoomAdventureOutcomeTier | null {
@@ -553,6 +639,7 @@ export function normalizeAdventureMemory(
 ): LocationRoomAdventureMemory {
   const adventure = isRecord(metadata?.adventure) ? metadata.adventure : {}
   const activeDecision = normalizeAdventureDecision(adventure.activeDecision)
+  const spatialContext = normalizeSpatialContext(adventure.spatialContext ?? adventure.spatial_context) ?? emptySpatialContext()
   const consequenceLedger = Array.isArray(adventure.consequenceLedger)
     ? adventure.consequenceLedger
       .map((entry, index) => normalizeAdventureConsequence(entry, index))
@@ -573,6 +660,7 @@ export function normalizeAdventureMemory(
     consequenceLedger,
     discoveries: normalizeAdventureStringArray(adventure.discoveries, ADVENTURE_MEMORY_DISCOVERY_LIMIT, 240),
     clocks,
+    spatialContext,
     lastDeclaredAction: normalizeAdventureMemoryDeclaredAction(adventure.lastDeclaredAction),
     lastOutcome: normalizeAdventureLastOutcome(adventure.lastOutcome),
   }
@@ -627,6 +715,9 @@ export function normalizeAdventurePatch(
   const consequences = normalizeAdventureConsequencesFromPatch(value, sourceId)
   const discoveries = normalizeAdventureStringArray(value.discoveries, ADVENTURE_MEMORY_DISCOVERY_LIMIT, 240)
   const clocks = normalizeAdventureClocksFromPatch(value)
+  const spatialContext = Object.prototype.hasOwnProperty.call(value, 'spatialContext') || Object.prototype.hasOwnProperty.call(value, 'spatial_context')
+    ? normalizeSpatialContext(value.spatialContext ?? value.spatial_context)
+    : undefined
   const lastOutcome = value.lastOutcome === null
     ? null
     : value.lastOutcome === undefined
@@ -647,6 +738,7 @@ export function normalizeAdventurePatch(
     ...(consequences.length > 0 ? { consequenceLedger: consequences } : {}),
     ...(discoveries.length > 0 ? { discoveries } : {}),
     ...(clocks.length > 0 ? { clocks } : {}),
+    ...(spatialContext && hasSpatialContextSignal(spatialContext) ? { spatialContext } : {}),
     ...(Object.prototype.hasOwnProperty.call(value, 'lastDeclaredAction')
       ? { lastDeclaredAction: normalizeAdventureMemoryDeclaredAction(value.lastDeclaredAction) }
       : {}),
@@ -693,6 +785,9 @@ export function mergeAdventureMetadata(
     clocks: patch.clocks
       ? mergeByIdBounded(current.clocks, patch.clocks, ADVENTURE_MEMORY_CLOCK_LIMIT)
       : current.clocks,
+    spatialContext: patch.spatialContext
+      ? mergeSpatialContext(current.spatialContext, patch.spatialContext)
+      : current.spatialContext,
     ...(Object.prototype.hasOwnProperty.call(patch, 'lastDeclaredAction') ? { lastDeclaredAction: patch.lastDeclaredAction ?? null } : {}),
     ...(Object.prototype.hasOwnProperty.call(patch, 'lastOutcome') ? { lastOutcome: patch.lastOutcome ?? null } : {}),
   }
@@ -744,6 +839,7 @@ export function seedAdventureMetadataFromCatalog(
     current.consequenceLedger.length ||
     current.discoveries.length ||
     current.clocks.length ||
+    hasSpatialContextSignal(current.spatialContext) ||
     current.lastDeclaredAction ||
     current.lastOutcome
   )

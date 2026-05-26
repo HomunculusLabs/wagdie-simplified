@@ -276,6 +276,21 @@ export const elizaConfig = {
           min: 1,
           integer: true,
         }) ?? 240,
+      publicGmBeatMaxAgentMessages:
+        optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_PUBLIC_GM_BEAT_MAX_AGENT_MESSAGES, {
+          min: 1,
+          integer: true,
+        }) ?? 5,
+      publicGmBeatMaxSceneChecks:
+        optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_PUBLIC_GM_BEAT_MAX_SCENE_CHECKS, {
+          min: 1,
+          integer: true,
+        }) ?? 3,
+      publicGmBeatMinMessagesBetween:
+        optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_PUBLIC_GM_BEAT_MIN_MESSAGES_BETWEEN, {
+          min: 1,
+          integer: true,
+        }) ?? 4,
     },
     gameplay: {
       enabled: optionalBoolean(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_ENABLED) ?? false,
