@@ -5,8 +5,11 @@ import {
   normalizeOfficialResponseText,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
-import { GAMEPLAY_CHECK_TYPES, type GameplayCheckType } from './gameplay/types'
 import { normalizeSceneCheckRequest } from './sceneChecks/rules'
+import {
+  buildRecentSceneCheckPatternLines,
+  hasDuplicateRecentOutcomeOpening,
+} from './sceneChecks/recentPatterns'
 import {
   SCENE_CHECK_ACTION_INTENTS,
   type NormalizedSceneCheckRequest,
@@ -171,9 +174,6 @@ const GM_PROMPT_ENCOUNTER_SEED_MAX_CHARS = 300
 const OFFICIAL_ELIZA_MESSAGE_MAX_CHARS = 3900
 const GM_PROMPT_CONTRACT_MARKER = 'Return only JSON with this contract:'
 const GM_SCENE_CHECK_OUTCOME_CONTRACT_MARKER = 'Return only a JSON object with this exact scene-check outcome contract:'
-const GM_RECENT_SCENE_CHECK_CONTEXT_MAX_CHECKS = 6
-const GM_RECENT_SCENE_CHECK_CONTEXT_MAX_OPENINGS = 4
-const GM_OUTCOME_OPENING_WORDS = 8
 
 function countSentenceLikeSegments(value: string): number {
   return value
@@ -308,6 +308,12 @@ function isFlatOpeningState(input: {
   return input.ttrpgPhase === 'story' &&
     input.combatReadiness === 'none' &&
     (input.threatLevel == null || input.threatLevel <= 0)
+}
+
+function messageMetadataRecord(message: LocationRoomMessage): Record<string, unknown> {
+  return message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+    ? message.metadata as Record<string, unknown>
+    : {}
 }
 
 function publicMessageKind(message: LocationRoomMessage): string | null {
@@ -788,94 +794,6 @@ function formatTranscript(messages: LocationRoomMessage[]): string {
   return lines.join('\n')
 }
 
-function messageMetadataRecord(message: LocationRoomMessage): Record<string, unknown> {
-  return message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
-    ? message.metadata as Record<string, unknown>
-    : {}
-}
-
-function isGameplayCheckType(value: unknown): value is GameplayCheckType {
-  return typeof value === 'string' && (GAMEPLAY_CHECK_TYPES as readonly string[]).includes(value)
-}
-
-function getNestedRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
-}
-
-function extractSceneCheckTypeFromMessage(message: LocationRoomMessage): GameplayCheckType | null {
-  const metadata = messageMetadataRecord(message)
-  const publicRolls = getNestedRecord(metadata.publicRolls)
-  const action = getNestedRecord(publicRolls?.action)
-  if (isGameplayCheckType(action?.checkType)) return action.checkType
-
-  const rollFacts = getNestedRecord(metadata.rollFacts)
-  if (isGameplayCheckType(rollFacts?.checkType)) return rollFacts.checkType
-
-  const contentMatch = message.content.match(/\b(attack|defend|help|investigate|negotiate|flee|rest|explore|arcana|nature|perception|survival|athletics|stealth|persuasion|intimidation|medicine|history|religion)\b/i)
-  const inferred = contentMatch?.[1]?.toLowerCase()
-  return isGameplayCheckType(inferred) ? inferred : null
-}
-
-function normalizedOutcomeOpening(content: string, words = GM_OUTCOME_OPENING_WORDS): string | null {
-  const normalized = normalizeOfficialResponseText(content)
-    .toLowerCase()
-    .replace(/[^a-z0-9' ]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-  if (!normalized) return null
-  const opening = normalized.split(' ').slice(0, words).join(' ')
-  return opening || null
-}
-
-function extractRecentOutcomeOpenings(messages: LocationRoomMessage[]): string[] {
-  return messages
-    .filter((message) => {
-      const metadata = messageMetadataRecord(message)
-      return message.authorKind === 'game_master' && metadata.messageKind === 'gm_outcome'
-    })
-    .map((message) => normalizedOutcomeOpening(message.content))
-    .filter((opening): opening is string => Boolean(opening))
-    .slice(-GM_RECENT_SCENE_CHECK_CONTEXT_MAX_OPENINGS)
-}
-
-function recentCheckTypeRun(checkTypes: GameplayCheckType[]): { checkType: GameplayCheckType; count: number } | null {
-  const last = checkTypes[checkTypes.length - 1]
-  if (!last) return null
-
-  let count = 0
-  for (let index = checkTypes.length - 1; index >= 0; index -= 1) {
-    if (checkTypes[index] !== last) break
-    count += 1
-  }
-
-  return count >= 2 ? { checkType: last, count } : null
-}
-
-function buildRecentSceneCheckPatternLines(messages: LocationRoomMessage[]): string[] {
-  const recentCheckTypes = messages
-    .map(extractSceneCheckTypeFromMessage)
-    .filter((checkType): checkType is GameplayCheckType => Boolean(checkType))
-    .slice(-GM_RECENT_SCENE_CHECK_CONTEXT_MAX_CHECKS)
-  const repeatedRun = recentCheckTypeRun(recentCheckTypes)
-  const recentOpenings = extractRecentOutcomeOpenings(messages)
-
-  if (recentCheckTypes.length === 0 && recentOpenings.length === 0) return []
-
-  return [
-    `Recent scene-check pattern context: check types ${recentCheckTypes.length > 0 ? recentCheckTypes.join(' -> ') : 'None.'}; repeated run ${repeatedRun ? `${repeatedRun.checkType} x${repeatedRun.count}` : 'None.'}; GM outcome openings ${recentOpenings.length > 0 ? recentOpenings.map((opening) => `"${opening}"`).join(' | ') : 'None.'}.`,
-    'Repetition guidance: avoid the same checkType/opening when another semantically valid option fits.',
-  ]
-}
-
-function hasDuplicateRecentOutcomeOpening(publicNarration: string, recentMessages: LocationRoomMessage[] | undefined): boolean {
-  if (!recentMessages || recentMessages.length === 0) return false
-  const opening = normalizedOutcomeOpening(publicNarration)
-  if (!opening) return false
-  return extractRecentOutcomeOpenings(recentMessages).includes(opening)
-}
-
 function formatOpenThreads(threads: string[]): string {
   if (threads.length === 0) return 'None.'
   const lines: string[] = []
@@ -1334,6 +1252,45 @@ function buildFallbackSceneCheckPublicNarration(input: GenerateGameMasterSceneCh
   return `The mistake hits hard as ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—triggers a hard setback: danger escalates, a lost opportunity changes the room's position, and the group still has agency to choose whether to recover, retreat, or risk a harder path.`
 }
 
+function fallbackSceneCheckFocus(input: GenerateGameMasterSceneCheckOutcomeInput): string {
+  const action = input.characterAction.toLowerCase()
+  const match = action.match(/\b(?:door|stair|stairs|route|path|passage|arch|shelf|latch|wall|marks?|scratches|bell|table|bar|tunnel|grate|window|threshold|cellar|landing)\b/i)
+  return match?.[0]
+    ? match[0].replace(/s$/, '')
+    : input.resolution.roll.checkLabel.toLowerCase()
+}
+
+function fallbackSceneCheckSpatialContext(input: GenerateGameMasterSceneCheckOutcomeInput): LocationRoomSpatialContext {
+  const existing = normalizeAdventureMemory(input.narrativeState.metadata).spatialContext
+  const focus = fallbackSceneCheckFocus(input)
+  const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
+
+  if (input.resolution.roll.tier === 'critical_success' || input.resolution.roll.tier === 'success') {
+    return {
+      currentArea: existing.currentArea,
+      landmarks: [`${focus} clarified by ${actor}'s check`],
+      routes: [`opened or safer route near the ${focus}`],
+      unresolvedSpatialQuestions: [],
+    }
+  }
+
+  if (input.resolution.roll.tier === 'partial_success') {
+    return {
+      currentArea: existing.currentArea,
+      landmarks: [`pressure gathers around the ${focus}`],
+      routes: [`narrowed route near the ${focus}`],
+      unresolvedSpatialQuestions: [`Which approach best answers the pressure around the ${focus}?`],
+    }
+  }
+
+  return {
+    currentArea: existing.currentArea,
+    landmarks: [`setback visible at the ${focus}`],
+    routes: [`blocked or harder route near the ${focus}`],
+    unresolvedSpatialQuestions: [`What alternate route or safer approach remains around the ${focus}?`],
+  }
+}
+
 function fallbackSceneCheckAdventurePatch(input: GenerateGameMasterSceneCheckOutcomeInput): LocationRoomAdventurePatch {
   const roll = input.resolution.roll
   const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
@@ -1345,13 +1302,15 @@ function fallbackSceneCheckAdventurePatch(input: GenerateGameMasterSceneCheckOut
     : roll.tier === 'success'
       ? `${actor}'s attempt creates progress with a clean clue or safer position.`
       : roll.tier === 'partial_success'
-        ? `${actor}'s attempt makes progress, but it also adds pressure the room cannot ignore.`
+        ? `${actor}'s attempt makes progress, but it also adds pressure and narrows a route the room cannot ignore.`
         : roll.tier === 'failure'
-          ? `${actor}'s attempt fails forward into a complication that changes the next choice.`
-          : `${actor}'s attempt triggers a hard setback that escalates the room's danger.`
+          ? `${actor}'s attempt fails forward into a visible complication that blocks an easy route and changes the next choice.`
+          : `${actor}'s attempt triggers a hard setback that escalates danger and makes the next route harder.`
 
   return normalizeAdventurePatch({
-    currentStakes: 'The room is now shaped by the resolved scene check.',
+    currentStakes: roll.tier === 'critical_success' || roll.tier === 'success'
+      ? 'The resolved scene check creates a visible opening the group can use.'
+      : 'The resolved scene check changes the room with visible pressure and a harder next choice.',
     consequence: {
       id: 'scene-check-outcome',
       summary: consequenceSummary,
@@ -1361,10 +1320,11 @@ function fallbackSceneCheckAdventurePatch(input: GenerateGameMasterSceneCheckOut
     discoveries: roll.tier === 'critical_success' || roll.tier === 'success'
       ? [baseSummary]
       : [],
+    spatialContext: fallbackSceneCheckSpatialContext(input),
   }, { sourceId: input.sceneCheckId })
 }
 
-function buildFallbackGameMasterSceneCheckOutcome(
+export function buildFallbackGameMasterSceneCheckOutcome(
   input: GenerateGameMasterSceneCheckOutcomeInput,
   gameMasterAgentId: string
 ): GameMasterSceneCheckOutcomeOutput {

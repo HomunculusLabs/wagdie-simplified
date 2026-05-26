@@ -2,6 +2,7 @@ import { gameMasterAgentService } from '@/lib/eliza/gameMasterAgent/service'
 import {
   GAME_MASTER_AUTHOR_NAME,
   GameMasterBeatGenerationError,
+  buildFallbackGameMasterSceneCheckOutcome,
   buildGameMasterBeatProgressionContext,
   officialGameMasterBeatGenerator,
   validateGameMasterBeatProgressionContract,
@@ -42,16 +43,16 @@ import {
   normalizeLocationRoomGeneratedContent,
   type OfficialLocationRoomTurnGenerator,
 } from './officialTurnGenerator'
-import { GAMEPLAY_CHECK_TYPES, type GameplayCheckType } from './gameplay/types'
+import type { GameplayCheckType } from './gameplay/types'
 import {
   adjudicateSceneCheck,
   resolveSceneCheck,
 } from './sceneChecks/rules'
 import { projectPublicSceneCheckRolls } from './sceneChecks/publicRolls'
+import { extractRecentSceneCheckPattern } from './sceneChecks/recentPatterns'
 import type {
   SceneCheckAdjudication,
   SceneCheckFallback,
-  SceneCheckResolution,
 } from './sceneChecks/types'
 import type {
   LocationRoom,
@@ -455,52 +456,6 @@ function toCharacterNarrativeContext(
   }
 }
 
-function isGameplayCheckType(value: unknown): value is GameplayCheckType {
-  return typeof value === 'string' && (GAMEPLAY_CHECK_TYPES as readonly string[]).includes(value)
-}
-
-function messageMetadataRecord(message: LocationRoomMessage): Record<string, unknown> {
-  return message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
-    ? message.metadata as Record<string, unknown>
-    : {}
-}
-
-function getNestedRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null
-}
-
-function extractSceneCheckTypeFromMessage(message: LocationRoomMessage): GameplayCheckType | null {
-  const metadata = messageMetadataRecord(message)
-  const publicRolls = getNestedRecord(metadata.publicRolls)
-  const action = getNestedRecord(publicRolls?.action)
-  if (isGameplayCheckType(action?.checkType)) return action.checkType
-
-  const rollFacts = getNestedRecord(metadata.rollFacts)
-  if (isGameplayCheckType(rollFacts?.checkType)) return rollFacts.checkType
-
-  const match = message.content.match(/\b(attack|defend|help|investigate|negotiate|flee|rest|explore|arcana|nature|perception|survival|athletics|stealth|persuasion|intimidation|medicine|history|religion)\b/i)
-  const inferred = match?.[1]?.toLowerCase()
-  return isGameplayCheckType(inferred) ? inferred : null
-}
-
-function recentCheckTypeRun(messages: LocationRoomMessage[]): { checkType: GameplayCheckType; count: number } | null {
-  const checkTypes = messages
-    .map(extractSceneCheckTypeFromMessage)
-    .filter((checkType): checkType is GameplayCheckType => Boolean(checkType))
-  const last = checkTypes[checkTypes.length - 1]
-  if (!last) return null
-
-  let count = 0
-  for (let index = checkTypes.length - 1; index >= 0; index -= 1) {
-    if (checkTypes[index] !== last) break
-    count += 1
-  }
-
-  return count >= 2 ? { checkType: last, count } : null
-}
-
 type SceneCheckFallbackCandidate = Required<Pick<SceneCheckFallback, 'actionIntent' | 'summary' | 'rollChoice' | 'difficulty'>>
 
 function addFallbackCandidate(
@@ -555,6 +510,60 @@ function buildSceneCheckFallbackCandidates(input: {
       rollChoice: { source: 'fixed', checkType: 'investigate' },
       difficulty: 'normal',
     })
+
+    if (/\b(look|watch|listen|scan|spot|notice|marks?|scratches|dust|shelf|latch|door|room|wall)\b/.test(text)) {
+      addFallbackCandidate(candidates, {
+        actionIntent: 'examine',
+        summary,
+        rollChoice: { source: 'fixed', checkType: 'perception' },
+        difficulty: 'normal',
+      })
+    }
+  }
+
+  if (/\b(route|path|passage|exit|cross|climb|navigate|way\s+through|press\s+on)\b/.test(text)) {
+    addFallbackCandidate(candidates, {
+      actionIntent: 'navigate',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'explore' },
+      difficulty: 'normal',
+    })
+  }
+
+  if (/\b(sneak|hide|creep|slip|quietly|unseen|shadow)\b/.test(text)) {
+    addFallbackCandidate(candidates, {
+      actionIntent: 'sneak',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'stealth' },
+      difficulty: 'normal',
+    })
+  }
+
+  if (/\b(persuade|convince|plead|bargain|negotiate|parley)\b/.test(text)) {
+    addFallbackCandidate(candidates, {
+      actionIntent: 'persuade',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'persuasion' },
+      difficulty: 'normal',
+    })
+  }
+
+  if (/\b(intimidate|threaten|cow|command|stare\s+down)\b/.test(text)) {
+    addFallbackCandidate(candidates, {
+      actionIntent: 'intimidate',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'intimidation' },
+      difficulty: 'normal',
+    })
+  }
+
+  if (/\b(tend|bind|heal|wound|injury|steady|soothe)\b/.test(text)) {
+    addFallbackCandidate(candidates, {
+      actionIntent: 'tend',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'medicine' },
+      difficulty: 'normal',
+    })
   }
 
   return candidates
@@ -577,7 +586,7 @@ function inferSceneCheckFallbackFromDeclaredAction(input: {
   const primary = candidates[0]
   if (!primary) return null
 
-  const repeatedRun = recentCheckTypeRun(input.recentMessages)
+  const repeatedRun = extractRecentSceneCheckPattern(input.recentMessages).repeatedRun
   const primaryCheckType = primary.rollChoice?.checkType
   if (repeatedRun && repeatedRun.count >= 2 && primaryCheckType === repeatedRun.checkType) {
     const alternative = candidates.find((candidate) => candidate.rollChoice?.checkType !== repeatedRun.checkType)
@@ -617,38 +626,6 @@ function sceneRollCardContent(publicRolls: PublicLocationRoomGameplayRolls): str
     dc,
     outcome,
   ].filter(Boolean).join('') + '.'
-}
-
-function fallbackSceneCheckOutcome(input: {
-  gameMasterAgentId: string
-  narrativeState: LocationRoomNarrativeStateSnapshot
-  resolution: SceneCheckResolution
-}): GameMasterSceneCheckOutcomeOutput {
-  const roll = input.resolution.roll
-  const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
-  const outcome = roll.tier.replace(/_/g, ' ')
-  const publicNarration = `${actor}'s ${roll.checkLabel.toLowerCase()} check resolves as ${outcome}: ${roll.total} against DC ${roll.dc}. The scene shifts around that result, leaving the next choice in the characters' hands.`
-
-  return {
-    gameMasterAgentId: input.gameMasterAgentId,
-    publicNarration,
-    stateAfter: {
-      stateSummary: `${input.narrativeState.stateSummary} ${actor}'s ${input.resolution.actionIntent.replace(/_/g, ' ')} check resolved as ${outcome}.`.trim(),
-      currentObjective: input.narrativeState.currentObjective || 'Respond to the consequence of the resolved scene check.',
-      openThreads: input.narrativeState.openThreads.length > 0
-        ? input.narrativeState.openThreads
-        : ['How will the room respond to the scene-check result?'],
-    },
-    adventurePatch: normalizeAdventurePatch({
-      currentStakes: 'The room is now shaped by the resolved scene check.',
-      consequence: {
-        summary: `${actor}'s check leaves a durable consequence for the next choice.`,
-        status: roll.tier === 'success' || roll.tier === 'critical_success' ? 'advantage' : 'complication',
-        tier: roll.tier,
-      },
-    }),
-    metadata: { fallbackUsed: true },
-  }
 }
 
 type SceneCheckRng = () => number
@@ -1087,25 +1064,28 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         currentObjective: gameMasterOutput.stateAfter.currentObjective,
         openThreads: gameMasterOutput.stateAfter.openThreads,
       }
-      const generatedOutcome = this.gameMasterGenerator.generateSceneCheckOutcome
-        ? await this.gameMasterGenerator.generateSceneCheckOutcome({
-          gameMasterAgentId: gameMasterOutput.gameMasterAgentId,
-          room: input.room,
-          tick: input.tick,
-          participants: input.participants,
-          speaker: input.speaker,
-          recentMessages: input.recentMessages,
-          narrativeState: outcomeNarrativeState,
-          characterAction: actionMessage.content,
-          sceneCheckId,
-          resolution,
-          publicRolls,
-        })
-        : fallbackSceneCheckOutcome({
-          gameMasterAgentId: gameMasterOutput.gameMasterAgentId,
-          narrativeState: gameMasterOutput.stateAfter,
-          resolution,
-        })
+      const outcomeInput = {
+        gameMasterAgentId: gameMasterOutput.gameMasterAgentId,
+        room: input.room,
+        tick: input.tick,
+        participants: input.participants,
+        speaker: input.speaker,
+        recentMessages: input.recentMessages,
+        narrativeState: outcomeNarrativeState,
+        characterAction: actionMessage.content,
+        sceneCheckId,
+        resolution,
+        publicRolls,
+      }
+      let generatedOutcome: GameMasterSceneCheckOutcomeOutput
+      try {
+        generatedOutcome = this.gameMasterGenerator.generateSceneCheckOutcome
+          ? await this.gameMasterGenerator.generateSceneCheckOutcome(outcomeInput)
+          : buildFallbackGameMasterSceneCheckOutcome(outcomeInput, gameMasterOutput.gameMasterAgentId)
+      } catch (error) {
+        console.warn('[Location Room Narrative] Falling back after scene-check outcome generation failed:', error)
+        generatedOutcome = buildFallbackGameMasterSceneCheckOutcome(outcomeInput, gameMasterOutput.gameMasterAgentId)
+      }
 
       const outcomeAdventurePatch = withAdventurePatchSource(
         generatedOutcome.adventurePatch ?? generatedOutcome.metadata?.adventurePatch,

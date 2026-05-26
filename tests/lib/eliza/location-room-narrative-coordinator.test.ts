@@ -1387,6 +1387,81 @@ describe('location room narrative coordinator', () => {
     }))
   })
 
+  it('avoids a third consecutive backend-inferred investigate check when a visual examine alternative fits', async () => {
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: `msg-${repository.appendMessage.mock.calls.length}`,
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository()
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: { ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 0 },
+    })
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Let Ash inspect the marked wall.',
+        stateAfter: {
+          stateSummary: 'A marked wall may hide a visible clue.',
+          currentObjective: 'Inspect the marked wall.',
+          openThreads: ['What does the wall show?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'The wall marks may reveal a route.' },
+        metadata: {},
+      })),
+      generateSceneCheckOutcome: jest.fn(async ({ resolution }) => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: `The marked wall answers ${resolution.roll.checkType}.`,
+        stateAfter: {
+          stateSummary: 'The marked wall changes the room.',
+          currentObjective: 'Choose what to do with the mark.',
+          openThreads: ['What waits behind the wall?'],
+        },
+        adventurePatch: { consequenceLedger: [{ id: 'wall-answer', source: 'scene', summary: 'The wall mark changes the next choice.', status: 'complication' as const, tier: resolution.roll.tier }] },
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I inspect the marked wall and scan the scratches for a visible seam.',
+        declaredAction: {
+          summary: 'Ash inspects the marked wall and scans the scratches for a visible seam.',
+          actionIntent: 'inspect wall',
+        },
+        sceneCheckProposal: null,
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(repository, narrativeRepository, gameMasterGenerator, turnGenerator, makeGameMasterAgentResolver('gm-1'))
+
+    await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [sceneCheckRollMessage('investigate', 1), sceneCheckRollMessage('investigate', 2)],
+    })
+
+    expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
+      sceneCheck: expect.objectContaining({ adjudicationReason: 'backend_fallback' }),
+      action: expect.objectContaining({ checkType: 'perception' }),
+    }))
+  })
+
   it('preserves a repeated backend-inferred perception check when no valid fallback alternative fits', async () => {
     const repository = makeRepository()
     usePriorGameMasterMessage(repository)
@@ -1616,6 +1691,118 @@ describe('location room narrative coordinator', () => {
     expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
       sceneCheck: expect.objectContaining({ adjudicationReason: 'character_proposal' }),
       action: expect.objectContaining({ checkType: 'perception' }),
+    }))
+  })
+
+  it('falls back to substantive failure outcome with adventure and spatial memory when outcome generation fails', async () => {
+    const request = normalizeSceneCheckRequest({
+      id: 'cellar-stair',
+      actionIntent: 'search',
+      rollChoice: { source: 'fixed', checkType: 'perception' },
+    })
+    if (!request.ok) throw new Error(request.error)
+
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: `msg-${repository.appendMessage.mock.calls.length}`,
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository()
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: {
+        adventure: {
+          spatialContext: {
+            currentArea: 'Crow\'s Den taproom threshold',
+            landmarks: ['ash-marked bar'],
+            routes: ['cellar stair behind the bar'],
+            unresolvedSpatialQuestions: [],
+          },
+        },
+      },
+    })
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Search the cellar stair without resolving it safely.',
+        stateAfter: {
+          stateSummary: 'The cellar stair waits behind the bar.',
+          currentObjective: 'Search the cellar stair.',
+          openThreads: ['What blocks the stair?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: request.value,
+        adventurePatch: { currentStakes: 'The cellar stair may offer a route down.' },
+        metadata: { sceneCheck: { request: request.value, proposal: null, proposalError: null } },
+      })),
+      generateSceneCheckOutcome: jest.fn(async () => {
+        throw new Error('model unavailable')
+      }),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I search the cellar stair behind the bar and test whether the route is safe.',
+        declaredAction: {
+          summary: 'Ash searches the cellar stair behind the bar and tests whether the route is safe.',
+          actionIntent: 'search route',
+        },
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1'),
+      () => 0
+    )
+
+    try {
+      await coordinator.processTurn({
+        room: room(),
+        tick: tick(),
+        speaker: participants[0],
+        participants,
+        recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+      })
+    } finally {
+      warnSpy.mockRestore()
+    }
+
+    const outcomeAppend = repository.appendMessage.mock.calls[2][0]
+    expect(outcomeAppend.metadata?.messageKind).toBe('gm_outcome')
+    expect(outcomeAppend.content.length).toBeGreaterThanOrEqual(180)
+    expect(outcomeAppend.content).toMatch(/blocked|harder route|next choice|agency|recover|retreat|risk/i)
+    expect(outcomeAppend.content).not.toMatch(/hp|hit points|reward|death|wallet|private chain/i)
+    expect(gameMasterGenerator.generateSceneCheckOutcome).toHaveBeenCalled()
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        adventure: expect.objectContaining({
+          consequenceLedger: [expect.objectContaining({
+            status: 'complication',
+            tier: 'critical_failure',
+            summary: expect.stringMatching(/setback|danger|route harder/i),
+          })],
+          spatialContext: expect.objectContaining({
+            currentArea: 'Crow\'s Den taproom threshold',
+            routes: expect.arrayContaining([expect.stringMatching(/blocked|harder route/i)]),
+            unresolvedSpatialQuestions: expect.arrayContaining([expect.stringMatching(/alternate route|safer approach/i)]),
+          }),
+        }),
+      }),
     }))
   })
 
