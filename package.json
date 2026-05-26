@@ -27,6 +27,8 @@
     "elizaos:smoke:post-restart": "ELIZAOS_SMOKE_PHASE=post-restart npx ts-node --project scripts/tsconfig.json scripts/elizaos-official-smoke.ts",
     "elizaos:db:validate": "npx ts-node --project scripts/tsconfig.json scripts/validate-elizaos-migrations.ts",
     "elizaos:routes:validate": "npx ts-node --project scripts/tsconfig.json scripts/elizaos-route-parity.ts",
+    "narrative:harness:test": "jest tests/lib/eliza/location-room-narrative-harness.test.ts --runInBand",
+    "narrative:harness:live": "npx ts-node --project scripts/tsconfig.json scripts/location-room-narrative-eval.ts",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
   },

@@ -1,0 +1,17 @@
+{
+  "description": "Example live-evaluation targets for location-room narrative QA. The deterministic Jest harness owns the canonical 10 scripted scenarios; this file is for choosing real API locations to score.",
+  "baseUrl": "http://localhost:3000",
+  "pageSize": 300,
+  "targets": [
+    { "id": "11", "name": "Crows Den", "focus": "opening narration, scene checks, failure consequences" },
+    { "id": "21", "name": "Bone Market", "focus": "social pressure, relic mystery, varied roll types" },
+    { "id": "31", "name": "Sable Orchard", "focus": "environmental hazard, fail-forward complications" },
+    { "id": "41", "name": "Ash Chapel", "focus": "memory mystery, public decisions" },
+    { "id": "51", "name": "Glass Warrens", "focus": "identity threat, non-combat stakes" },
+    { "id": "61", "name": "Red Mill", "focus": "escalating clocks, visible costs" },
+    { "id": "71", "name": "Moon Ferry", "focus": "travel mystery, character agency" },
+    { "id": "81", "name": "Salt Library", "focus": "lore checks, clue variety" },
+    { "id": "91", "name": "Wolf Court", "focus": "negotiation, intimidation, legal stakes" },
+    { "id": "101", "name": "Black Lantern Wake", "focus": "accusation mystery, strong failure outcomes" }
+  ]
+}

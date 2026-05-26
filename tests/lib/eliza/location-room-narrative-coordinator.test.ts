@@ -119,6 +119,24 @@ function message(overrides: Partial<LocationRoomMessage> = {}): LocationRoomMess
   }
 }
 
+function sceneCheckRollMessage(checkType: string, sequence: number): LocationRoomMessage {
+  return message({
+    id: `msg-roll-${sequence}`,
+    sequence,
+    authorKind: 'game_master',
+    tokenId: null,
+    officialAgentId: 'gm-1',
+    authorName: 'Game Master',
+    content: `The scene ${checkType} check resolves total 12 vs DC 14.`,
+    metadata: {
+      messageKind: 'roll_card',
+      publicRolls: {
+        action: { checkType },
+      },
+    },
+  })
+}
+
 function narrativeState(): LocationRoomNarrativeState {
   return {
     id: 'state-1',
@@ -1147,6 +1165,321 @@ describe('location room narrative coordinator', () => {
     expect(repository.appendMessage.mock.calls[1][0].metadata).not.toHaveProperty('publicAdventure')
     expect(repository.appendMessage.mock.calls[2][0].metadata).not.toHaveProperty('publicAdventure')
     expect(gameMasterGenerator.generateSceneCheckOutcome).toHaveBeenCalled()
+  })
+
+  it('avoids a third consecutive backend-inferred perception check when another valid fallback fits', async () => {
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: `msg-${repository.appendMessage.mock.calls.length}`,
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository()
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: { ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 0 },
+    })
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Let Ash choose how to inspect the marked shelf.',
+        stateAfter: {
+          stateSummary: 'A marked shelf may hide a clue or route.',
+          currentObjective: 'Decide how to inspect the marked shelf.',
+          openThreads: ['What does the shelf conceal?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'The shelf may reveal a safer route.' },
+        metadata: {},
+      })),
+      generateSceneCheckOutcome: jest.fn(async ({ resolution }) => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: `The marked shelf answers ${resolution.roll.checkType}.`,
+        stateAfter: {
+          stateSummary: 'The marked shelf has answered the inspection.',
+          currentObjective: 'Choose what to do with the revealed shelf mark.',
+          openThreads: ['What watches the shelf?'],
+        },
+        adventurePatch: {
+          consequenceLedger: [{ id: 'shelf-answer', source: 'scene', summary: 'The shelf reveals a route at a cost.', status: 'complication' as const, tier: resolution.roll.tier }],
+        },
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I search the shelf and inspect the scratches around its latch.',
+        declaredAction: {
+          summary: 'Ash searches the shelf and inspects the scratches around its latch.',
+          actionIntent: 'search inspect',
+        },
+        sceneCheckProposal: null,
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [sceneCheckRollMessage('perception', 1), sceneCheckRollMessage('perception', 2)],
+    })
+
+    expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
+      sceneCheck: expect.objectContaining({ adjudicationReason: 'backend_fallback' }),
+      action: expect.objectContaining({ checkType: 'investigate' }),
+    }))
+  })
+
+  it('preserves a repeated backend-inferred perception check when no valid fallback alternative fits', async () => {
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: `msg-${repository.appendMessage.mock.calls.length}`,
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository()
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: { ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 0 },
+    })
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Let Ash search for the hidden bell.',
+        stateAfter: {
+          stateSummary: 'The hidden bell may be somewhere nearby.',
+          currentObjective: 'Search for the hidden bell.',
+          openThreads: ['Where is the bell?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'Finding the bell matters before it tolls again.' },
+        metadata: {},
+      })),
+      generateSceneCheckOutcome: jest.fn(async ({ resolution }) => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: `The hidden bell answers ${resolution.roll.checkType}.`,
+        stateAfter: {
+          stateSummary: 'The search for the hidden bell changes the room.',
+          currentObjective: 'Choose what to do about the bell.',
+          openThreads: ['What wakes if it tolls?'],
+        },
+        adventurePatch: {
+          consequenceLedger: [{ id: 'bell-answer', source: 'scene', summary: 'The search leaves a consequence.', status: 'complication' as const, tier: resolution.roll.tier }],
+        },
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I search for the hidden bell in the dust.',
+        declaredAction: { summary: 'Ash searches for the hidden bell in the dust.', actionIntent: 'search' },
+        sceneCheckProposal: null,
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [sceneCheckRollMessage('perception', 1), sceneCheckRollMessage('perception', 2)],
+    })
+
+    expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
+      sceneCheck: expect.objectContaining({ adjudicationReason: 'backend_fallback' }),
+      action: expect.objectContaining({ checkType: 'perception' }),
+    }))
+  })
+
+  it('does not override a GM-requested check to avoid repetition', async () => {
+    const request = normalizeSceneCheckRequest({
+      id: 'shelf-search',
+      actionIntent: 'search',
+      rollChoice: { source: 'fixed', checkType: 'perception' },
+    })
+    if (!request.ok) throw new Error(request.error)
+
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: `msg-${repository.appendMessage.mock.calls.length}`,
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository()
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Search the shelf exactly as requested.',
+        stateAfter: {
+          stateSummary: 'The shelf calls for a direct search.',
+          currentObjective: 'Search the shelf.',
+          openThreads: ['What is hidden there?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: request.value,
+        adventurePatch: { currentStakes: 'The shelf may hide a route.' },
+        metadata: { sceneCheck: { request: request.value, proposal: null, proposalError: null } },
+      })),
+      generateSceneCheckOutcome: jest.fn(async ({ resolution }) => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: `The requested shelf check answers ${resolution.roll.checkType}.`,
+        stateAfter: {
+          stateSummary: 'The requested search changed the room.',
+          currentObjective: 'Answer the changed shelf.',
+          openThreads: ['What does the shelf hide?'],
+        },
+        adventurePatch: { consequenceLedger: [{ id: 'requested', source: 'scene', summary: 'The request resolves.', status: 'complication' as const, tier: resolution.roll.tier }] },
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I search the shelf and inspect its latch.',
+        declaredAction: { summary: 'Ash searches the shelf and inspects its latch.', actionIntent: 'search inspect' },
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(repository, narrativeRepository, gameMasterGenerator, turnGenerator, makeGameMasterAgentResolver('gm-1'))
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [sceneCheckRollMessage('perception', 1), sceneCheckRollMessage('perception', 2)],
+    })
+
+    expect(result.sceneCheckDiagnostics).toEqual(expect.objectContaining({ requestPresent: true, selected: true }))
+    expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
+      sceneCheck: expect.objectContaining({ adjudicationReason: 'gm_request' }),
+      action: expect.objectContaining({ checkType: 'perception' }),
+    }))
+  })
+
+  it('does not override a valid character scene-check proposal to avoid repetition', async () => {
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: `msg-${repository.appendMessage.mock.calls.length}`,
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository()
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: { ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 0 },
+    })
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Let Ash propose the shelf check.',
+        stateAfter: {
+          stateSummary: 'The shelf can be searched or inspected.',
+          currentObjective: 'Choose how to test the shelf.',
+          openThreads: ['What waits inside the shelf?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'The shelf may answer a careful approach.' },
+        metadata: {},
+      })),
+      generateSceneCheckOutcome: jest.fn(async ({ resolution }) => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: `The proposed shelf check answers ${resolution.roll.checkType}.`,
+        stateAfter: {
+          stateSummary: 'The proposed check changed the shelf.',
+          currentObjective: 'Answer the shelf.',
+          openThreads: ['What remains hidden?'],
+        },
+        adventurePatch: { consequenceLedger: [{ id: 'proposal', source: 'scene', summary: 'The proposal resolves.', status: 'complication' as const, tier: resolution.roll.tier }] },
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I search the shelf and inspect its latch.',
+        declaredAction: { summary: 'Ash searches the shelf and inspects its latch.', actionIntent: 'search inspect' },
+        sceneCheckProposal: {
+          actionIntent: 'search',
+          intentSummary: 'Ash searches the shelf and inspects its latch.',
+          rollChoice: { source: 'fixed', checkType: 'perception' },
+        },
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(repository, narrativeRepository, gameMasterGenerator, turnGenerator, makeGameMasterAgentResolver('gm-1'))
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [sceneCheckRollMessage('perception', 1), sceneCheckRollMessage('perception', 2)],
+    })
+
+    expect(result.sceneCheckDiagnostics).toEqual(expect.objectContaining({ proposalPresent: true, selected: true }))
+    expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
+      sceneCheck: expect.objectContaining({ adjudicationReason: 'character_proposal' }),
+      action: expect.objectContaining({ checkType: 'perception' }),
+    }))
   })
 
   it('executes scene checks as character action, roll card, then GM outcome with durable roll metadata', async () => {

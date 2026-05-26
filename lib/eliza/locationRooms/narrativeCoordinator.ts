@@ -42,6 +42,7 @@ import {
   normalizeLocationRoomGeneratedContent,
   type OfficialLocationRoomTurnGenerator,
 } from './officialTurnGenerator'
+import { GAMEPLAY_CHECK_TYPES, type GameplayCheckType } from './gameplay/types'
 import {
   adjudicateSceneCheck,
   resolveSceneCheck,
@@ -451,10 +452,116 @@ function toCharacterNarrativeContext(
   }
 }
 
+function isGameplayCheckType(value: unknown): value is GameplayCheckType {
+  return typeof value === 'string' && (GAMEPLAY_CHECK_TYPES as readonly string[]).includes(value)
+}
+
+function messageMetadataRecord(message: LocationRoomMessage): Record<string, unknown> {
+  return message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+    ? message.metadata as Record<string, unknown>
+    : {}
+}
+
+function getNestedRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function extractSceneCheckTypeFromMessage(message: LocationRoomMessage): GameplayCheckType | null {
+  const metadata = messageMetadataRecord(message)
+  const publicRolls = getNestedRecord(metadata.publicRolls)
+  const action = getNestedRecord(publicRolls?.action)
+  if (isGameplayCheckType(action?.checkType)) return action.checkType
+
+  const rollFacts = getNestedRecord(metadata.rollFacts)
+  if (isGameplayCheckType(rollFacts?.checkType)) return rollFacts.checkType
+
+  const match = message.content.match(/\b(attack|defend|help|investigate|negotiate|flee|rest|explore|arcana|nature|perception|survival|athletics|stealth|persuasion|intimidation|medicine|history|religion)\b/i)
+  const inferred = match?.[1]?.toLowerCase()
+  return isGameplayCheckType(inferred) ? inferred : null
+}
+
+function recentCheckTypeRun(messages: LocationRoomMessage[]): { checkType: GameplayCheckType; count: number } | null {
+  const checkTypes = messages
+    .map(extractSceneCheckTypeFromMessage)
+    .filter((checkType): checkType is GameplayCheckType => Boolean(checkType))
+  const last = checkTypes[checkTypes.length - 1]
+  if (!last) return null
+
+  let count = 0
+  for (let index = checkTypes.length - 1; index >= 0; index -= 1) {
+    if (checkTypes[index] !== last) break
+    count += 1
+  }
+
+  return count >= 2 ? { checkType: last, count } : null
+}
+
+type SceneCheckFallbackCandidate = Required<Pick<SceneCheckFallback, 'actionIntent' | 'summary' | 'rollChoice' | 'difficulty'>>
+
+function addFallbackCandidate(
+  candidates: SceneCheckFallbackCandidate[],
+  candidate: SceneCheckFallbackCandidate
+): void {
+  const checkType = candidate.rollChoice?.checkType
+  if (candidates.some((existing) => existing.actionIntent === candidate.actionIntent && existing.rollChoice?.checkType === checkType)) {
+    return
+  }
+  candidates.push(candidate)
+}
+
+function buildSceneCheckFallbackCandidates(input: {
+  summary: string
+  text: string
+}): SceneCheckFallbackCandidate[] {
+  const candidates: SceneCheckFallbackCandidate[] = []
+  const { summary, text } = input
+
+  if (/\b(decipher|decode|interpret|translate)\b/.test(text) || /\bread\s+(?:the\s+|these\s+|those\s+)?(?:runes?|glyphs?|sigils?|inscriptions?|symbols?|marks?|scratches?)\b/.test(text)) {
+    addFallbackCandidate(candidates, {
+      actionIntent: 'recall_lore',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'arcana' },
+      difficulty: 'normal',
+    })
+  }
+
+  if (/\b(search|scour|look\s+for|seek)\b/.test(text)) {
+    addFallbackCandidate(candidates, {
+      actionIntent: 'search',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'perception' },
+      difficulty: 'normal',
+    })
+  }
+
+  if (/\b(track)\b/.test(text) || /\bfollow\s+(?:the\s+)?(?:trail|tracks|prints?)\b/.test(text)) {
+    addFallbackCandidate(candidates, {
+      actionIntent: 'track',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'survival' },
+      difficulty: 'normal',
+    })
+  }
+
+  if (/\b(inspect|examine|investigate|study|scrutinize|analy[sz]e|probe)\b/.test(text)) {
+    addFallbackCandidate(candidates, {
+      actionIntent: 'examine',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'investigate' },
+      difficulty: 'normal',
+    })
+  }
+
+  return candidates
+}
+
 function inferSceneCheckFallbackFromDeclaredAction(input: {
   declaredAction: LocationRoomDeclaredAction | null
   content: string
   output: GameMasterBeatOutput
+  recentMessages: LocationRoomMessage[]
 }): SceneCheckFallback | null {
   if (!isOptionalSceneCheckPhase(input.output)) return null
 
@@ -463,34 +570,18 @@ function inferSceneCheckFallbackFromDeclaredAction(input: {
   const text = `${actionIntent} ${summary}`.toLowerCase()
   if (!text.trim()) return null
 
-  if (/\b(decipher|decode|interpret|translate)\b/.test(text) || /\bread\s+(?:the\s+|these\s+|those\s+)?(?:runes?|glyphs?|sigils?|inscriptions?|symbols?|marks?|scratches?)\b/.test(text)) {
-    return {
-      actionIntent: 'recall_lore',
-      summary,
-      rollChoice: { source: 'fixed', checkType: 'arcana' },
-      difficulty: 'normal',
-    }
+  const candidates = buildSceneCheckFallbackCandidates({ summary, text })
+  const primary = candidates[0]
+  if (!primary) return null
+
+  const repeatedRun = recentCheckTypeRun(input.recentMessages)
+  const primaryCheckType = primary.rollChoice?.checkType
+  if (repeatedRun && repeatedRun.count >= 2 && primaryCheckType === repeatedRun.checkType) {
+    const alternative = candidates.find((candidate) => candidate.rollChoice?.checkType !== repeatedRun.checkType)
+    if (alternative) return alternative
   }
 
-  if (/\b(search|scour|look\s+for|seek|track)\b/.test(text) || /\bfollow\s+(?:the\s+)?(?:trail|tracks|prints?)\b/.test(text)) {
-    return {
-      actionIntent: 'search',
-      summary,
-      rollChoice: { source: 'fixed', checkType: 'perception' },
-      difficulty: 'normal',
-    }
-  }
-
-  if (/\b(inspect|examine|investigate|study|scrutinize|analy[sz]e|probe)\b/.test(text)) {
-    return {
-      actionIntent: 'examine',
-      summary,
-      rollChoice: { source: 'fixed', checkType: 'investigate' },
-      difficulty: 'normal',
-    }
-  }
-
-  return null
+  return primary
 }
 
 function messageIdsWith(existing: string[], id: string): string[] {
@@ -557,13 +648,16 @@ function fallbackSceneCheckOutcome(input: {
   }
 }
 
+type SceneCheckRng = () => number
+
 export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarrativeCoordinator {
   constructor(
     private readonly repository: LocationRoomRepository = locationRoomRepository,
     private readonly narrativeRepository: LocationRoomNarrativeRepository = locationRoomNarrativeRepository,
     private readonly gameMasterGenerator: GameMasterBeatGenerator = officialGameMasterBeatGenerator,
     private readonly turnGenerator: OfficialLocationRoomTurnGenerator = officialLocationRoomTurnGenerator,
-    private readonly gameMasterAgentResolver: GameMasterAgentResolver = gameMasterAgentService
+    private readonly gameMasterAgentResolver: GameMasterAgentResolver = gameMasterAgentService,
+    private readonly sceneCheckRng: SceneCheckRng = Math.random
   ) {}
 
   async processTurn(input: ProcessNarrativeLocationRoomTurnInput): Promise<ProcessNarrativeLocationRoomTurnResult> {
@@ -726,7 +820,12 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
     declaredAction = declaredAction ?? storeableDeclaredAction(null, content, adventureAfterGameMasterPatch.activeDecision)
 
     const sceneCheckFallback = !gameMasterOutput.sceneCheckRequest && !sceneCheckProposal && !storedSceneCheck.resolution
-      ? inferSceneCheckFallbackFromDeclaredAction({ declaredAction, content, output: gameMasterOutput })
+      ? inferSceneCheckFallbackFromDeclaredAction({
+        declaredAction,
+        content,
+        output: gameMasterOutput,
+        recentMessages: input.recentMessages,
+      })
       : null
 
     let sceneCheckMetadata = (gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || storedSceneCheck.resolution || sceneCheckFallback)
@@ -921,7 +1020,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
     let resolution = storedSceneCheck.resolution
     let publicRolls = storedSceneCheck.publicRolls
     if (!resolution) {
-      resolution = resolveSceneCheck({ adjudication })
+      resolution = resolveSceneCheck({ adjudication, rng: this.sceneCheckRng })
       publicRolls = projectPublicSceneCheckRolls(resolution, { sceneCheckId })
       beat = await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(beat.metadata, {
         id: sceneCheckId,

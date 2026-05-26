@@ -5,7 +5,7 @@ import {
   normalizeOfficialResponseText,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
-import { GAMEPLAY_CHECK_TYPES } from './gameplay/types'
+import { GAMEPLAY_CHECK_TYPES, type GameplayCheckType } from './gameplay/types'
 import { normalizeSceneCheckRequest } from './sceneChecks/rules'
 import {
   SCENE_CHECK_ACTION_INTENTS,
@@ -165,6 +165,9 @@ const GM_PROMPT_ENCOUNTER_SEED_MAX_CHARS = 300
 const OFFICIAL_ELIZA_MESSAGE_MAX_CHARS = 3900
 const GM_PROMPT_CONTRACT_MARKER = 'Return only JSON with this contract:'
 const GM_SCENE_CHECK_OUTCOME_CONTRACT_MARKER = 'Return only a JSON object with this exact scene-check outcome contract:'
+const GM_RECENT_SCENE_CHECK_CONTEXT_MAX_CHECKS = 6
+const GM_RECENT_SCENE_CHECK_CONTEXT_MAX_OPENINGS = 4
+const GM_OUTCOME_OPENING_WORDS = 8
 
 function countSentenceLikeSegments(value: string): number {
   return value
@@ -729,6 +732,94 @@ function formatTranscript(messages: LocationRoomMessage[]): string {
   return lines.join('\n')
 }
 
+function messageMetadataRecord(message: LocationRoomMessage): Record<string, unknown> {
+  return message.metadata && typeof message.metadata === 'object' && !Array.isArray(message.metadata)
+    ? message.metadata as Record<string, unknown>
+    : {}
+}
+
+function isGameplayCheckType(value: unknown): value is GameplayCheckType {
+  return typeof value === 'string' && (GAMEPLAY_CHECK_TYPES as readonly string[]).includes(value)
+}
+
+function getNestedRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function extractSceneCheckTypeFromMessage(message: LocationRoomMessage): GameplayCheckType | null {
+  const metadata = messageMetadataRecord(message)
+  const publicRolls = getNestedRecord(metadata.publicRolls)
+  const action = getNestedRecord(publicRolls?.action)
+  if (isGameplayCheckType(action?.checkType)) return action.checkType
+
+  const rollFacts = getNestedRecord(metadata.rollFacts)
+  if (isGameplayCheckType(rollFacts?.checkType)) return rollFacts.checkType
+
+  const contentMatch = message.content.match(/\b(attack|defend|help|investigate|negotiate|flee|rest|explore|arcana|nature|perception|survival|athletics|stealth|persuasion|intimidation|medicine|history|religion)\b/i)
+  const inferred = contentMatch?.[1]?.toLowerCase()
+  return isGameplayCheckType(inferred) ? inferred : null
+}
+
+function normalizedOutcomeOpening(content: string, words = GM_OUTCOME_OPENING_WORDS): string | null {
+  const normalized = normalizeOfficialResponseText(content)
+    .toLowerCase()
+    .replace(/[^a-z0-9' ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return null
+  const opening = normalized.split(' ').slice(0, words).join(' ')
+  return opening || null
+}
+
+function extractRecentOutcomeOpenings(messages: LocationRoomMessage[]): string[] {
+  return messages
+    .filter((message) => {
+      const metadata = messageMetadataRecord(message)
+      return message.authorKind === 'game_master' && metadata.messageKind === 'gm_outcome'
+    })
+    .map((message) => normalizedOutcomeOpening(message.content))
+    .filter((opening): opening is string => Boolean(opening))
+    .slice(-GM_RECENT_SCENE_CHECK_CONTEXT_MAX_OPENINGS)
+}
+
+function recentCheckTypeRun(checkTypes: GameplayCheckType[]): { checkType: GameplayCheckType; count: number } | null {
+  const last = checkTypes[checkTypes.length - 1]
+  if (!last) return null
+
+  let count = 0
+  for (let index = checkTypes.length - 1; index >= 0; index -= 1) {
+    if (checkTypes[index] !== last) break
+    count += 1
+  }
+
+  return count >= 2 ? { checkType: last, count } : null
+}
+
+function buildRecentSceneCheckPatternLines(messages: LocationRoomMessage[]): string[] {
+  const recentCheckTypes = messages
+    .map(extractSceneCheckTypeFromMessage)
+    .filter((checkType): checkType is GameplayCheckType => Boolean(checkType))
+    .slice(-GM_RECENT_SCENE_CHECK_CONTEXT_MAX_CHECKS)
+  const repeatedRun = recentCheckTypeRun(recentCheckTypes)
+  const recentOpenings = extractRecentOutcomeOpenings(messages)
+
+  if (recentCheckTypes.length === 0 && recentOpenings.length === 0) return []
+
+  return [
+    `Recent scene-check pattern context: check types ${recentCheckTypes.length > 0 ? recentCheckTypes.join(' -> ') : 'None.'}; repeated run ${repeatedRun ? `${repeatedRun.checkType} x${repeatedRun.count}` : 'None.'}; GM outcome openings ${recentOpenings.length > 0 ? recentOpenings.map((opening) => `"${opening}"`).join(' | ') : 'None.'}.`,
+    'Repetition guidance: avoid the same checkType/opening when another semantically valid option fits.',
+  ]
+}
+
+function hasDuplicateRecentOutcomeOpening(publicNarration: string, recentMessages: LocationRoomMessage[] | undefined): boolean {
+  if (!recentMessages || recentMessages.length === 0) return false
+  const opening = normalizedOutcomeOpening(publicNarration)
+  if (!opening) return false
+  return extractRecentOutcomeOpenings(recentMessages).includes(opening)
+}
+
 function formatOpenThreads(threads: string[]): string {
   if (threads.length === 0) return 'None.'
   const lines: string[] = []
@@ -919,6 +1010,8 @@ export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): s
     'Eligible current participants:',
     formatParticipants(input.participants),
     '',
+    ...buildRecentSceneCheckPatternLines(input.recentMessages),
+    '',
     'Recent public transcript:',
     formatTranscript(input.recentMessages),
     '',
@@ -970,6 +1063,8 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '- Use only the backend roll facts above for dice, modifier, total, DC, and outcome tier.',
     '- Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality, wallets, or private chain data.',
     '- Narrate a consequence that fits the outcome tier and preserves future player agency; keep it natural prose, not an adventure-state panel.',
+    '- Vary the first sentence/opening from recent GM outcome openings while preserving roll facts; do not reuse an exact opening.',
+    '- For partial_success, failure, and critical_failure, publicNarration must be substantive (roughly 180+ characters), show a visible consequence such as cost, complication, pressure, danger, blocked route, lost opportunity, harder choice, hostile response, or obligation, and leave a changed situation or next choice rather than finality.',
     '- Treat adventurePatch as private durable memory for the resolved roll. activeDecision remains rare and only for a genuine new fork.',
     '- Tier rules for adventurePatch:',
     '  - critical_success: major discovery, advantage, opened route, or reduced pressure.',
@@ -1004,6 +1099,8 @@ export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMaster
     'Backend-computed roll facts:',
     ...formatSceneCheckRollFacts(input),
     '',
+    ...buildRecentSceneCheckPatternLines(input.recentMessages),
+    '',
     'Recent public transcript:',
     formatTranscript(input.recentMessages),
     '',
@@ -1011,6 +1108,44 @@ export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMaster
     '',
     ...buildGameMasterSceneCheckOutcomeContractLines(),
   ].join('\n'))
+}
+
+const FAILURE_TIER_PUBLIC_NARRATION_MIN_CHARS = 180
+const FAILURE_TIER_CONSEQUENCE_PATTERN = /\b(cost|costs|complication|complicates|pressure|danger|dangerous|blocked|blocks|lost opportunity|opportunity is lost|harder choice|hostile response|obligation|setback|threat|risk|price|consequence|route narrows|route closes|choice narrows|clock advances|attention turns|exposed|scarce|worse)\b/i
+const FAILURE_TIER_AGENCY_PATTERN = /\b(now|next|must choose|can still|may still|leaves|leaving|offers|opens|forces a choice|choice|choose|decide|approach|route|path|answer|respond|press on|withdraw|bargain|risk|option|which way|what they do)\b/i
+const SCENE_CHECK_OUTCOME_UNSAFE_PATTERN = /\b(hp|hit points?|damage|reward|rewards|dies?|death|fatal|fatality|finality|permanent end|no way forward|cannot continue|wallet|private chain|chain data)\b/i
+
+function normalizeSceneCheckPublicNarrationForValidation(value: string): string {
+  return normalizeOfficialResponseText(value)
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isFailureTier(tier: SceneCheckResolution['roll']['tier']): boolean {
+  return tier === 'partial_success' || tier === 'failure' || tier === 'critical_failure'
+}
+
+function validateSceneCheckOutcomePublicNarration(
+  tier: SceneCheckResolution['roll']['tier'],
+  publicNarration: string
+): void {
+  const normalized = normalizeSceneCheckPublicNarrationForValidation(publicNarration)
+
+  if (SCENE_CHECK_OUTCOME_UNSAFE_PATTERN.test(normalized)) {
+    throw new Error('Game-master scene-check outcome response publicNarration contains unsafe mechanics, reward, fatality, finality, wallet, or private chain language')
+  }
+
+  if (!isFailureTier(tier)) return
+
+  if (normalized.length < FAILURE_TIER_PUBLIC_NARRATION_MIN_CHARS) {
+    throw new Error(`Game-master scene-check outcome response publicNarration is too short for ${tier} consequence narration`)
+  }
+  if (!FAILURE_TIER_CONSEQUENCE_PATTERN.test(normalized)) {
+    throw new Error(`Game-master scene-check outcome response publicNarration missing visible consequence language for ${tier}`)
+  }
+  if (!FAILURE_TIER_AGENCY_PATTERN.test(normalized)) {
+    throw new Error(`Game-master scene-check outcome response publicNarration must preserve player agency after ${tier}`)
+  }
 }
 
 function validateSceneCheckOutcomeAdventurePatch(
@@ -1040,7 +1175,7 @@ function validateSceneCheckOutcomeAdventurePatch(
 
 export function normalizeGameMasterSceneCheckOutcomeResponse(
   raw: string,
-  input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'narrativeState' | 'resolution' | 'sceneCheckId'>,
+  input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'narrativeState' | 'resolution' | 'sceneCheckId'> & { recentMessages?: LocationRoomMessage[] },
   options: { gameMasterAgentId: string; limits?: GameMasterBeatLimits }
 ): GameMasterSceneCheckOutcomeOutput {
   const limits = options.limits ?? elizaConfig.locationRooms.narrative
@@ -1059,6 +1194,10 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
   const adventurePatch = normalizeAdventurePatch(parsed.adventurePatch ?? parsed.adventure_patch, {
     sourceId: input.sceneCheckId,
   })
+  validateSceneCheckOutcomePublicNarration(input.resolution.roll.tier, publicNarration)
+  if (hasDuplicateRecentOutcomeOpening(publicNarration, input.recentMessages)) {
+    throw new Error('Game-master scene-check outcome response reuses a recent outcome opening')
+  }
   validateSceneCheckOutcomeAdventurePatch(input.resolution.roll.tier, adventurePatch)
 
   return {
@@ -1075,6 +1214,28 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
       adventurePatch,
     },
   }
+}
+
+function buildFallbackSceneCheckPublicNarration(input: GenerateGameMasterSceneCheckOutcomeInput): string {
+  const roll = input.resolution.roll
+  const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
+  const checkLabel = roll.checkLabel.toLowerCase()
+  const outcome = roll.tier.replace(/_/g, ' ')
+  const action = truncatePromptValue(input.characterAction, 180)
+
+  if (roll.tier === 'critical_success') {
+    return `A clean opening answers ${actor}'s ${checkLabel} check as ${outcome} (${roll.total} vs DC ${roll.dc}). The action—${action}—finds a useful route, clue, or advantage without adding new pressure, and the next character can decide how boldly to use it.`
+  }
+  if (roll.tier === 'success') {
+    return `A steadier path appears after ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—moves the room forward with a safer position or clear clue, leaving the group with a practical next choice instead of closing the scene.`
+  }
+  if (roll.tier === 'partial_success') {
+    return `Progress comes with a price when ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—does make progress, but the room answers with a cost: pressure gathers, one route narrows, and the group must choose whether to press the opening or shift to a safer approach.`
+  }
+  if (roll.tier === 'failure') {
+    return `The room refuses to stay harmless after ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—fails forward into a visible complication: attention turns hostile, an easy route is blocked, and the next choice must answer that pressure rather than pretending nothing changed.`
+  }
+  return `The mistake hits hard as ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—triggers a hard setback: danger escalates, a lost opportunity changes the room's position, and the group still has agency to choose whether to recover, retreat, or risk a harder path.`
 }
 
 function fallbackSceneCheckAdventurePatch(input: GenerateGameMasterSceneCheckOutcomeInput): LocationRoomAdventurePatch {
@@ -1117,7 +1278,7 @@ function buildFallbackGameMasterSceneCheckOutcome(
   const outcome = roll.tier.replace(/_/g, ' ')
   const adventurePatch = fallbackSceneCheckAdventurePatch(input)
   const publicNarration = trimToLimit(
-    `${actor}'s ${roll.checkLabel.toLowerCase()} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The scene answers the attempt without changing the roll: the result becomes the next clear pressure for the room to address.`,
+    buildFallbackSceneCheckPublicNarration(input),
     limits.publicNarrationMaxLength
   ) ?? 'The scene check resolves, and the room shifts around the result.'
 

@@ -129,6 +129,35 @@ function message(overrides: Partial<LocationRoomMessage> = {}): LocationRoomMess
   }
 }
 
+function sceneCheckRollMessage(checkType: string, sequence: number): LocationRoomMessage {
+  return message({
+    id: `msg-roll-${sequence}`,
+    sequence,
+    authorKind: 'game_master',
+    tokenId: null,
+    authorName: 'Game Master',
+    content: `The scene ${checkType} check resolves total 12 vs DC 14.`,
+    metadata: {
+      messageKind: 'roll_card',
+      publicRolls: {
+        action: { checkType },
+      },
+    },
+  })
+}
+
+function sceneCheckOutcomeMessage(content: string, sequence: number): LocationRoomMessage {
+  return message({
+    id: `msg-outcome-${sequence}`,
+    sequence,
+    authorKind: 'game_master',
+    tokenId: null,
+    authorName: 'Game Master',
+    content,
+    metadata: { messageKind: 'gm_outcome' },
+  })
+}
+
 function narrativeState(): LocationRoomNarrativeState {
   return {
     id: 'state-1',
@@ -172,6 +201,53 @@ function narrativeState(): LocationRoomNarrativeState {
     updatedAt: now,
   }
 }
+
+function sceneCheckOutcomeInput(tier: 'critical_success' | 'success' | 'partial_success' | 'failure' | 'critical_failure' = 'partial_success') {
+  const participants = [participant(1, 'Ash'), participant(2, 'Bone')]
+  const request = normalizeSceneCheckRequest({
+    actionIntent: 'search',
+    rollChoice: { source: 'fixed', checkType: 'perception' },
+  })
+  if (!request.ok) throw new Error(request.error)
+  const resolution = resolveSceneCheck({
+    adjudication: {
+      decision: 'run',
+      source: 'game_master',
+      adjudicationSource: 'game_master',
+      requestSource: 'game_master',
+      reason: 'gm_request',
+      actorTokenId: 1,
+      actorName: 'Ash',
+      actionIntent: request.value.actionIntent,
+      gameplayActionType: request.value.gameplayActionType,
+      rollChoice: request.value.rollChoice,
+      contextualChecks: request.value.contextualChecks,
+      difficulty: request.value.difficulty,
+      request: request.value,
+      proposal: null,
+    },
+    rng: () => 0.69,
+  })
+  const tieredResolution = {
+    ...resolution,
+    roll: { ...resolution.roll, tier },
+  }
+  return {
+    gameMasterAgentId: 'gm-1',
+    room: room(),
+    tick: tick(),
+    participants,
+    speaker: participants[0],
+    recentMessages: [message()],
+    narrativeState: narrativeState(),
+    characterAction: 'I search the ash marks for the hidden route.',
+    sceneCheckId: 'scene_check:beat-1',
+    resolution: tieredResolution,
+    publicRolls: projectPublicSceneCheckRolls(tieredResolution, { sceneCheckId: 'scene_check:beat-1' }),
+  }
+}
+
+const strongFailureNarration = 'Ash finds the hidden seam too late, and the ash underfoot gives a dry crack that turns the watcher toward the stair. The failure creates a visible complication: one safe route is blocked by falling soot, pressure rises below, and the group must choose whether to force the narrow opening, draw the watcher away, or retreat to search for another answer.'
 
 describe('game-master beat generator helpers', () => {
   const participants = [participant(1, 'Ash'), participant(2, 'Bone')]
@@ -243,6 +319,39 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('publicNarration is required and must be non-empty')
     expect(prompt).toContain('Opening publicNarration must be a rich table-setting GM beat')
     expect(prompt).toContain('2-3 interactable hooks')
+  })
+
+  it('includes recent scene-check patterns and outcome openings in GM prompts', () => {
+    const recentMessages = [
+      sceneCheckRollMessage('perception', 1),
+      sceneCheckOutcomeMessage('Ash checks the same dark seam and the room answers with pressure.', 2),
+      sceneCheckRollMessage('perception', 3),
+      sceneCheckOutcomeMessage('Ash checks the same dark seam while the watcher waits below.', 4),
+    ]
+
+    const beatPrompt = buildGameMasterBeatPrompt({
+      gameMasterAgentId: 'gm-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages,
+      narrativeState: narrativeState(),
+    })
+    expect(beatPrompt).toContain('Recent scene-check pattern context')
+    expect(beatPrompt).toContain('check types perception -> perception')
+    expect(beatPrompt).toContain('repeated run perception x2')
+    expect(beatPrompt).toContain('GM outcome openings')
+    expect(beatPrompt).toContain('Repetition guidance: avoid the same checkType/opening')
+
+    const outcomePrompt = buildGameMasterSceneCheckOutcomePrompt({
+      ...sceneCheckOutcomeInput('failure'),
+      recentMessages,
+    })
+    expect(outcomePrompt).toContain('Recent scene-check pattern context')
+    expect(outcomePrompt).toContain('repeated run perception x2')
+    expect(outcomePrompt).toContain('GM outcome openings')
+    expect(outcomePrompt).toContain('Vary the first sentence/opening')
   })
 
   it('includes optional scene-check request guidance and normalizes sanitized GM requests', () => {
@@ -889,10 +998,11 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Use only the backend roll facts')
     expect(prompt).toContain('Tier rules for adventurePatch')
     expect(prompt).toContain('partial_success: progress plus complication')
+    expect(prompt).toContain('For partial_success, failure, and critical_failure, publicNarration must be substantive')
     expect(prompt).toContain('Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality')
 
     const output = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
-      publicNarration: 'The ash parts enough to show a stair, but the sound below notices Ash.',
+      publicNarration: strongFailureNarration,
       stateSummary: 'Ash found a hidden stair under the ash marks.',
       currentObjective: 'Decide whether to descend the stair.',
       openThreads: ['What heard Ash below?'],
@@ -905,11 +1015,11 @@ describe('game-master beat generator helpers', () => {
         },
         discoveries: ['A hidden stair lies under the ash marks.'],
       },
-    }), outcomeInput, { gameMasterAgentId: 'gm-1', limits })
+    }), outcomeInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })
 
     expect(output).toEqual(expect.objectContaining({
       gameMasterAgentId: 'gm-1',
-      publicNarration: 'The ash parts enough to show a',
+      publicNarration: strongFailureNarration,
       stateAfter: expect.objectContaining({
         stateSummary: 'Ash found a hidden stair under the ash m',
         currentObjective: 'Decide whether to descend the stair.',
@@ -945,12 +1055,14 @@ describe('game-master beat generator helpers', () => {
         ? { discoveries: [`${tier} reveals the safer route.`] }
         : { consequence: { summary: `${tier} leaves a durable complication.`, status: 'complication', tier } }
       const tierOutput = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
-        publicNarration: 'The roll result changes the room.',
+        publicNarration: tier === 'critical_success' || tier === 'success'
+          ? 'The roll result changes the room.'
+          : strongFailureNarration,
         stateSummary: 'The room changed after the roll.',
         currentObjective: 'Answer the changed room.',
         openThreads: ['What changes next?'],
         adventurePatch: tierPatch,
-      }), tierInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 120 } })
+      }), tierInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })
       expect(tierOutput.adventurePatch).toBeTruthy()
     }
 
@@ -959,12 +1071,136 @@ describe('game-master beat generator helpers', () => {
       resolution: { ...resolution, roll: { ...resolution.roll, tier: 'failure' as const } },
     }
     expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
-      publicNarration: 'The roll result changes the room.',
+      publicNarration: strongFailureNarration,
       stateSummary: 'The room changed after the roll.',
       currentObjective: 'Answer the changed room.',
       openThreads: ['What changes next?'],
       adventurePatch: { discoveries: ['A clue appears without a cost.'] },
-    }), failureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 120 } })).toThrow('consequence')
+    }), failureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow('consequence')
+  })
+
+  it('rejects weak or generic failure-tier public scene-check narration', () => {
+    const failureInput = sceneCheckOutcomeInput('failure')
+
+    expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'The roll result changes the room.',
+      stateSummary: 'The room changed after the roll.',
+      currentObjective: 'Answer the changed room.',
+      openThreads: ['What changes next?'],
+      adventurePatch: {
+        consequence: { summary: 'The failed check leaves a durable complication.', status: 'complication', tier: 'failure' },
+      },
+    }), failureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow('publicNarration is too short')
+
+    expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'Ash studies the ash marks for a long moment while the room waits in silence around the stair. The result is noted in the scene, and everyone has time to consider what has happened before moving onward together.',
+      stateSummary: 'The room changed after the roll.',
+      currentObjective: 'Answer the changed room.',
+      openThreads: ['What changes next?'],
+      adventurePatch: {
+        consequence: { summary: 'The failed check leaves a durable complication.', status: 'complication', tier: 'failure' },
+      },
+    }), failureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow('visible consequence')
+  })
+
+  it('rejects durable adventurePatch consequences when failure-tier public narration is weak', () => {
+    const criticalFailureInput = sceneCheckOutcomeInput('critical_failure')
+
+    expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'A consequence is recorded privately.',
+      stateSummary: 'The room changed after the roll.',
+      currentObjective: 'Answer the changed room.',
+      openThreads: ['What changes next?'],
+      adventurePatch: {
+        consequence: { summary: 'The critical failure advances a hard danger clock.', status: 'complication', tier: 'critical_failure' },
+        clockUpdates: [{ id: 'watcher', label: 'Watcher attention', value: 4, max: 6, summary: 'The watcher is much closer.' }],
+      },
+    }), criticalFailureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow('publicNarration is too short')
+  })
+
+  it('accepts strong failure-tier public scene-check narration with a changed next choice', () => {
+    const failureInput = sceneCheckOutcomeInput('failure')
+
+    const output = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: strongFailureNarration,
+      stateSummary: 'The failed search has turned the watcher toward the stair.',
+      currentObjective: 'Choose how to answer the blocked route.',
+      openThreads: ['Will the group force the stair or lure the watcher away?'],
+      adventurePatch: {
+        consequence: { summary: 'The safe route is blocked while the watcher turns hostile.', status: 'complication', tier: 'failure' },
+      },
+    }), failureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })
+
+    expect(output.publicNarration).toBe(strongFailureNarration)
+    expect(output.adventurePatch.consequenceLedger).toEqual([
+      expect.objectContaining({ tier: 'failure', status: 'complication' }),
+    ])
+  })
+
+  it('rejects duplicate recent GM outcome openings so generation can fall back safely', async () => {
+    const duplicateInput = {
+      ...sceneCheckOutcomeInput('failure'),
+      recentMessages: [sceneCheckOutcomeMessage(strongFailureNarration, 7)],
+    }
+
+    expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: strongFailureNarration,
+      stateSummary: 'The failed search has turned the watcher toward the stair.',
+      currentObjective: 'Choose how to answer the blocked route.',
+      openThreads: ['Will the group force the stair or lure the watcher away?'],
+      adventurePatch: {
+        consequence: { summary: 'The safe route is blocked while the watcher turns hostile.', status: 'complication', tier: 'failure' },
+      },
+    }), duplicateInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow('reuses a recent outcome opening')
+
+    const messaging = {
+      startAgent: jest.fn(async () => undefined),
+      createSession: jest.fn(async () => ({ sessionId: 'session-1' })),
+      sendSessionMessage: jest.fn(async () => ({} as Response)),
+      collectStreamedResponseText: jest.fn(async () => ({
+        message: null,
+        text: JSON.stringify({
+          publicNarration: strongFailureNarration,
+          stateSummary: 'The failed search has turned the watcher toward the stair.',
+          currentObjective: 'Choose how to answer the blocked route.',
+          openThreads: ['Will the group force the stair or lure the watcher away?'],
+          adventurePatch: {
+            consequence: { summary: 'The safe route is blocked while the watcher turns hostile.', status: 'complication', tier: 'failure' },
+          },
+        }),
+      })),
+      deleteSession: jest.fn(async () => undefined),
+    }
+    const generator = new OfficialGameMasterBeatGenerator(messaging as never)
+    const output = await generator.generateSceneCheckOutcome(duplicateInput)
+
+    expect(output.metadata.fallbackUsed).toBe(true)
+    expect(output.publicNarration).not.toBe(strongFailureNarration)
+  })
+
+  it('uses substantive consequence-bearing fallback narration for failure-tier scene-check outcomes', async () => {
+    const messaging = {
+      startAgent: jest.fn(async () => undefined),
+      createSession: jest.fn(async () => ({ sessionId: 'session-1' })),
+      sendSessionMessage: jest.fn(async () => ({} as Response)),
+      collectStreamedResponseText: jest.fn(async () => {
+        throw new Error('stream down')
+      }),
+      deleteSession: jest.fn(async () => undefined),
+    }
+    const generator = new OfficialGameMasterBeatGenerator(messaging as never)
+
+    const outputs: string[] = []
+    for (const tier of ['failure', 'critical_failure'] as const) {
+      const output = await generator.generateSceneCheckOutcome(sceneCheckOutcomeInput(tier))
+      outputs.push(output.publicNarration)
+      expect(output.metadata.fallbackUsed).toBe(true)
+      expect(output.publicNarration.length).toBeGreaterThanOrEqual(180)
+      expect(output.publicNarration).toMatch(/complication|blocked|pressure|danger|lost opportunity|harder path/i)
+      expect(output.publicNarration).toMatch(/choose|next choice|recover|retreat|risk|approach/i)
+      expect(output.adventurePatch.consequenceLedger?.[0]).toEqual(expect.objectContaining({ tier }))
+    }
+    expect(outputs[0].split(' ').slice(0, 6).join(' ')).not.toBe(outputs[1].split(' ').slice(0, 6).join(' '))
   })
 
   it('keeps the character prompt unchanged unless narrative context is provided', () => {
