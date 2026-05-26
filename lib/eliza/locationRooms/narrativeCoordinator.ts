@@ -49,6 +49,7 @@ import {
 import { projectPublicSceneCheckRolls } from './sceneChecks/publicRolls'
 import type {
   SceneCheckAdjudication,
+  SceneCheckFallback,
   SceneCheckResolution,
 } from './sceneChecks/types'
 import type {
@@ -375,21 +376,64 @@ function getGameMasterGenerationDiagnostics(error: unknown): GameMasterGeneratio
   return sanitizeGameMasterGenerationDiagnostics((error as { diagnostics?: unknown }).diagnostics)
 }
 
-function shouldAppendGameMasterMessage(beat: LocationRoomNarrativeBeat, output: GameMasterBeatOutput): boolean {
-  if (!output.publicNarration) return false
-  return !['game_master_message_appended', 'character_appended', 'completed'].includes(beat.status)
+function ttrpgPhaseRank(phase: GameMasterBeatOutput['ttrpgPhase']): number {
+  if (phase === 'story') return 0
+  if (phase === 'exploration') return 1
+  if (phase === 'threat') return 2
+  if (phase === 'combat') return 3
+  if (phase === 'aftermath') return 4
+  return 0
+}
+
+function combatReadinessRank(readiness: GameMasterBeatOutput['combatReadiness']): number {
+  if (readiness === 'none') return 0
+  if (readiness === 'foreshadow') return 1
+  if (readiness === 'ready') return 2
+  return 0
+}
+
+function isPublicGameMasterEscalation(
+  narrativeState: { metadata: Record<string, unknown> },
+  output: GameMasterBeatOutput
+): boolean {
+  const before = normalizeNarrativeTtrpgMetadata(narrativeState.metadata)
+  const previousThreatLevel = before.threatLevel ?? 0
+  const nextThreatLevel = output.threatLevel ?? 0
+
+  return ttrpgPhaseRank(output.ttrpgPhase) > ttrpgPhaseRank(before.ttrpgPhase) ||
+    combatReadinessRank(output.combatReadiness) > combatReadinessRank(before.combatReadiness) ||
+    nextThreatLevel > previousThreatLevel
+}
+
+function shouldAppendGameMasterMessage(input: {
+  beat: LocationRoomNarrativeBeat
+  output: GameMasterBeatOutput
+  narrativeState: { metadata: Record<string, unknown> }
+  progressionContext: GameMasterBeatProgressionContext
+}): boolean {
+  if (!input.output.publicNarration) return false
+  if (['game_master_message_appended', 'character_appended', 'completed'].includes(input.beat.status)) return false
+  if (input.progressionContext.requirePublicNarration) return true
+  if (input.output.requestedGameplayAction === 'start_combat') return true
+  return isPublicGameMasterEscalation(input.narrativeState, input.output)
+}
+
+function isOptionalSceneCheckPhase(output: GameMasterBeatOutput): boolean {
+  return !output.requestedGameplayAction &&
+    (output.ttrpgPhase === 'story' || output.ttrpgPhase === 'exploration')
 }
 
 function toCharacterNarrativeContext(
   output: GameMasterBeatOutput,
-  activeDecision: LocationRoomAdventureMemory['activeDecision']
+  activeDecision: LocationRoomAdventureMemory['activeDecision'],
+  visiblePublicNarration: string | null
 ): LocationRoomNarrativeTurnContext {
   return {
     stateSummary: output.stateAfter.stateSummary,
     currentObjective: output.stateAfter.currentObjective,
     openThreads: output.stateAfter.openThreads,
     speakerInstruction: output.speakerInstruction,
-    publicNarration: output.publicNarration,
+    publicNarration: visiblePublicNarration,
     activeDecision,
     sceneCheck: output.sceneCheckRequest
       ? {
@@ -397,8 +441,56 @@ function toCharacterNarrativeContext(
         request: output.sceneCheckRequest,
         contextualChecks: output.sceneCheckRequest.contextualChecks,
       }
-      : null,
+      : isOptionalSceneCheckPhase(output)
+        ? {
+          mode: 'optional',
+          request: null,
+          contextualChecks: [],
+        }
+        : null,
   }
+}
+
+function inferSceneCheckFallbackFromDeclaredAction(input: {
+  declaredAction: LocationRoomDeclaredAction | null
+  content: string
+  output: GameMasterBeatOutput
+}): SceneCheckFallback | null {
+  if (!isOptionalSceneCheckPhase(input.output)) return null
+
+  const summary = input.declaredAction?.summary?.trim() || input.content
+  const actionIntent = input.declaredAction?.actionIntent?.trim() ?? ''
+  const text = `${actionIntent} ${summary}`.toLowerCase()
+  if (!text.trim()) return null
+
+  if (/\b(decipher|decode|interpret|translate)\b/.test(text) || /\bread\s+(?:the\s+|these\s+|those\s+)?(?:runes?|glyphs?|sigils?|inscriptions?|symbols?|marks?|scratches?)\b/.test(text)) {
+    return {
+      actionIntent: 'recall_lore',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'arcana' },
+      difficulty: 'normal',
+    }
+  }
+
+  if (/\b(search|scour|look\s+for|seek|track)\b/.test(text) || /\bfollow\s+(?:the\s+)?(?:trail|tracks|prints?)\b/.test(text)) {
+    return {
+      actionIntent: 'search',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'perception' },
+      difficulty: 'normal',
+    }
+  }
+
+  if (/\b(inspect|examine|investigate|study|scrutinize|analy[sz]e|probe)\b/.test(text)) {
+    return {
+      actionIntent: 'examine',
+      summary,
+      rollChoice: { source: 'fixed', checkType: 'investigate' },
+      difficulty: 'normal',
+    }
+  }
+
+  return null
 }
 
 function messageIdsWith(existing: string[], id: string): string[] {
@@ -548,7 +640,14 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       mergeAdventureMetadata(narrativeState.metadata, gameMasterOutput.adventurePatch, { sourceId: beatAdventureSourceId })
     )
 
-    if (shouldAppendGameMasterMessage(beat, gameMasterOutput)) {
+    const shouldAppendPublicGameMasterBeat = shouldAppendGameMasterMessage({
+      beat,
+      output: gameMasterOutput,
+      narrativeState,
+      progressionContext,
+    })
+
+    if (shouldAppendPublicGameMasterBeat) {
       const publicNarration = gameMasterOutput.publicNarration
       if (!publicNarration) {
         throw new Error('Location room narrative beat is missing public narration')
@@ -564,6 +663,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         authorName: GAME_MASTER_AUTHOR_NAME,
         content: publicNarration,
         visibility: 'public',
+        dedupeKey: `narrative:${beat.id}:gm_beat`,
         metadata: {
           source: 'location-room-game-master',
           triggerType: input.tick.triggerType,
@@ -598,12 +698,19 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
     })
 
     if (!content) {
+      const visiblePublicNarrationForBeat = shouldAppendPublicGameMasterBeat || beat.status === 'game_master_message_appended'
+        ? gameMasterOutput.publicNarration
+        : null
       const generated = await this.turnGenerator.generateTurn({
         room: input.room,
         speaker: input.speaker,
         participants: input.participants,
         recentMessages: input.recentMessages,
-        narrativeContext: toCharacterNarrativeContext(gameMasterOutput, adventureAfterGameMasterPatch.activeDecision),
+        narrativeContext: toCharacterNarrativeContext(
+          gameMasterOutput,
+          adventureAfterGameMasterPatch.activeDecision,
+          visiblePublicNarrationForBeat
+        ),
       })
       content = normalizeLocationRoomGeneratedContent(generated.content)
       officialAgentId = generated.officialAgentId
@@ -618,7 +725,11 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
 
     declaredAction = declaredAction ?? storeableDeclaredAction(null, content, adventureAfterGameMasterPatch.activeDecision)
 
-    let sceneCheckMetadata = (gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || storedSceneCheck.resolution)
+    const sceneCheckFallback = !gameMasterOutput.sceneCheckRequest && !sceneCheckProposal && !storedSceneCheck.resolution
+      ? inferSceneCheckFallbackFromDeclaredAction({ declaredAction, content, output: gameMasterOutput })
+      : null
+
+    let sceneCheckMetadata = (gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || storedSceneCheck.resolution || sceneCheckFallback)
       ? mergeNarrativeSceneCheckMetadata({
         ...toGameMasterBeatMetadata(gameMasterOutput),
         declaredAction,
@@ -640,7 +751,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         characterAction: storeableCharacterAction({ content, officialAgentId, authorName: input.speaker.name }),
       }
 
-    if (gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || storedSceneCheck.resolution) {
+    if (gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || storedSceneCheck.resolution || sceneCheckFallback) {
       try {
         beat = await this.narrativeRepository.patchBeatMetadata(beat.id, sceneCheckMetadata)
         storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
@@ -660,6 +771,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       actorName: input.speaker.name,
       request: storedSceneCheck.request,
       proposal: sceneCheckProposal,
+      fallback: sceneCheckFallback,
     })
 
     if (adjudication.decision === 'skip') {
@@ -690,7 +802,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           messageDomain: 'narrative',
           messageKind: 'character_reaction',
           ttrpgPhase: gameMasterOutput.ttrpgPhase,
-          ...(gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError
+          ...(gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || sceneCheckFallback
             ? {
               sceneCheck: {
                 request: gameMasterOutput.sceneCheckRequest,
@@ -738,7 +850,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         await this.narrativeRepository.markBeatFailed(beat.id, error).catch(() => null)
       }
 
-      const hasSceneCheckSignal = Boolean(storedSceneCheck.request || sceneCheckProposal || storedSceneCheck.proposal || sceneCheckProposalError || storedSceneCheck.proposalError)
+      const hasSceneCheckSignal = Boolean(storedSceneCheck.request || sceneCheckProposal || storedSceneCheck.proposal || sceneCheckProposalError || storedSceneCheck.proposalError || sceneCheckFallback)
       return {
         selectedTokenId: input.speaker.tokenId,
         messageId: message.id,

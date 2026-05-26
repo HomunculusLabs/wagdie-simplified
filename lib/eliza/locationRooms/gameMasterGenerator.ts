@@ -163,7 +163,7 @@ const GM_PROMPT_OBJECTIVE_MAX_CHARS = 240
 const GM_PROMPT_OPEN_THREADS_MAX_CHARS = 500
 const GM_PROMPT_ENCOUNTER_SEED_MAX_CHARS = 300
 const OFFICIAL_ELIZA_MESSAGE_MAX_CHARS = 3900
-const GM_PROMPT_CONTRACT_MARKER = 'Return only a JSON object with this exact contract:'
+const GM_PROMPT_CONTRACT_MARKER = 'Return only JSON with this contract:'
 const GM_SCENE_CHECK_OUTCOME_CONTRACT_MARKER = 'Return only a JSON object with this exact scene-check outcome contract:'
 
 function countSentenceLikeSegments(value: string): number {
@@ -467,12 +467,14 @@ function buildFallbackGameMasterBeat(
     .map((thread) => trimToLimit(thread, limits.openThreadMaxLength))
     .filter((thread): thread is string => Boolean(thread))
 
-  const publicNarration = trimToLimit(
-    progressionContext?.requireOpeningPublicNarration
-      ? 'A cold hush settles over the Crow\'s Den as the room seems to notice the gathered dead all at once. Salt-stained boards creak under no visible foot, and a guttering lantern throws three clear choices into view: the dark stair, the watched doorway, and the table where fresh scratches mark a warning. The air offers no answer, only pressure, as if the place is waiting for someone to choose what fear is worth following. Whatever happens next should come from the characters, but the room has made it clear that standing still will not keep them safe.'
-      : 'The room shifts before anyone can mistake the silence for safety. Something in the Crow\'s Den changes position just out of sight, leaving the characters with a clear pressure to answer in their own voice.',
-    limits.publicNarrationMaxLength
-  )
+  const publicNarration = progressionContext?.requirePublicNarration
+    ? trimToLimit(
+      progressionContext.requireOpeningPublicNarration
+        ? 'A cold hush settles over the Crow\'s Den as the room seems to notice the gathered dead all at once. Salt-stained boards creak under no visible foot, and a guttering lantern throws three clear choices into view: the dark stair, the watched doorway, and the table where fresh scratches mark a warning. The air offers no answer, only pressure, as if the place is waiting for someone to choose what fear is worth following. Whatever happens next should come from the characters, but the room has made it clear that standing still will not keep them safe.'
+        : 'The room shifts because repeated hesitation has changed the scene: something in the Crow\'s Den moves just out of sight, turning the old pressure into a visible omen the characters must answer.',
+      limits.publicNarrationMaxLength
+    )
+    : null
 
   const stateAfter = {
     stateSummary: trimToLimit(
@@ -785,7 +787,7 @@ function buildProgressionContextLines(context?: GameMasterBeatProgressionContext
 function buildSceneCheckContractLines(): string[] {
   return [
     'Optional non-combat scene checks:',
-    '- sceneCheckRequest: one roll/null; actionIntent options; fixed rollChoice.checkType options.',
+    '- sceneCheckRequest: one non-combat roll/null for risky inspect/search/examine/decipher actions; actionIntent options; fixed rollChoice.checkType options.',
     `- fixed rollChoice.checkType options: ${GAMEPLAY_CHECK_TYPES.join(', ')}.`,
     `- actionIntent options: ${SCENE_CHECK_ACTION_INTENTS.join(', ')}.`,
     '- contextualChecks: public-safe id/label/checkType/dc/description; backend sanitizes.',
@@ -822,7 +824,7 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     '- clockUpdates use absolute values when a private clock actually changes.',
     ...(input.progressionContext?.requirePublicNarration
       ? ['- publicNarration is required and must be non-empty for this beat.']
-      : ['- publicNarration may be null only when this beat is character-focused and no public GM narration is required.']),
+      : ['- publicNarration should be null for routine post-opener beats; use it only for visible transition/escalation, combat handoff, or explicitly necessary public narration.']),
     ...(input.progressionContext?.requireEscalationBeyondOpening
       ? ['- Do not leave repeated activity in flat story/none/0 state; visibly escalate without forcing start_combat.']
       : []),
