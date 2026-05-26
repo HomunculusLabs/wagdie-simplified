@@ -5,7 +5,7 @@ This directory contains scripts for populating the WAGDIE database with sample d
 ## Available Scripts
 
 ### location-room-narrative-eval.ts
-Scores a live location-room transcript for narrative QA signals: public GM narration length, roll/outcome pairing, check variety, speaker rotation, weak failures, and repeated outcome openings.
+Scores a live/static location-room transcript for narrative QA signals: public GM narration length, public GM beat cadence (`publicGameMasterBeatCount`, `publicGameMasterBeatMaxGap`), roll/outcome pairing, check variety, spatial continuity signals, speaker rotation, weak failures, and repeated outcome openings.
 
 ```bash
 # Deterministic fast harness: 10 scenarios × 30 service ticks, no live LLM/API calls
@@ -20,7 +20,7 @@ NARRATIVE_EVAL_TRIGGER_TICKS=10 \
 bun run narrative:harness:live -- --base-url http://localhost:3000 --location 11 --intent story
 ```
 
-`location-room-narrative-scenarios.example.json` lists 10 suggested live-evaluation location targets. The live script reports quality warnings by default; pass `--fail-on-warnings` or set `NARRATIVE_EVAL_FAIL_ON_WARNINGS=true` when using it as a deployment smoke check.
+`location-room-narrative-scenarios.example.json` lists 10 suggested live-evaluation location targets. The live script reports quality warnings by default; pass `--fail-on-warnings` or set `NARRATIVE_EVAL_FAIL_ON_WARNINGS=true` when using it as a deployment smoke check. Static scoring uses existing transcript messages and does not require auth; fresh tick validation requires tick enablement plus `NARRATIVE_EVAL_COOKIE` or `NARRATIVE_EVAL_BEARER_TOKEN`.
 
 ### refresh-opensea-metadata.ts
 Queues OpenSea metadata refresh jobs for WAGDIE tokens using the OpenSea v2 refresh endpoint.

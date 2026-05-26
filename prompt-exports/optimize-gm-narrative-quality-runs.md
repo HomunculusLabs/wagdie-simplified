@@ -30,6 +30,8 @@ Stop after the first condition is met:
 | Character affordance | 5 |
 | **Total** | **100** |
 
+Additional calibration metrics are reported without changing the formula weights: `publicGameMasterBeatCount`, `publicGameMasterBeatMaxGap`, and `spatialContinuitySignalCount`. On transcripts with at least 20 public messages, the evaluator emits calibration warnings for fewer than 2 public GM beats, GM beat gaps above 10 public messages, or fewer than 4 spatial continuity signals.
+
 ## Commands
 
 ### Deterministic CI-safe harness
@@ -73,6 +75,8 @@ Note: `bun run build` is recorded but does not replace focused Jest validation.
 | baseline-live-fresh-2 | TBD | live Crow's Den fresh ticks | 10 triggered ticks | TBD | Pending tick enablement/auth; do not fix in setup phase | Pending |
 | baseline-live-fresh-3 | TBD | live Crow's Den fresh ticks | 10 triggered ticks | TBD | Pending tick enablement/auth; do not fix in setup phase | Pending |
 | post-loop-2-live-static-crows-den | 2026-05-26 | live/static Crow's Den via localhost proxy | 76 public messages | 72 | `GM narration too short on average (156)`; `check variety too narrow (2)`; `same check type repeated 8 times in a row`; score warning `GNQS below minimum (72 < 75)` | Measurement command now succeeds; remaining issues are transcript quality warnings, not fetch blockers |
+| slice-3-harness-cadence-spatial | 2026-05-26 | deterministic harness | 10 scenarios x 30 ticks | 98 | none; new metrics: 210 public GM beats, max GM beat gap 7, 331 spatial signals, 6 unique check types, repeated check run 2 | Slice 3 gates pass; calibration warnings empty |
+| slice-3-live-static-crows-den | 2026-05-26 | live/static Crow's Den via localhost proxy | 98 public messages, 0 triggered ticks | 74 | `check variety too narrow (2)`; `same check type repeated 16 times in a row`; `calibration: too few public GM beats (0)`; `calibration: public GM beat gap too wide (98)`; score warning `GNQS below minimum (74 < 75)` | Static scoring preserved and distinguishes quality warnings from environment failure; fresh ticks not attempted because auth/tick config is required |
 
 ## Loop 0 Deterministic Baseline Details
 
@@ -362,15 +366,37 @@ Result: pass / exit 0. Measurement parser fix only: metadata-less public success
 
 **Measurement notes:** The scout baseline was pre-instrumentation and sampled 50 messages with 14 roll/outcome pairs. The post-Loop-2 evaluator now follows public API pagination, so it measured the full 76-message static transcript with 15 roll/outcome pairs after metadata-less public outcome parsing. The main remaining live/static blockers are short average public GM narration and narrow/repeated check variety in the existing transcript, not localhost/API reachability.
 
-### Loop 3 — Candidate #3
+### Loop 3 — Slice 3 instrumentation and validation gates
 
-**Candidate:** Check variety and outcome-opening freshness.
+**Candidate:** GNQS cadence/spatial metrics, deterministic harness gates, combat separation regression coverage, and Crow's Den validation notes.
 
-**Change summary:** TBD.
+**Change summary:** Added shared scorer metrics for public GM beat count, max public-message gap after GM beats, and spatial continuity signal count. Live evaluator output includes these metrics automatically through `metrics`. Deterministic harness scenarios now persist spatial context patches, keep broader roll diversity, and gate aggregate GNQS ≥ 85, per-scenario GNQS ≥ 75, empty aggregate warnings, repeated check run ≤ 2, unique check types ≥ 5, GM beat gap ≤ 10, and spatial signals. Added a service-level harness probe proving story ticks with an unconsumed combat trigger remain narrative while `auto` and admin `combat` route to combat only through explicit trigger rules.
 
-**Results:** TBD.
+**Results:**
 
-**Decision:** TBD.
+| Measurement | Result | Notes |
+|---|---:|---|
+| deterministic GNQS | 98 | pass, no warnings; 762 public messages across 10×30 ticks |
+| public GM beat count | 210 | pass; target ≥ 20 aggregate calibration floor |
+| max public GM beat gap | 7 | pass; target ≤ 10 |
+| spatial continuity signals | 331 | pass; target ≥ 40 aggregate calibration floor |
+| unique check types | 6 | pass; target ≥ 5 |
+| repeated check-type max run | 2 | pass; target ≤ 2 |
+| live/static Crow's Den GNQS | 74 | measurement succeeds with 0 triggered ticks; quality warnings remain |
+| live/static public GM beat count | 0 | calibration warning; existing transcript/API projection does not expose `gm_beat` metadata in the static sample |
+| live/static max GM beat gap | 98 | calibration warning |
+| live/static spatial continuity signals | 15 | no spatial warning |
+
+**Loop 3 guardrail results:**
+
+| Command | Status | Notes |
+|---|---|---|
+| `bun run narrative:harness:test` | pass | 7 tests passed; includes deterministic gates and story/combat separation probe |
+| `bun run test -- tests/lib/eliza/location-room-scene-checks.test.ts tests/lib/eliza/location-room-narrative-coordinator.test.ts --runInBand` | pass | 2 suites, 31 tests passed |
+| `bun run test -- tests/lib/eliza/location-room-game-master-generator.test.ts --runInBand` | pass | 1 suite, 24 tests passed |
+| `bun run narrative:harness:live -- --location 11 --base-url http://localhost:3000` | pass / quality warnings | Exit 0 because `--fail-on-warnings` was not set; static transcript scored GNQS 74 with cadence/check-variety warnings |
+
+**Decision:** Slice 3 landed as instrumentation and validation coverage only. Static Crow's Den scoring remains usable when dev ticks are paused. Fresh-tick validation still requires auth/config (`NARRATIVE_EVAL_COOKIE` and enabled ticks) before making a live confidence claim.
 
 ## Manual Review Notes
 

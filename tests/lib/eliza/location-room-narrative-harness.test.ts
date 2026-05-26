@@ -27,6 +27,7 @@ import {
   NARRATIVE_HARNESS_TICKS_PER_SCENARIO,
   analyzeNarrativeMessages,
   narrativeHarnessScenarios,
+  runNarrativeCombatSeparationProbe,
   runNarrativeHarness,
 } from './location-room-narrative-harness'
 import { scoreNarrativeQuality } from '../../../scripts/location-room-narrative-quality'
@@ -69,12 +70,41 @@ describe('location room narrative quality harness', () => {
     }, null, 2))
 
     expect(result.aggregate.gmOutcomes).toBe(result.aggregate.rollCards)
-    expect(result.aggregate.quality.gmNarrativeQualityScore).toBeGreaterThanOrEqual(80)
+    expect(result.aggregate.quality.rawMetrics.publicGameMasterBeatCount).toBeGreaterThanOrEqual(NARRATIVE_HARNESS_SCENARIO_COUNT * 2)
+    expect(result.aggregate.quality.rawMetrics.publicGameMasterBeatMaxGap).toBeLessThanOrEqual(10)
+    expect(result.aggregate.quality.rawMetrics.spatialContinuitySignalCount).toBeGreaterThanOrEqual(NARRATIVE_HARNESS_SCENARIO_COUNT * 4)
+    expect(result.aggregate.quality.rawMetrics.uniqueCheckTypes).toBeGreaterThanOrEqual(5)
+    expect(result.aggregate.quality.rawMetrics.repeatedCheckTypeMaxRun).toBeLessThanOrEqual(2)
+    expect(result.aggregate.quality.gmNarrativeQualityScore).toBeGreaterThanOrEqual(85)
     for (const scenarioResult of result.scenarioResults) {
-      expect(scenarioResult.quality.gmNarrativeQualityScore).toBeGreaterThanOrEqual(70)
+      expect(scenarioResult.quality.gmNarrativeQualityScore).toBeGreaterThanOrEqual(75)
     }
     expect(result.aggregate.warnings).toEqual([])
   }, 30_000)
+
+  it('keeps story ticks separate from combat even when cadence and triggers are present', async () => {
+    const result = await runNarrativeCombatSeparationProbe()
+
+    expect(result.storyWithTrigger).toMatchObject({
+      status: 'completed',
+      gameplayProcessCalls: 0,
+      gameplayRunCreates: 0,
+      messageDomain: 'narrative',
+    })
+    expect(result.storyWithTrigger.publicGameMasterBeatAppended).toBe(true)
+    expect(result.autoWithTrigger).toMatchObject({
+      status: 'completed',
+      gameplayProcessCalls: 1,
+      gameplayRunCreates: 1,
+    })
+    expect(result.autoWithTrigger.gameplayRunId).toMatch(/^run-/)
+    expect(result.adminCombat).toMatchObject({
+      status: 'completed',
+      gameplayProcessCalls: 1,
+      gameplayRunCreates: 1,
+    })
+    expect(result.adminCombat.gameplayRunId).toMatch(/^run-/)
+  })
 
   it('flags weak narrative output from public transcript messages', () => {
     const metrics = analyzeNarrativeMessages([
@@ -112,6 +142,9 @@ describe('location room narrative quality harness', () => {
 
     expect(metrics.averageGameMasterNarrationChars).toBeLessThan(80)
     expect(metrics.weakFailureOutcomeCount).toBe(1)
+    expect(metrics.publicGameMasterBeatCount).toBe(1)
+    expect(metrics.publicGameMasterBeatMaxGap).toBe(1)
+    expect(metrics.spatialContinuitySignalCount).toBe(0)
 
     const quality = scoreNarrativeQuality({ messages: [
       {
@@ -184,6 +217,23 @@ describe('location room narrative quality harness', () => {
 
     expect(metrics.rollCards).toBe(2)
     expect(metrics.gmOutcomes).toBe(2)
+  })
+
+  it('warns on long transcripts with sparse GM cadence and thin spatial continuity', () => {
+    const messages = [
+      gmBeat('The opening pressure names a consequence and asks the party to choose what to risk next.'),
+      ...Array.from({ length: 21 }, (_, index) => characterMessage(`Character ${index} chooses to wait, decide, and repeat the same vague pressure.`)),
+    ]
+    const quality = scoreNarrativeQuality({ messages, warningOptions: { minTranscriptMessages: 20, requireFailureOutcome: false } })
+
+    expect(quality.rawMetrics.publicGameMasterBeatCount).toBe(1)
+    expect(quality.rawMetrics.publicGameMasterBeatMaxGap).toBe(21)
+    expect(quality.rawMetrics.spatialContinuitySignalCount).toBe(0)
+    expect(quality.warnings).toEqual(expect.arrayContaining([
+      'calibration: too few public GM beats (1)',
+      'calibration: public GM beat gap too wide (21)',
+      'calibration: thin spatial continuity signals (0)',
+    ]))
   })
 
   it('scores repetition, roll integrity, and adventure-state continuity signals', () => {

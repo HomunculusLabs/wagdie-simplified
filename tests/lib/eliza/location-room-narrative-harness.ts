@@ -29,6 +29,7 @@ import type {
 import type { OfficialLocationRoomTurnGenerator } from '@/lib/eliza/locationRooms/officialTurnGenerator'
 import type { LocationRoomGameplayCoordinator } from '@/lib/eliza/locationRooms/gameplay/coordinator'
 import type { LocationRoomGameplayRepository } from '@/lib/eliza/locationRooms/gameplay/repository'
+import type { GameplayRun, GameplayRunStartedByActor } from '@/lib/eliza/locationRooms/gameplay/types'
 import type { CreateLocationRoomMessageInput, LocationRoomRepository } from '@/lib/eliza/locationRooms/repository'
 import { LocationRoomService } from '@/lib/eliza/locationRooms/service'
 import type {
@@ -79,6 +80,28 @@ export type NarrativeHarnessOptions = {
   ticksPerScenario?: number
   scenarios?: NarrativeHarnessScenario[]
   artifactDir?: string | null
+}
+
+export type NarrativeCombatSeparationProbeResult = {
+  storyWithTrigger: {
+    status: string
+    publicGameMasterBeatAppended: boolean
+    gameplayProcessCalls: number
+    gameplayRunCreates: number
+    messageDomain: string | null
+  }
+  autoWithTrigger: {
+    status: string
+    gameplayRunId: string | null
+    gameplayProcessCalls: number
+    gameplayRunCreates: number
+  }
+  adminCombat: {
+    status: string
+    gameplayRunId: string | null
+    gameplayProcessCalls: number
+    gameplayRunCreates: number
+  }
 }
 
 export type NarrativeHarnessScenarioResult = {
@@ -164,7 +187,7 @@ export const narrativeHarnessScenarios: NarrativeHarnessScenario[] = [
     openingImage: 'white ash, cracked pews, a bell rope swinging in still air',
     objective: 'Recover the sermon hidden inside the stolen memories.',
     stakes: 'When the last verse is forgotten, the chapel chooses a new god.',
-    checkEvery: 4,
+    checkEvery: 3,
     gmNarrationEvery: 3,
     rollProfile: 'mixed',
     characters: [
@@ -232,7 +255,7 @@ export const narrativeHarnessScenarios: NarrativeHarnessScenario[] = [
     openingImage: 'salt shelves, blind scribes, pages that sweat seawater',
     objective: 'Find and amend the index before it catalogs the party.',
     stakes: 'Once indexed, a death becomes administratively difficult to avoid.',
-    checkEvery: 4,
+    checkEvery: 3,
     gmNarrationEvery: 4,
     rollProfile: 'mixed',
     characters: [
@@ -421,7 +444,9 @@ class InMemoryLocationRoomRepository {
     return this.pendingTick
   }
 
-  async attachTickToGameplayRun(): Promise<LocationRoomTick | null> {
+  async attachTickToGameplayRun(input?: { gameplayRunId?: string | null }): Promise<LocationRoomTick | null> {
+    if (!this.pendingTick) return null
+    this.pendingTick = { ...this.pendingTick, gameplayRunId: input?.gameplayRunId ?? this.pendingTick.gameplayRunId }
     return this.pendingTick
   }
 
@@ -567,8 +592,11 @@ class InMemoryNarrativeRepository {
   private state: LocationRoomNarrativeState
   private readonly beats = new Map<string, LocationRoomNarrativeBeat>()
 
-  constructor(private readonly scenario: NarrativeHarnessScenario) {
-    this.state = initialNarrativeState(scenario)
+  constructor(
+    private readonly scenario: NarrativeHarnessScenario,
+    initialMetadata: Record<string, unknown> = {}
+  ) {
+    this.state = { ...initialNarrativeState(scenario), metadata: initialMetadata }
   }
 
   async findStateByRoomId(): Promise<LocationRoomNarrativeState | null> {
@@ -757,6 +785,12 @@ class ScriptedGameMasterBeatGenerator implements GameMasterBeatGenerator {
       } : null,
       discoveries: [`${input.speaker.name} found evidence tied to ${this.scenario.openingImage}.`],
       clocks: [{ id: `clock-${this.scenario.id}`, label: 'Location pressure', value: Math.min(6, this.turn), max: 6, summary: this.scenario.stakes }],
+      spatialContext: {
+        currentArea: `${this.scenario.locationName} threshold floor`,
+        landmarks: [this.scenario.openingImage, `${this.scenario.locationName} landmark ${this.turn}`],
+        routes: [`main path through ${this.scenario.locationName}`, `side door toward ${this.scenario.objective}`],
+        unresolvedSpatialQuestions: [`Which passage changes if ${input.speaker.name} presses the current choice?`],
+      },
     }
 
     return {
@@ -817,6 +851,14 @@ class ScriptedGameMasterBeatGenerator implements GameMasterBeatGenerator {
           summary: consequence,
         },
         consequenceLedger: [{ id: `consequence-${input.sceneCheckId}`, source: input.sceneCheckId, summary: consequence, status: failure ? 'complication' : 'advantage', tier }],
+        spatialContext: {
+          currentArea: `${this.scenario.locationName} contested room`,
+          landmarks: [`${this.scenario.locationName} marked table`, `${input.speaker.name}'s altered threshold`],
+          routes: failure
+            ? [`blocked door beside ${this.scenario.locationName}`, `riskier passage around the cost`]
+            : [`opened route through ${this.scenario.locationName}`, `clear path toward ${this.scenario.objective}`],
+          unresolvedSpatialQuestions: [`Who controls the next exit after ${tier}?`],
+        },
       },
       metadata: { adventurePatch: { currentStakes: this.scenario.stakes } },
     }
@@ -888,24 +930,29 @@ function rngSequenceFor(profile: ScriptedRollProfile): () => number {
   }
 }
 
-function withHarnessElizaConfig<T>(fn: () => Promise<T>): Promise<T> {
+function withHarnessElizaConfig<T>(
+  fn: () => Promise<T>,
+  options: { gameplayEnabled?: boolean; gameplayLocationAllowlist?: string[] } = {}
+): Promise<T> {
   const originalMode = elizaConfig.mode
   const originalEnabled = elizaConfig.locationRooms.enabled
   const originalNarrativeEnabled = elizaConfig.locationRooms.narrative.enabled
   const originalGameMasterAgentId = elizaConfig.locationRooms.narrative.gameMasterAgentId
   const originalGameplayEnabled = elizaConfig.locationRooms.gameplay.enabled
   const originalOfficialBaseUrl = elizaConfig.official.baseUrl
+  const originalGameplayLocationAllowlist = elizaConfig.locationRooms.gameplay.locationAllowlist
   const mutableConfig = elizaConfig as { mode: typeof elizaConfig.mode }
   const mutableRooms = elizaConfig.locationRooms as { enabled: boolean }
   const mutableNarrative = elizaConfig.locationRooms.narrative as { enabled: boolean; gameMasterAgentId: string }
-  const mutableGameplay = elizaConfig.locationRooms.gameplay as { enabled: boolean }
+  const mutableGameplay = elizaConfig.locationRooms.gameplay as { enabled: boolean; locationAllowlist: string[] }
   const mutableOfficial = elizaConfig.official as { baseUrl: string }
 
   mutableConfig.mode = 'official'
   mutableRooms.enabled = true
   mutableNarrative.enabled = true
   mutableNarrative.gameMasterAgentId = 'gm-harness'
-  mutableGameplay.enabled = false
+  mutableGameplay.enabled = options.gameplayEnabled ?? false
+  mutableGameplay.locationAllowlist = options.gameplayLocationAllowlist ?? []
   mutableOfficial.baseUrl = 'https://elizaos.example'
 
   return fn().finally(() => {
@@ -914,6 +961,7 @@ function withHarnessElizaConfig<T>(fn: () => Promise<T>): Promise<T> {
     mutableNarrative.enabled = originalNarrativeEnabled
     mutableNarrative.gameMasterAgentId = originalGameMasterAgentId
     mutableGameplay.enabled = originalGameplayEnabled
+    mutableGameplay.locationAllowlist = originalGameplayLocationAllowlist
     mutableOfficial.baseUrl = originalOfficialBaseUrl
   })
 }
@@ -1031,6 +1079,181 @@ function warningOptionsForHarness(ticksPerScenario: number) {
     maxRollCards: Math.ceil(ticksPerScenario / 2),
     repeatedOutcomePrefixWarningThreshold: 1,
   }
+}
+
+export async function runNarrativeCombatSeparationProbe(): Promise<NarrativeCombatSeparationProbeResult> {
+  const scenario = narrativeHarnessScenarios[0]
+
+  async function runProbe(intent: LocationRoomTurnIntent): Promise<{
+    status: string
+    publicGameMasterBeatAppended: boolean
+    gameplayRunId: string | null
+    gameplayProcessCalls: number
+    gameplayRunCreates: number
+    messageDomain: string | null
+  }> {
+    const repository = new InMemoryLocationRoomRepository(scenario)
+    const narrativeRepository = new InMemoryNarrativeRepository(scenario, combatReadyMetadata())
+    const membership = new StaticMembershipRepository(scenario)
+    const gmGenerator = new ScriptedGameMasterBeatGenerator(scenario)
+    const turnGenerator = new ScriptedTurnGenerator(scenario)
+    const resolver: GameMasterAgentResolver = { resolveRuntimeGameMasterAgentId: async () => 'gm-harness' }
+    const gameplayRepository = new InMemoryGameplayRepository(scenario)
+    const gameplayCoordinator = new CountingGameplayCoordinator()
+    const narrativeCoordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository as unknown as LocationRoomRepository,
+      narrativeRepository as unknown as LocationRoomNarrativeRepository,
+      gmGenerator,
+      turnGenerator,
+      resolver,
+      rngSequenceFor(scenario.rollProfile)
+    )
+    const service = new LocationRoomService(
+      repository as unknown as LocationRoomRepository,
+      membership,
+      turnGenerator,
+      narrativeCoordinator,
+      resolver,
+      gameplayCoordinator as unknown as LocationRoomGameplayCoordinator,
+      gameplayRepository as unknown as LocationRoomGameplayRepository,
+      narrativeRepository as unknown as LocationRoomNarrativeRepository
+    )
+
+    const ticksToRun = intent === 'story' ? 2 : 1
+    let processingResult: { status?: string; gameplayRunId?: string | null; publicGameMasterBeatAppended?: boolean } | undefined
+    let processingStatus = 'unknown'
+    let publicGameMasterBeatAppended = false
+    for (let index = 0; index < ticksToRun; index += 1) {
+      const result = await withHarnessElizaConfig(() => service.requestTickAndProcess(scenario.locationId, {
+        actor: 'admin',
+        walletAddress: '0x0000000000000000000000000000000000000000',
+        intent,
+        now: new Date(new Date(BASE_TIME).getTime() + index * 120_000),
+      }), { gameplayEnabled: true, gameplayLocationAllowlist: [scenario.locationId] })
+      processingResult = result.processing?.result
+      processingStatus = result.processing?.status ?? processingStatus
+      publicGameMasterBeatAppended = publicGameMasterBeatAppended || Boolean(
+        processingResult && 'publicGameMasterBeatAppended' in processingResult && processingResult.publicGameMasterBeatAppended
+      )
+    }
+    const lastMessage = repository.messages.at(-1)
+    return {
+      status: processingResult?.status ?? processingStatus,
+      publicGameMasterBeatAppended,
+      gameplayRunId: processingResult?.gameplayRunId ?? null,
+      gameplayProcessCalls: gameplayCoordinator.processCalls,
+      gameplayRunCreates: gameplayRepository.createRunCalls,
+      messageDomain: typeof lastMessage?.metadata?.messageDomain === 'string' ? lastMessage.metadata.messageDomain : null,
+    }
+  }
+
+  const storyWithTrigger = await runProbe('story')
+  const autoWithTrigger = await runProbe('auto')
+  const adminCombat = await runProbe('combat')
+
+  return {
+    storyWithTrigger,
+    autoWithTrigger: {
+      status: autoWithTrigger.status,
+      gameplayRunId: autoWithTrigger.gameplayRunId,
+      gameplayProcessCalls: autoWithTrigger.gameplayProcessCalls,
+      gameplayRunCreates: autoWithTrigger.gameplayRunCreates,
+    },
+    adminCombat: {
+      status: adminCombat.status,
+      gameplayRunId: adminCombat.gameplayRunId,
+      gameplayProcessCalls: adminCombat.gameplayProcessCalls,
+      gameplayRunCreates: adminCombat.gameplayRunCreates,
+    },
+  }
+}
+
+function combatReadyMetadata(): Record<string, unknown> {
+  return {
+    ttrpgPhase: 'threat',
+    combatReadiness: 'ready',
+    threatLevel: 5,
+    requestedGameplayAction: 'start_combat',
+    lastCombatTriggerBeatId: 'beat-combat-trigger',
+    consumedCombatTriggerBeatId: null,
+    lastEncounterSeed: { title: 'Bell Horror', summary: 'The explicit trigger is ready.', stakes: 'Survive only if combat is chosen.' },
+  }
+}
+
+class InMemoryGameplayRepository {
+  public createRunCalls = 0
+  private run: GameplayRun | null = null
+
+  constructor(private readonly scenario: NarrativeHarnessScenario) {}
+
+  async findActiveRunByRoomId(): Promise<GameplayRun | null> {
+    return this.run?.status === 'active' ? this.run : null
+  }
+
+  async findRunById(runId: string): Promise<GameplayRun | null> {
+    return this.run?.id === runId ? this.run : null
+  }
+
+  async listRecentRunsByRoomId(): Promise<GameplayRun[]> { return [] }
+  async listActiveRunsForWorker(): Promise<GameplayRun[]> { return [] }
+  async findStateByRoomId(): Promise<null> { return null }
+  async findActiveEncounterByRoomId(): Promise<null> { return null }
+  async findEncounterById(): Promise<null> { return null }
+  async findTurnByTickId(): Promise<null> { return null }
+
+  async createOrReuseActiveRun(input: { room: Pick<LocationRoom, 'id' | 'locationId'>; targetCompletedTurns: number; startedByActor: string; startedByWallet?: string | null; startedByTokenId?: number | null; metadata?: Record<string, unknown> }): Promise<{ run: GameplayRun; reused: boolean }> {
+    if (this.run?.status === 'active') return { run: this.run, reused: true }
+    this.createRunCalls += 1
+    this.run = {
+      id: `run-${this.scenario.id}-${this.createRunCalls}`,
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      status: 'active',
+      targetCompletedTurns: input.targetCompletedTurns,
+      completedTurns: 0,
+      startedByActor: input.startedByActor as GameplayRunStartedByActor,
+      startedByWallet: input.startedByWallet ?? null,
+      startedByTokenId: input.startedByTokenId ?? null,
+      lastTickId: null,
+      lastAdvancedAt: null,
+      completedAt: null,
+      stopReason: null,
+      lastError: null,
+      metadata: input.metadata ?? {},
+      createdAt: BASE_TIME,
+      updatedAt: BASE_TIME,
+    }
+    return { run: this.run, reused: false }
+  }
+
+  async updateRunProgress(runId: string, input: { completedTurns?: number; lastTickId?: string | null; lastAdvancedAt?: string | null }): Promise<GameplayRun> {
+    if (!this.run || this.run.id !== runId) throw new Error(`Missing run ${runId}`)
+    this.run = { ...this.run, completedTurns: input.completedTurns ?? this.run.completedTurns, lastTickId: input.lastTickId ?? this.run.lastTickId, lastAdvancedAt: input.lastAdvancedAt ?? this.run.lastAdvancedAt, updatedAt: BASE_TIME }
+    return this.run
+  }
+
+  async markRunCompleted(runId: string): Promise<GameplayRun> { return this.markRun(runId, 'completed') }
+  async markRunStopped(runId: string): Promise<GameplayRun> { return this.markRun(runId, 'stopped') }
+  async markRunFailed(runId: string): Promise<GameplayRun> { return this.markRun(runId, 'failed') }
+  async updateState(): Promise<null> { return null }
+  async updateRewardClaimStatusByDeathReviewId(): Promise<null> { return null }
+
+  private markRun(runId: string, status: GameplayRun['status']): GameplayRun {
+    if (!this.run || this.run.id !== runId) throw new Error(`Missing run ${runId}`)
+    this.run = { ...this.run, status, completedAt: BASE_TIME, updatedAt: BASE_TIME }
+    return this.run
+  }
+}
+
+class CountingGameplayCoordinator {
+  public processCalls = 0
+
+  async processTurn(): Promise<{ status: 'completed'; selectedTokenId: number; messageId: string }> {
+    this.processCalls += 1
+    return { status: 'completed', selectedTokenId: 101, messageId: `combat-message-${this.processCalls}` }
+  }
+
+  async markTickFailed(): Promise<void> {}
 }
 
 function aggregateAdventureState(results: NarrativeHarnessScenarioResult[]): NarrativeQualityAdventureState {

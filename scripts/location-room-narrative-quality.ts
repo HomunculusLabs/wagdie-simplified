@@ -37,6 +37,9 @@ export type NarrativeQualityMetrics = {
   failureOutcomeAverageChars: number
   weakFailureOutcomeCount: number
   repeatedOutcomePrefixCount: number
+  publicGameMasterBeatCount: number
+  publicGameMasterBeatMaxGap: number
+  spatialContinuitySignalCount: number
 }
 
 export type NarrativeQualitySubmetrics = {
@@ -79,6 +82,7 @@ const FAILURE_PATTERN = /failure|critical_failure|goes badly|mistake|complicatio
 const STRONG_FAILURE_PATTERN = /cost|price|hostile|complication|fewer safe options|bite back|wound|lost|blocked|worse|danger|pressure|consequence|obligation|fewer|mark/i
 const AGENCY_PATTERN = /\b(choose|choice|option|decide|approach|press|bargain|retreat|withdraw|risk|act on|exploit|protect|follow|accept|trade|ask what|specific choice|concrete risk)\b/i
 const CONTINUITY_PATTERN = /\b(stakes|consequence|cost|clue|clock|pressure|objective|unresolved|last|now|price|discover|found|evidence|outcome|thread|obligation|mark)\b/i
+const SPATIAL_CONTINUITY_PATTERN = /\b(room|door|stair|cellar|route|path|threshold|wall|table|tunnel|landing|arch|floor|passage|landmark|exit)\b/i
 
 export function analyzeNarrativeMessages(
   messages: NarrativeQualityMessage[],
@@ -89,6 +93,7 @@ export function analyzeNarrativeMessages(
   const characterMessages = messages.filter((message) => message.authorKind === 'agent')
   const rollCards = messages.filter((message) => isRollCardMessage(message))
   const gmOutcomes = inferGmOutcomeMessages(messages)
+  const gameMasterBeats = messages.filter((message) => isPublicGameMasterBeatMessage(message))
   const checkTypes = rollCards.map((message) => inferCheckType(message))
   const failureOutcomes = gmOutcomes.filter((message) => FAILURE_PATTERN.test(message.content))
   const weakFailureOutcomes = failureOutcomes.filter((message) => message.content.length < 180 || !STRONG_FAILURE_PATTERN.test(message.content))
@@ -118,6 +123,9 @@ export function analyzeNarrativeMessages(
     failureOutcomeAverageChars: averageLength(failureOutcomes),
     weakFailureOutcomeCount: weakFailureOutcomes.length,
     repeatedOutcomePrefixCount: [...prefixes.values()].filter((count) => count > 1).reduce((sum, count) => sum + count - 1, 0),
+    publicGameMasterBeatCount: gameMasterBeats.length,
+    publicGameMasterBeatMaxGap: maxPublicGameMasterBeatGap(messages),
+    spatialContinuitySignalCount: countSpatialContinuitySignals(messages, gmOutcomes),
   }
 }
 
@@ -128,7 +136,7 @@ export function scoreNarrativeQuality(input: NarrativeQualityInput): NarrativeQu
     narrationSubstance: scoreNarrationSubstance(rawMetrics),
     failureConsequenceStrength: scoreFailureConsequenceStrength(rawMetrics),
     agencyChoiceAffordance: scoreAgencyChoiceAffordance(input.messages, input.adventureState ?? null),
-    continuityPressure: scoreContinuityPressure(input.messages, input.adventureState ?? null),
+    continuityPressure: scoreContinuityPressure(input.messages, input.adventureState ?? null, rawMetrics),
     checkVariety: scoreCheckVariety(rawMetrics),
     repetitionFreshness: scoreRepetitionFreshness(rawMetrics),
     characterAffordance: scoreCharacterAffordance(rawMetrics),
@@ -178,7 +186,16 @@ export function warningsForNarrativeQuality(
   if (options.requireFailureOutcome !== false && metrics.failureOutcomeCount < 1) warnings.push(options.minTranscriptMessages ? 'no failure/complication outcomes observed' : 'no failure outcomes observed')
   if (metrics.weakFailureOutcomeCount > 0) warnings.push(`${metrics.weakFailureOutcomeCount} weak failure outcomes`)
   if (metrics.repeatedOutcomePrefixCount > repeatedOutcomePrefixWarningThreshold) warnings.push(`${metrics.repeatedOutcomePrefixCount} repeated outcome openings`)
+  if (metrics.totalMessages >= 20) {
+    if (metrics.publicGameMasterBeatCount < 2) warnings.push(`calibration: too few public GM beats (${metrics.publicGameMasterBeatCount})`)
+    if (metrics.publicGameMasterBeatMaxGap > 10) warnings.push(`calibration: public GM beat gap too wide (${metrics.publicGameMasterBeatMaxGap})`)
+    if (metrics.spatialContinuitySignalCount < 4) warnings.push(`calibration: thin spatial continuity signals (${metrics.spatialContinuitySignalCount})`)
+  }
   return warnings
+}
+
+export function isPublicGameMasterBeatMessage(message: NarrativeQualityMessage): boolean {
+  return message.authorKind === 'game_master' && message.metadata?.messageKind === 'gm_beat'
 }
 
 export function isRollCardMessage(message: NarrativeQualityMessage): boolean {
@@ -235,7 +252,10 @@ function scoreRollOutcomeIntegrity(metrics: NarrativeQualityMetrics): number {
 function scoreNarrationSubstance(metrics: NarrativeQualityMetrics): number {
   const gmNarration = metrics.gameMasterMessages === 0 ? 0 : Math.min(1, metrics.averageGameMasterNarrationChars / 220)
   const outcomes = metrics.gmOutcomes === 0 ? 0.75 : Math.min(1, metrics.averageOutcomeChars / 180)
-  return clampScore(Math.round((gmNarration * 0.55 + outcomes * 0.45) * 100))
+  const cadence = metrics.totalMessages < 20
+    ? 0.9
+    : Math.min(1, metrics.publicGameMasterBeatCount / 2) * (metrics.publicGameMasterBeatMaxGap > 10 ? 0.75 : 1)
+  return clampScore(Math.round((gmNarration * 0.5 + outcomes * 0.4 + cadence * 0.1) * 100))
 }
 
 function scoreFailureConsequenceStrength(metrics: NarrativeQualityMetrics): number {
@@ -254,10 +274,14 @@ function scoreAgencyChoiceAffordance(messages: NarrativeQualityMessage[], advent
   return clampScore(Math.max(transcriptScore + stateScore, transcriptScore > 0 ? 55 : 25))
 }
 
-function scoreContinuityPressure(messages: NarrativeQualityMessage[], adventureState: NarrativeQualityAdventureState | null): number {
+function scoreContinuityPressure(
+  messages: NarrativeQualityMessage[],
+  adventureState: NarrativeQualityAdventureState | null,
+  metrics: NarrativeQualityMetrics
+): number {
   const publicText = messages.map((message) => message.content).join('\n')
   const continuityHits = countPatternMatches(publicText, CONTINUITY_PATTERN)
-  const transcriptScore = Math.min(55, continuityHits * 7)
+  const transcriptScore = Math.min(55, continuityHits * 7 + metrics.spatialContinuitySignalCount * 5)
   const stateScore =
     (adventureState?.currentStakes ? 15 : 0) +
     (adventureState?.activeDecisionPresent ? 8 : 0) +
@@ -310,6 +334,34 @@ function maxRunLength(values: string[]): number {
     max = Math.max(max, current)
   }
   return max
+}
+
+function maxPublicGameMasterBeatGap(messages: NarrativeQualityMessage[]): number {
+  const beatIndexes = messages
+    .map((message, index) => isPublicGameMasterBeatMessage(message) ? index : -1)
+    .filter((index) => index >= 0)
+  if (beatIndexes.length === 0) return messages.length
+
+  let maxGap = 0
+  for (let index = 0; index < beatIndexes.length; index += 1) {
+    const currentBeatIndex = beatIndexes[index]
+    const nextBeatIndex = beatIndexes[index + 1]
+    const gapEnd = nextBeatIndex ?? messages.length
+    maxGap = Math.max(maxGap, Math.max(0, gapEnd - currentBeatIndex - 1))
+  }
+  return maxGap
+}
+
+function countSpatialContinuitySignals(
+  messages: NarrativeQualityMessage[],
+  gmOutcomes: NarrativeQualityMessage[]
+): number {
+  const outcomeIds = new Set(gmOutcomes.map((message) => message.id).filter(Boolean))
+  return messages.filter((message) => {
+    const isBeatOrOutcome = isPublicGameMasterBeatMessage(message) ||
+      (message.id ? outcomeIds.has(message.id) : isGmOutcomeMessage(message))
+    return isBeatOrOutcome && SPATIAL_CONTINUITY_PATTERN.test(message.content)
+  }).length
 }
 
 function normalizedPrefix(content: string): string {

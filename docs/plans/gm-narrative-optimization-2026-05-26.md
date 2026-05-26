@@ -199,6 +199,17 @@ Recommended implementation order:
 
 **Size:** Small to Medium.
 
+### Slice 3 Notes — Items 5–8
+
+- Shared GNQS scoring now reports `publicGameMasterBeatCount`, `publicGameMasterBeatMaxGap`, and `spatialContinuitySignalCount`. These fold into narration/continuity submetrics while preserving the published score-weight table; the new thresholds emit calibration warnings on 20+ message transcripts.
+- Live evaluator output includes the new metrics through the existing `metrics` payload and now warns on sparse public GM beat cadence or thin spatial continuity.
+- Deterministic harness gates now include aggregate GNQS ≥ 85, per-scenario GNQS ≥ 75, empty aggregate warnings, repeated check run ≤ 2, unique check types ≥ 5, public GM beat max gap ≤ 10, and aggregate spatial signal coverage. Scenarios exercise spatial context patches and tiered consequences.
+- Service-level harness regression coverage proves `intent: story` stays narrative even with an unconsumed combat trigger, while `intent: auto` and admin `intent: combat` still route to combat only through explicit trigger rules. The story probe reaches a narrative scene check with `messageDomain: 'narrative'` and no gameplay run creation.
+- Validation on 2026-05-26: `bun run narrative:harness:test` passed with GNQS 98, 210 public GM beats, max GM beat gap 7, 331 spatial continuity signals, 6 unique check types, repeated check run 2, and no warnings.
+- Focused guardrails passed on 2026-05-26: scene-check/coordinator suites (31 tests) and game-master-generator suite (24 tests).
+- Static Crow’s Den scoring remains available with paused/dev-safe ticks: `bun run narrative:harness:live -- --location 11 --base-url http://localhost:3000` exited 0 with 0 triggered ticks, GNQS 74, 98 messages, 19 roll/outcome pairs, 0 public GM beats by strict `messageKind === 'gm_beat'` metadata, max GM beat gap 98, and 15 spatial continuity signals. This is a quality-warning result, not an environment failure.
+- Fresh Crow’s Den tick validation was not run; it requires tick enablement plus auth/config (`NARRATIVE_EVAL_COOKIE`/bearer token and optional `NARRATIVE_EVAL_TRIGGER_TICKS`).
+
 ### Item 8 — Crow’s Den/dev validation loop
 
 **Goal:** Create a repeatable hybrid validation checklist for canonical Crow’s Den `location_id='11'` using deterministic gates and live transcript review. This is an exit checklist unless docs/scoreboard updates are explicitly required by the implementation workflow.
@@ -226,7 +237,7 @@ bun run test -- tests/lib/eliza/location-room-game-master-generator.test.ts --ru
 bun run build
 ```
 
-Run static/live Crow’s Den scoring against dev or localhost after deployment. If Crow’s Den is paused (`tick_enabled=false`), static transcript scoring is still valid; fresh-tick validation requires enabling ticks plus auth/config:
+Run static/live Crow’s Den scoring against dev or localhost after deployment. If Crow’s Den is paused (`tick_enabled=false`) or auth/config is unavailable, static transcript scoring is still valid and should be recorded separately from quality failures; fresh-tick validation requires enabling ticks plus auth/config:
 
 ```bash
 bun run narrative:harness:live -- --location 11 --base-url http://localhost:3000 --fail-on-warnings
@@ -240,12 +251,12 @@ NARRATIVE_EVAL_TRIGGER_TICKS=10 NARRATIVE_EVAL_COOKIE='...' bun run narrative:ha
 
 Live review checklist:
 
-- At least 2 public `gm_beat` messages in 50+ public messages.
-- No GM beat gap above 10 public messages.
+- At least 2 public `gm_beat` messages in 50+ public messages (`publicGameMasterBeatCount`).
+- No GM beat gap above 10 public messages (`publicGameMasterBeatMaxGap`).
 - At least 3 unique check types in 15+ rolls; target 5+ over larger samples.
 - No repeated check-type run above 2 unless semantically unavoidable.
 - Failure/partial outcomes visibly change the situation and leave a next choice.
-- Transcript repeatedly anchors current room/route/landmark state.
+- Transcript repeatedly anchors current room/route/landmark state (`spatialContinuitySignalCount`; calibration warning below 4 on 20+ message transcripts).
 - No combat starts without explicit trigger/admin combat intent.
 
 ## Risks and Constraints
