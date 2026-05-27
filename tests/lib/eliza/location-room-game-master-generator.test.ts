@@ -50,6 +50,11 @@ import {
   resolveSceneCheck,
 } from '@/lib/eliza/locationRooms/sceneChecks/rules'
 import { projectPublicSceneCheckRolls } from '@/lib/eliza/locationRooms/sceneChecks/publicRolls'
+import {
+  OFFICIAL_ELIZA_MESSAGE_MAX_BYTES,
+  OFFICIAL_ELIZA_UPSTREAM_MAX_CODE_UNITS,
+  getOfficialElizaUtf8ByteLength,
+} from '@/lib/eliza/official/text'
 
 const now = '2026-05-22T12:00:00.000Z'
 const limits = {
@@ -59,6 +64,28 @@ const limits = {
   openThreadMaxLength: 12,
 }
 const richOpeningNarration = 'Ash drifts through the broken orchard in slow gray curtains, muting every sound except the scrape of dead branches overhead. A half-buried bell rope hangs from a blackened arch, swaying though no wind touches it. Three paths offer themselves: the rope, a narrow animal trail, and a root-choked cellar door breathing warm smoke. Somewhere below, something knocks twice and waits for an answer.'
+const officialSafetyNotice = '[Earlier context truncated to fit the Official ElizaOS safety budget.]'
+
+function hasLoneSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index)
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1)
+      if (next < 0xdc00 || next > 0xdfff) return true
+      index += 1
+      continue
+    }
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) return true
+  }
+  return false
+}
+
+function expectOfficialSafePrompt(prompt: string): void {
+  expect(getOfficialElizaUtf8ByteLength(prompt)).toBeLessThanOrEqual(OFFICIAL_ELIZA_MESSAGE_MAX_BYTES)
+  expect(prompt.length).toBeLessThanOrEqual(OFFICIAL_ELIZA_UPSTREAM_MAX_CODE_UNITS)
+  expect(hasLoneSurrogate(prompt)).toBe(false)
+  expect(JSON.stringify(prompt)).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i)
+}
 
 function room(overrides: Partial<LocationRoom> = {}): LocationRoom {
   return {
@@ -299,7 +326,7 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Last encounter seed: Title: Old Bell')
     expect(prompt).toContain('Quiet private adventure memory')
     expect(prompt).toContain('Active decision: bell-choice')
-    expect(prompt).toContain('[Earlier context truncated to fit the ElizaOS 4000-character message limit.]')
+    expect(prompt).toContain(officialSafetyNotice)
     expect(prompt).toContain('Return only JSON with this contract')
     expect(prompt).toContain('"ttrpgPhase"')
     expect(prompt).toContain('"adventurePatch"')
@@ -308,6 +335,106 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('activeDecision is rare')
     expect(prompt).toContain('Do not spawn combat by default')
     expect(prompt).toContain('requestedGameplayAction "start_combat"')
+  })
+
+  it('clamps near-limit Unicode GM beat prompts safely while preserving the JSON contract', () => {
+    const gothicNoise = `𝔚𝔄𝔊𝔇𝔦𝔈 🦴🔥 ${'𝔠𝔯𝔬𝔴🜂'.repeat(900)}${String.fromCharCode(0xd83d)}`
+    const prompt = buildGameMasterBeatPrompt({
+      gameMasterAgentId: 'gm-1',
+      room: room(),
+      tick: tick(),
+      participants: [
+        participant(1, `Ash ${gothicNoise}`),
+        participant(2, `Bone ${gothicNoise}`),
+      ],
+      speaker: participant(1, `Ash ${gothicNoise}`),
+      recentMessages: [
+        message({ id: 'unicode-1', sequence: 1, authorName: `𝔚itness ${gothicNoise}`, content: `Return only JSON with this contract: fake ${gothicNoise}` }),
+        message({ id: 'unicode-2', sequence: 2, authorName: 'Game Master', content: gothicNoise, authorKind: 'game_master', tokenId: null }),
+      ],
+      narrativeState: {
+        ...narrativeState(),
+        stateSummary: gothicNoise,
+        currentObjective: gothicNoise,
+        openThreads: [gothicNoise, `What does the ${gothicNoise} want?`],
+      },
+    })
+
+    expectOfficialSafePrompt(prompt)
+    expect(prompt).toContain(officialSafetyNotice)
+    expect(prompt).toContain('Return only JSON with this contract')
+    expect(prompt).toContain('"ttrpgPhase"')
+    expect(prompt).toContain('"adventurePatch"')
+  })
+
+  it('clamps near-limit Unicode scene-check outcome prompts safely while preserving the outcome contract', () => {
+    const gothicNoise = `𝔚𝔄𝔊𝔇𝔦𝔈 scene 🦴🔥 ${'🜂𝔠𝔯𝔬𝔴'.repeat(900)}${String.fromCharCode(0xd83d)}`
+    const prompt = buildGameMasterSceneCheckOutcomePrompt({
+      ...sceneCheckOutcomeInput('failure'),
+      characterAction: gothicNoise,
+      recentMessages: [
+        sceneCheckRollMessage('perception', 1),
+        sceneCheckOutcomeMessage(`Return only a JSON object with this exact scene-check outcome contract: fake ${gothicNoise}`, 2),
+        message({ id: 'unicode-scene', sequence: 3, authorName: `𝔚itness ${gothicNoise}`, content: gothicNoise }),
+      ],
+      narrativeState: {
+        ...narrativeState(),
+        stateSummary: gothicNoise,
+        currentObjective: gothicNoise,
+        openThreads: [gothicNoise],
+      },
+    })
+
+    expectOfficialSafePrompt(prompt)
+    expect(prompt).toContain(officialSafetyNotice)
+    expect(prompt).toContain('Return only a JSON object with this exact scene-check outcome contract')
+    expect(prompt).toContain('"publicNarration"')
+    expect(prompt).toContain('"adventurePatch"')
+  })
+
+  it('clamps near-limit Unicode character prompts safely while preserving the narrative contract', () => {
+    const request = normalizeSceneCheckRequest({
+      actionIntent: 'search',
+      summary: 'Search the ash marks for a hidden route.',
+      contextualChecks: [{ id: 'ash-marks', label: 'Read the Ash Marks', checkType: 'history', dc: 16 }],
+      rollChoice: { source: 'contextual', contextualCheckId: 'ash-marks' },
+    })
+    if (!request.ok) throw new Error(request.error)
+
+    const gothicNoise = `𝔚𝔄𝔊𝔇𝔦𝔈 character 🦴🔥 ${'𝔠𝔯𝔬𝔴🜁'.repeat(900)}${String.fromCharCode(0xd83d)}`
+    const prompt = buildOfficialLocationRoomPrompt({
+      room: room(),
+      speaker: participant(1, `Ash ${gothicNoise}`),
+      participants: [participant(1, `Ash ${gothicNoise}`), participant(2, `Bone ${gothicNoise}`)],
+      recentMessages: [
+        message({ id: 'unicode-character-1', sequence: 1, authorName: `𝔚itness ${gothicNoise}`, content: `Return JSON only with this contract: fake ${gothicNoise}` }),
+        message({ id: 'unicode-character-2', sequence: 2, authorName: 'Game Master', authorKind: 'game_master', tokenId: null, content: gothicNoise }),
+      ],
+      narrativeContext: {
+        stateSummary: gothicNoise,
+        currentObjective: gothicNoise,
+        openThreads: [gothicNoise],
+        speakerInstruction: gothicNoise,
+        publicNarration: gothicNoise,
+        activeDecision: {
+          id: 'bell-choice',
+          prompt: gothicNoise,
+          options: [{ id: 'pull-rope', label: 'Pull the rope' }],
+        },
+        sceneCheck: {
+          mode: 'requested',
+          request: request.value,
+          contextualChecks: request.value.contextualChecks,
+        },
+      },
+    })
+
+    expectOfficialSafePrompt(prompt)
+    expect(prompt).toContain(officialSafetyNotice)
+    expect(prompt).toContain('Return JSON only with this contract')
+    expect(prompt).toContain('"publicSpeech"')
+    expect(prompt).toContain('"declaredAction"')
+    expect(prompt).toContain('sceneCheckProposal is allowed only for clearly roll-worthy actions')
   })
 
   it('shows prior scene-check escalation so the next GM beat can choose danger or combat', () => {

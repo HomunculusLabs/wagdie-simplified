@@ -2,6 +2,7 @@ import { ElizaClient } from '@elizaos/api-client'
 import type { ChatMessage, StreamCallbacks } from '@/lib/eliza/gateway/types'
 import { WagdieElizaError, isWagdieElizaError } from '@/lib/eliza/gateway/errors'
 import { streamOfficialElizaSse } from './stream'
+import { clampOfficialElizaText } from './text'
 
 export type OfficialMessagingConfig = {
   baseUrl: string
@@ -107,6 +108,8 @@ export class OfficialElizaMessagingClient {
   }
 
   async sendSessionMessage(input: OfficialSendSessionMessageInput): Promise<Response> {
+    const content = clampOfficialElizaText(input.content)
+
     return fetch(`${this.baseUrl}/api/messaging/sessions/${input.sessionId}/messages`, {
       method: 'POST',
       headers: {
@@ -114,7 +117,7 @@ export class OfficialElizaMessagingClient {
         ...this.authHeaders(),
       },
       body: JSON.stringify({
-        content: input.content,
+        content,
         transport: input.transport ?? 'sse',
         metadata: input.metadata,
       }),

@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname } from 'path'
+import {
+  OFFICIAL_ELIZA_MESSAGE_MAX_BYTES,
+  clampOfficialElizaText,
+  getOfficialElizaTextMetrics,
+} from '../lib/eliza/official/text'
 
 type SmokeResult = {
   name: string
@@ -371,6 +376,25 @@ function extractSessionId(body: unknown): string | undefined {
 
 type SseEvent = { event: string; data: string }
 
+function buildNearLimitUnicodeSmokePayload(runId: string): string {
+  const gothicName = '𝔚𝔄𝔊𝔇𝔦𝔈 𝔠𝔯𝔬𝔴 𝔰𝔪𝔬𝔨𝔢'
+  const observedStyle = `${gothicName} — 🜂🜃🜁🜄 skull-bell omen 🦴🔥🕯️ `
+  const overBudget = [
+    `Reply with one short smoke-test word for run ${runId}.`,
+    'This message intentionally validates near-limit Unicode persistence without logging prompt content.',
+    observedStyle.repeat(140),
+    '\uD83D',
+  ].join('\n')
+  const clamped = clampOfficialElizaText(overBudget)
+  const metrics = getOfficialElizaTextMetrics(clamped)
+
+  if (metrics.utf8Bytes > OFFICIAL_ELIZA_MESSAGE_MAX_BYTES) {
+    throw new Error(`near-limit Unicode smoke payload exceeded ${OFFICIAL_ELIZA_MESSAGE_MAX_BYTES} UTF-8 bytes`)
+  }
+
+  return clamped
+}
+
 function parseSse(text: string): SseEvent[] {
   const events: SseEvent[] = []
 
@@ -501,6 +525,12 @@ async function checkChatAndSessions(
     state.sessionId = mainSession.sessionId
     results.push(await sendSseMessage(config, mainSession.sessionId, 'Reply with one smoke-test word.', 'SSE chat success'))
     results.push(await sendSseMessage(config, mainSession.sessionId, 'Reply with one different word.', 'session reuse on same official session'))
+    results.push(await sendSseMessage(
+      config,
+      mainSession.sessionId,
+      buildNearLimitUnicodeSmokePayload(config.runId),
+      'near-limit Unicode session message persistence'
+    ))
   }
 
   const deleteSession = await createSession(config, sessionAgent.agentId, 'delete-check')

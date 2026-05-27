@@ -5,6 +5,12 @@ import {
   normalizeOfficialResponseText,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
+import {
+  OFFICIAL_ELIZA_MESSAGE_MAX_BYTES,
+  clampOfficialElizaText,
+  clampOfficialElizaTextPreservingSuffix,
+  sanitizeOfficialElizaText,
+} from '@/lib/eliza/official/text'
 import { normalizeSceneCheckRequest } from './sceneChecks/rules'
 import {
   buildRecentSceneCheckPatternLines,
@@ -181,9 +187,9 @@ const GM_PROMPT_STATE_SUMMARY_MAX_CHARS = 450
 const GM_PROMPT_OBJECTIVE_MAX_CHARS = 240
 const GM_PROMPT_OPEN_THREADS_MAX_CHARS = 500
 const GM_PROMPT_ENCOUNTER_SEED_MAX_CHARS = 300
-const OFFICIAL_ELIZA_MESSAGE_MAX_CHARS = 3900
 const GM_PROMPT_CONTRACT_MARKER = 'Return only JSON with this contract:'
 const GM_SCENE_CHECK_OUTCOME_CONTRACT_MARKER = 'Return only a JSON object with this exact scene-check outcome contract:'
+const OFFICIAL_ELIZA_PROMPT_TRUNCATION_NOTICE = '\n\n[Earlier context truncated to fit the Official ElizaOS safety budget.]\n\n'
 
 function countSentenceLikeSegments(value: string): number {
   return value
@@ -747,28 +753,16 @@ export function normalizeGameMasterBeatResponse(
 }
 
 function truncatePromptValue(value: string, limit: number): string {
-  const normalized = value.replace(/\s+/g, ' ').trim()
-  if (normalized.length <= limit) return normalized
-  return `${normalized.slice(0, Math.max(0, limit - 1)).trim()}…`
+  const normalized = sanitizeOfficialElizaText(value).replace(/\s+/g, ' ').trim()
+  return clampOfficialElizaText(normalized, { maxBytes: limit })
 }
 
 function clampGameMasterPrompt(prompt: string): string {
-  if (prompt.length <= OFFICIAL_ELIZA_MESSAGE_MAX_CHARS) return prompt
-
-  const markerIndex = prompt.indexOf(GM_PROMPT_CONTRACT_MARKER)
-  if (markerIndex < 0) {
-    return prompt.slice(0, OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - 1).trimEnd() + '…'
-  }
-
-  const contract = prompt.slice(markerIndex)
-  const separator = '\n\n[Earlier context truncated to fit the ElizaOS 4000-character message limit.]\n\n'
-  const availableContextChars = OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - contract.length - separator.length
-
-  if (availableContextChars <= 0) {
-    return contract.slice(0, OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - 1).trimEnd() + '…'
-  }
-
-  return `${prompt.slice(0, availableContextChars).trimEnd()}${separator}${contract}`
+  return clampOfficialElizaTextPreservingSuffix(prompt, {
+    suffixMarker: GM_PROMPT_CONTRACT_MARKER,
+    maxBytes: OFFICIAL_ELIZA_MESSAGE_MAX_BYTES,
+    truncationNotice: OFFICIAL_ELIZA_PROMPT_TRUNCATION_NOTICE,
+  })
 }
 
 function formatParticipants(participants: LocationRoomParticipant[]): string {
@@ -1134,14 +1128,11 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
 }
 
 function clampGameMasterSceneCheckOutcomePrompt(prompt: string): string {
-  if (prompt.length <= OFFICIAL_ELIZA_MESSAGE_MAX_CHARS) return prompt
-  const markerIndex = prompt.indexOf(GM_SCENE_CHECK_OUTCOME_CONTRACT_MARKER)
-  if (markerIndex < 0) return prompt.slice(0, OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - 1).trimEnd() + '…'
-  const contract = prompt.slice(markerIndex)
-  const separator = '\n\n[Earlier context truncated to fit the ElizaOS 4000-character message limit.]\n\n'
-  const availableContextChars = OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - contract.length - separator.length
-  if (availableContextChars <= 0) return contract.slice(0, OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - 1).trimEnd() + '…'
-  return `${prompt.slice(0, availableContextChars).trimEnd()}${separator}${contract}`
+  return clampOfficialElizaTextPreservingSuffix(prompt, {
+    suffixMarker: GM_SCENE_CHECK_OUTCOME_CONTRACT_MARKER,
+    maxBytes: OFFICIAL_ELIZA_MESSAGE_MAX_BYTES,
+    truncationNotice: OFFICIAL_ELIZA_PROMPT_TRUNCATION_NOTICE,
+  })
 }
 
 export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMasterSceneCheckOutcomeInput): string {

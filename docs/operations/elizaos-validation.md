@@ -20,7 +20,7 @@ Routes under `app/api/eliza/*` preserve browser-facing contracts while switching
 Use these layers in order for dev promotion:
 
 1. **Supabase migration/role validation** — confirms WAGDIE app database migration tables, RLS posture, and service/anon/auth access expectations for ElizaOS migration support.
-2. **Direct ElizaOS service smoke** — confirms hosted service health, service auth, disposable agent/session/message behavior, knowledge ingestion, and restart persistence checks.
+2. **Direct ElizaOS service smoke** — confirms hosted service health, service auth, disposable agent/session/message behavior, always-on near-limit Unicode session-message persistence, knowledge ingestion, and restart persistence checks.
 3. **WAGDIE route parity** — confirms browser-facing WAGDIE routes still work against the official integration path, including SIWE gates and Eliza route contracts.
 
 ## Package scripts

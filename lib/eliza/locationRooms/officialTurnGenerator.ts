@@ -6,6 +6,12 @@ import {
   normalizeOfficialResponseText,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
+import {
+  OFFICIAL_ELIZA_MESSAGE_MAX_BYTES,
+  clampOfficialElizaText,
+  clampOfficialElizaTextPreservingSuffix,
+  sanitizeOfficialElizaText,
+} from '@/lib/eliza/official/text'
 import { extractGameMasterJsonObject } from './gameMasterGenerator'
 import { GAMEPLAY_CHECK_TYPES } from './gameplay/types'
 import { normalizeSceneCheckProposal } from './sceneChecks/rules'
@@ -28,17 +34,24 @@ const CHARACTER_PROMPT_OPEN_THREADS_MAX_CHARS = 400
 const CHARACTER_PROMPT_NARRATION_MAX_CHARS = 650
 const CHARACTER_PROMPT_INSTRUCTION_MAX_CHARS = 450
 const CHARACTER_PROMPT_DECISION_MAX_CHARS = 520
-const OFFICIAL_ELIZA_MESSAGE_MAX_CHARS = 3900
+const CHARACTER_PROMPT_CONTRACT_MARKER = 'Return JSON only with this contract:'
+const OFFICIAL_ELIZA_PROMPT_TRUNCATION_NOTICE = '\n\n[Earlier context truncated to fit the Official ElizaOS safety budget.]\n\n'
 
 function truncatePromptValue(value: string, limit: number): string {
-  const normalized = value.replace(/\s+/g, ' ').trim()
-  if (normalized.length <= limit) return normalized
-  return `${normalized.slice(0, Math.max(0, limit - 1)).trim()}…`
+  const normalized = sanitizeOfficialElizaText(value).replace(/\s+/g, ' ').trim()
+  return clampOfficialElizaText(normalized, { maxBytes: limit })
 }
 
-function clampOfficialPrompt(prompt: string): string {
-  if (prompt.length <= OFFICIAL_ELIZA_MESSAGE_MAX_CHARS) return prompt
-  return `${prompt.slice(0, OFFICIAL_ELIZA_MESSAGE_MAX_CHARS - 1).trimEnd()}…`
+function clampOfficialPrompt(prompt: string, preserveNarrativeContract: boolean): string {
+  if (!preserveNarrativeContract) {
+    return clampOfficialElizaText(prompt, { maxBytes: OFFICIAL_ELIZA_MESSAGE_MAX_BYTES })
+  }
+
+  return clampOfficialElizaTextPreservingSuffix(prompt, {
+    suffixMarker: CHARACTER_PROMPT_CONTRACT_MARKER,
+    maxBytes: OFFICIAL_ELIZA_MESSAGE_MAX_BYTES,
+    truncationNotice: OFFICIAL_ELIZA_PROMPT_TRUNCATION_NOTICE,
+  })
 }
 
 function formatParticipants(participants: LocationRoomParticipant[]): string {
@@ -188,7 +201,7 @@ export function buildOfficialLocationRoomPrompt(input: GenerateOfficialLocationR
     input.narrativeContext
       ? 'Keep publicSpeech under two sentences. Do not include markdown, speaker labels, stage directions, out-of-world explanations, dice results, DCs, HP, rewards, death, or finality.'
       : 'Keep it under two sentences. Do not use markdown, speaker labels, JSON, stage directions, or out-of-world explanations.',
-  ].join('\n'))
+  ].join('\n'), Boolean(input.narrativeContext))
 }
 
 export function normalizeLocationRoomGeneratedContent(content: string): string | null {
