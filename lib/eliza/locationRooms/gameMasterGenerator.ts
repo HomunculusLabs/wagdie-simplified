@@ -1341,23 +1341,22 @@ function buildFallbackSceneCheckPublicNarration(input: GenerateGameMasterSceneCh
   const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
   const checkLabel = roll.checkLabel.toLowerCase()
   const outcome = roll.tier.replace(/_/g, ' ')
-  const action = truncatePromptValue(input.characterAction, 180)
-
   const focus = fallbackSceneCheckFocus(input)
+  const rollFacts = `${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc})`
 
   if (roll.tier === 'critical_success') {
-    return `A clean opening around the ${focus} answers ${actor}'s ${checkLabel} check as ${outcome} (${roll.total} vs DC ${roll.dc}). The action—${action}—finds a usable clue, route, or advantage there, and the next character can decide how boldly to use it.`
+    return `${rollFacts}. The ${focus} gives up more than the room meant to show: the salt scratches line up with a cold draft from the cellar stair, and a black feather caught in the bell rope points toward the rafters. The group can take the stair before it settles shut, or pull the bell and force whatever is watching above to answer first.`
   }
   if (roll.tier === 'success') {
-    return `A steadier path appears beside the ${focus} after ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—moves the scene forward with a safer position or clear clue, leaving the group with a practical next choice instead of closing the scene.`
+    return `${rollFacts}. The ${focus} resolves into a usable lead: salt has been dragged from the bar toward the cellar stair, and the bell rope trembles only when the rafter shadows shift. The next choice is concrete—follow the salt trail down, or bait the thing in the rafters while the stair remains open.`
   }
   if (roll.tier === 'partial_success') {
-    return `Progress comes with a price at the ${focus} when ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—does make progress, but a nearby route narrows, a visible complication marks the ${focus}, and the group must choose whether to press the opening or shift to a safer approach.`
+    return `${rollFacts}. The ${focus} reveals the right direction, but the Crow's Den takes payment for it: the cellar stair opens wider while the bell rope starts to swing on its own. The group has the clue, but waiting lets the rafter-shapes gather above the bar.`
   }
   if (roll.tier === 'failure') {
-    return `The ${focus} refuses the easy answer after ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—fails forward into a visible complication: a route around the ${focus} is blocked, attention turns hostile, and the next choice must answer that changed path rather than pretending nothing moved.`
+    return `${rollFacts}. The ${focus} gives a false read, and the tavern punishes the mistake: the cellar stair slams down one step, feathers scatter across the bar, and the bell rope twists toward the character who checked it. The easy route is blocked; the next choice is whether to force the stair or confront the rafters.`
   }
-  return `The ${focus} bites back as ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—triggers a hard setback: a lost opportunity changes the route around the ${focus}, and the group still has agency to choose whether to recover, retreat, or risk a harder path.`
+  return `${rollFacts}. The ${focus} turns openly hostile: the bell rope snaps taut, salt spills into a warning circle, and something heavy drags itself across the rafters above the cellar door. The next choice is ugly: every harder route now points through immediate danger, and either the stair or the watcher above will answer immediately.`
 }
 
 function fallbackSceneCheckFocus(input: GenerateGameMasterSceneCheckOutcomeInput): string {
@@ -1407,14 +1406,14 @@ function fallbackSceneCheckAdventurePatch(input: GenerateGameMasterSceneCheckOut
   const baseSummary = `${actor}'s ${roll.checkLabel.toLowerCase()} check resolved as ${outcome}; the ${focus} now changes the next choice.`
   const status = roll.tier === 'critical_success' || roll.tier === 'success' ? 'advantage' : 'complication'
   const consequenceSummary = roll.tier === 'critical_success'
-    ? `${actor}'s attempt opens a strong advantage or clear route for the next choice.`
+    ? `${actor}'s check reveals the cellar draft, bell rope, and rafter sign as a strong usable advantage.`
     : roll.tier === 'success'
-      ? `${actor}'s attempt creates progress with a clean clue or safer position.`
+      ? `${actor}'s check turns the ${focus} into a concrete lead toward the cellar stair or the watcher in the rafters.`
       : roll.tier === 'partial_success'
-        ? `${actor}'s attempt makes progress, but it also marks the ${focus} with a cost and narrows a nearby route.`
+        ? `${actor}'s check reveals the lead, but the bell rope begins moving and the rafter threat gathers above it.`
         : roll.tier === 'failure'
-          ? `${actor}'s attempt fails forward into a visible complication that blocks an easy route and changes the next choice.`
-          : `${actor}'s attempt triggers a hard setback that escalates danger and makes the next route harder.`
+          ? `${actor}'s check misreads the ${focus}; the cellar stair shifts, feathers scatter, and the easy route closes.`
+          : `${actor}'s check triggers a hard Crow's Den setback: the bell rope, salt, and rafters all answer at once.`
 
   return normalizeAdventurePatch({
     currentStakes: roll.tier === 'critical_success' || roll.tier === 'success'
