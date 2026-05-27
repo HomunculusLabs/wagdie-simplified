@@ -879,9 +879,9 @@ function buildCombatReadyDecisionLines(ttrpg: ReturnType<typeof normalizeNarrati
   if (ttrpg.combatReadiness !== 'ready') return []
   return [
     'Combat-ready pressure is present from prior fiction.',
-    '- Decide case-by-case whether this beat keeps danger as narrative pressure or emits requestedGameplayAction=\"start_combat\".',
-    '- Do not start combat automatically just because combatReadiness is ready.',
-    '- If the fiction now clearly demands structured combat, use requestedGameplayAction=\"start_combat\" with the last encounter seed.',
+    '- Decide case-by-case whether this beat keeps danger as narrative pressure or emits requestedGameplayAction="start_combat".',
+    '- If the fiction now clearly demands structured combat, you may use requestedGameplayAction="start_combat" with the last encounter seed.',
+    '- If you keep readiness as narrative pressure, backend promotion may start combat on a later eligible auto tick after sustained readiness.',
   ]
 }
 
@@ -929,8 +929,8 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
       ? ['- Do not leave repeated activity in flat story/none/0 state; visibly escalate without forcing start_combat.']
       : []),
     '- Use catalog entries only as bounded private inspiration; live adventure memory is more authoritative.',
-    '- Do not spawn combat by default; most beats keep requestedGameplayAction null.',
-    '- If current combatReadiness is ready from a prior scene-check escalation, choose case-by-case: keep structured danger in narrative, or request start_combat only when the fiction now clearly demands combat. Do not start combat automatically.',
+    '- Most beats keep requestedGameplayAction null; start combat only when the current fiction supports a clear fight.',
+    '- If current combatReadiness is ready from prior fiction or scene-check escalation, choose case-by-case: keep structured danger in narrative, or request start_combat when the fiction now clearly demands combat.',
     '- requestedGameplayAction "start_combat" requires clear fights plus threat/ready/threatLevel >= 3 and encounterSeed.',
     ...buildSceneCheckContractLines(),
   ]
@@ -1119,7 +1119,7 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '- Treat adventurePatch as private durable memory for the resolved roll. activeDecision remains rare and only for a genuine new fork.',
     '- escalation is raw intent; backend will normalize it. Use decision none, danger, or combat_ready case-by-case.',
     '- Scene-check outcomes must never request combat directly: do not output requestedGameplayAction or lastCombatTriggerBeatId.',
-    '- combat_ready means the next GM beat may choose to start combat; it does not route immediately to combat.',
+    '- combat_ready means readiness, not a direct combat request; a later GM beat may request start_combat, and backend promotion may start combat on a later eligible auto tick.',
     '- Prefer listed 80_encounters and 30_monsters catalog candidates for encounterSeed/catalogEntryIds when the roll creates danger or combat readiness.',
     '- Use adventurePatch.spatialContext additively when the roll reveals, opens, blocks, narrows, or questions visible areas/routes/landmarks.',
     '- Tier rules for adventurePatch: critical_success/success add progress or discovery; partial_success: progress plus complication; failure/critical_failure require a consequence and changed next choice.',

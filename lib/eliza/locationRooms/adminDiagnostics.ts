@@ -1,4 +1,7 @@
 import { elizaConfig } from '@/lib/eliza/config'
+import { normalizeLocationAdventureCatalog } from '@/lib/domain/location/metadata'
+import { LOCATION_ADVENTURE_CATALOG_SECTIONS } from '@/lib/domain/location/metadata-types'
+import type { LocationAdventureCatalogSection, NormalizedLocationAdventureCatalog } from '@/lib/domain/location/metadata-types'
 import {
   gameMasterAgentService,
   type GameMasterAgentResolution,
@@ -33,6 +36,7 @@ import {
   type LocationRoomNarrativeBeat,
   type LocationRoomNarrativeState,
 } from './narrativeTypes'
+import { visibleSceneCheckEscalationCatalogEntries } from './encounterEscalation'
 import type { GameMasterGenerationDiagnostics } from './gameMasterGenerator'
 import type { GameplayRun } from './gameplay/types'
 
@@ -52,6 +56,8 @@ export type LocationRoomRecommendedNextAction =
   | 'wait_for_retry'
   | 'wait_for_cadence'
   | 'missing_trigger_readiness'
+  | 'missing_location_adventure_catalog'
+  | 'combat_ready_pending_auto_tick'
   | 'missing_public_game_master_message'
   | 'wait_for_next_tick'
 
@@ -158,6 +164,15 @@ export type LocationRoomHealthDiagnostics = {
     blocker: 'missing_public_game_master_message' | null
   }
   gmGeneration: LocationRoomHealthGameMasterGenerationSummary
+  adventureCatalog: {
+    source: 'narrative_state' | 'location_metadata' | 'missing'
+    sectionCounts: Record<LocationAdventureCatalogSection, number>
+    visibleEncounterCount: number
+    visibleMonsterCount: number
+    hasVisibleCombatCatalog: boolean
+    narrativeStateCatalogPresent: boolean
+    locationCatalogPresent: boolean
+  }
   triggerReadiness: {
     stateExists: boolean
     currentObjective: string | null
@@ -171,10 +186,26 @@ export type LocationRoomHealthDiagnostics = {
     triggerConsumed: boolean
     hasUnconsumedTrigger: boolean
     encounterSeedPresent: boolean
+    encounterSeedSource: string | null
+    encounterSeedCatalogBacked: boolean
+    encounterSeedCatalogEntryIds: string[]
+    encounterSeedEncounterHintCount: number
+    encounterSeedMonsterHintCount: number
     gameplayEnabled: boolean
     gameplayStateStatus: string | null
     activeEncounterStatus: string | null
     blockers: LocationRoomTriggerReadinessBlocker[]
+  }
+  promotion: {
+    eligible: boolean
+    blocker: LocationRoomCombatPromotionBlocker | null
+    sourceBeatId: string | null
+    lastCombatReadyBeatId: string | null
+    lastCombatReadySceneCheckId: string | null
+    lastCombatReadyAt: string | null
+    lastPromotionBeatId: string | null
+    lastPromotionTickId: string | null
+    lastPromotionAt: string | null
   }
   gameplay: {
     enabled: boolean
@@ -251,6 +282,16 @@ type LocationRoomTriggerReadinessBlocker =
   | 'missing_encounter_seed'
   | 'missing_combat_trigger'
   | 'combat_trigger_consumed'
+
+type LocationRoomCombatPromotionBlocker =
+  | 'missing_narrative_state'
+  | 'gameplay_disabled_for_location'
+  | 'active_encounter_exists'
+  | 'existing_unconsumed_trigger'
+  | 'not_combat_ready'
+  | 'missing_encounter_seed'
+  | 'missing_source_beat'
+  | 'source_trigger_consumed'
 
 type GameMasterResolver = Pick<typeof gameMasterAgentService, 'resolveActiveGameMasterAgent'>
 
@@ -400,6 +441,140 @@ function safeLength(value: unknown): number | null {
   return Math.max(0, Math.floor(value))
 }
 
+function nullableMetadataId(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function safeIsoLike(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 80) : null
+}
+
+function nestedLocationMetadataCatalog(metadata: Record<string, unknown> | null | undefined): unknown {
+  const locationMetadata = safeMetadataObject(metadata?.locationMetadata)
+  return locationMetadata?.adventureCatalog
+}
+
+function catalogFromMetadata(metadata: Record<string, unknown> | null | undefined): NormalizedLocationAdventureCatalog | undefined {
+  return normalizeLocationAdventureCatalog(metadata?.adventureCatalog)
+}
+
+function catalogFromNarrativeMetadata(metadata: Record<string, unknown> | null | undefined): NormalizedLocationAdventureCatalog | undefined {
+  return normalizeLocationAdventureCatalog(metadata?.adventureCatalog) ??
+    normalizeLocationAdventureCatalog(nestedLocationMetadataCatalog(metadata))
+}
+
+function buildAdventureCatalogSummary(
+  location: LocationRoomLocationDetails | null,
+  narrativeState: LocationRoomNarrativeState | null
+): LocationRoomHealthDiagnostics['adventureCatalog'] {
+  const narrativeCatalog = catalogFromNarrativeMetadata(narrativeState?.metadata)
+  const locationCatalog = catalogFromMetadata(location?.metadata)
+  const effectiveCatalog = narrativeCatalog ?? locationCatalog
+  const sectionCounts = {} as Record<LocationAdventureCatalogSection, number>
+  for (const section of LOCATION_ADVENTURE_CATALOG_SECTIONS) {
+    sectionCounts[section] = effectiveCatalog?.sections[section]?.length ?? 0
+  }
+  const visibleEncounterCount = effectiveCatalog
+    ? visibleSceneCheckEscalationCatalogEntries(effectiveCatalog.sections['80_encounters'] ?? []).length
+    : 0
+  const visibleMonsterCount = effectiveCatalog
+    ? visibleSceneCheckEscalationCatalogEntries(effectiveCatalog.sections['30_monsters'] ?? []).length
+    : 0
+
+  return {
+    source: narrativeCatalog ? 'narrative_state' : locationCatalog ? 'location_metadata' : 'missing',
+    sectionCounts,
+    visibleEncounterCount,
+    visibleMonsterCount,
+    hasVisibleCombatCatalog: visibleEncounterCount > 0 || visibleMonsterCount > 0,
+    narrativeStateCatalogPresent: Boolean(narrativeCatalog),
+    locationCatalogPresent: Boolean(locationCatalog),
+  }
+}
+
+function isCombatReadySourceBeat(beat: LocationRoomNarrativeBeat): boolean {
+  if (beat.status !== 'completed') return false
+  const metadata = beat.metadata ?? {}
+  const sceneCheckEscalation = safeMetadataObject(metadata.sceneCheckEscalation)
+  const lastSceneCheckEscalation = safeMetadataObject(metadata.lastSceneCheckEscalation)
+  return metadata.combatReadiness === 'ready' ||
+    sceneCheckEscalation?.decision === 'combat_ready' ||
+    lastSceneCheckEscalation?.decision === 'combat_ready'
+}
+
+function resolvePromotionSource(input: {
+  narrativeState: LocationRoomNarrativeState | null
+  recentBeats: LocationRoomNarrativeBeat[]
+}): { sourceBeatId: string | null; consumedSource: boolean } {
+  const metadata = input.narrativeState?.metadata ?? {}
+  const ttrpg = normalizeNarrativeTtrpgMetadata(metadata)
+  const explicitReadyBeatId = nullableMetadataId(metadata.lastCombatReadyBeatId)
+  if (explicitReadyBeatId) {
+    const explicitBeat = input.recentBeats.find((beat) => beat.id === explicitReadyBeatId)
+    if (!explicitBeat || !isCombatReadySourceBeat(explicitBeat)) {
+      return { sourceBeatId: null, consumedSource: false }
+    }
+    return {
+      sourceBeatId: explicitReadyBeatId,
+      consumedSource: ttrpg.consumedCombatTriggerBeatId === explicitReadyBeatId,
+    }
+  }
+
+  const lastBeatId = nullableMetadataId(metadata.lastBeatId)
+  if (lastBeatId) {
+    const lastBeat = input.recentBeats.find((beat) => beat.id === lastBeatId)
+    if (lastBeat && isCombatReadySourceBeat(lastBeat)) {
+      return {
+        sourceBeatId: lastBeatId,
+        consumedSource: ttrpg.consumedCombatTriggerBeatId === lastBeatId,
+      }
+    }
+  }
+
+  const sourceBeat = input.recentBeats.find((beat) =>
+    beat.id !== ttrpg.consumedCombatTriggerBeatId && isCombatReadySourceBeat(beat)
+  )
+  return {
+    sourceBeatId: sourceBeat?.id ?? null,
+    consumedSource: false,
+  }
+}
+
+function buildPromotionSummary(
+  narrativeState: LocationRoomNarrativeState | null,
+  gameplayEnabled: boolean,
+  activeEncounterStatus: string | null,
+  recentBeats: LocationRoomNarrativeBeat[]
+): LocationRoomHealthDiagnostics['promotion'] {
+  const metadata = narrativeState?.metadata ?? {}
+  const ttrpg = normalizeNarrativeTtrpgMetadata(metadata)
+  const triggerConsumed = Boolean(ttrpg.lastCombatTriggerBeatId && ttrpg.consumedCombatTriggerBeatId === ttrpg.lastCombatTriggerBeatId)
+  const hasUnconsumedTrigger = ttrpg.requestedGameplayAction === 'start_combat' && Boolean(ttrpg.lastCombatTriggerBeatId) && !triggerConsumed
+  const source = resolvePromotionSource({ narrativeState, recentBeats })
+  let blocker: LocationRoomCombatPromotionBlocker | null = null
+
+  if (!narrativeState) blocker = 'missing_narrative_state'
+  else if (!gameplayEnabled) blocker = 'gameplay_disabled_for_location'
+  else if (activeEncounterStatus) blocker = 'active_encounter_exists'
+  else if (hasUnconsumedTrigger) blocker = 'existing_unconsumed_trigger'
+  else if (ttrpg.ttrpgPhase !== 'threat' || ttrpg.combatReadiness !== 'ready' || (ttrpg.threatLevel ?? 0) < 3 || ttrpg.requestedGameplayAction === 'start_combat') blocker = 'not_combat_ready'
+  else if (!ttrpg.lastEncounterSeed) blocker = 'missing_encounter_seed'
+  else if (source.consumedSource) blocker = 'source_trigger_consumed'
+  else if (!source.sourceBeatId) blocker = 'missing_source_beat'
+
+  return {
+    eligible: blocker === null,
+    blocker,
+    sourceBeatId: source.consumedSource ? null : source.sourceBeatId,
+    lastCombatReadyBeatId: nullableMetadataId(metadata.lastCombatReadyBeatId),
+    lastCombatReadySceneCheckId: nullableMetadataId(metadata.lastCombatReadySceneCheckId),
+    lastCombatReadyAt: safeIsoLike(metadata.lastCombatReadyAt),
+    lastPromotionBeatId: nullableMetadataId(metadata.lastCombatReadyPromotionBeatId),
+    lastPromotionTickId: nullableMetadataId(metadata.lastCombatReadyPromotionTickId),
+    lastPromotionAt: safeIsoLike(metadata.lastCombatReadyPromotionAt),
+  }
+}
+
 function summarizeGmGeneration(beat: LocationRoomNarrativeBeat | null): LocationRoomHealthGameMasterGenerationSummary {
   const gmGeneration = safeMetadataObject(beat?.metadata.gmGeneration)
   const status = gmGeneration?.status === 'accepted' || gmGeneration?.status === 'repaired' || gmGeneration?.status === 'repair_failed'
@@ -431,6 +606,7 @@ function buildTriggerReadinessSummary(
   const consumedTriggerId = ttrpg.consumedCombatTriggerBeatId
   const triggerConsumed = Boolean(triggerId && consumedTriggerId === triggerId)
   const hasUnconsumedTrigger = ttrpg.requestedGameplayAction === 'start_combat' && Boolean(triggerId) && !triggerConsumed
+  const seed = ttrpg.lastEncounterSeed
   const blockers: LocationRoomTriggerReadinessBlocker[] = []
 
   if (!narrativeState) {
@@ -459,7 +635,12 @@ function buildTriggerReadinessSummary(
     consumedTriggerId,
     triggerConsumed,
     hasUnconsumedTrigger,
-    encounterSeedPresent: Boolean(ttrpg.lastEncounterSeed),
+    encounterSeedPresent: Boolean(seed),
+    encounterSeedSource: seed?.source ?? null,
+    encounterSeedCatalogBacked: seed?.source === 'location_catalog' || Boolean(seed?.catalogEntryIds?.length),
+    encounterSeedCatalogEntryIds: seed?.catalogEntryIds ?? [],
+    encounterSeedEncounterHintCount: seed?.encounterHints?.length ?? 0,
+    encounterSeedMonsterHintCount: seed?.monsterHints?.length ?? 0,
     gameplayEnabled,
     gameplayStateStatus,
     activeEncounterStatus,
@@ -530,7 +711,9 @@ function recommendedNextAction(input: {
   publicMessageCount: number
   retryCadence: LocationRoomHealthDiagnostics['retryCadence']
   gmGeneration: LocationRoomHealthDiagnostics['gmGeneration']
+  adventureCatalog: LocationRoomHealthDiagnostics['adventureCatalog']
   triggerReadiness: LocationRoomHealthDiagnostics['triggerReadiness']
+  promotion: LocationRoomHealthDiagnostics['promotion']
   completedBeatWithoutPublicGameMasterMessage: boolean
 }): LocationRoomRecommendedNextAction {
   if (!input.locationExists) {
@@ -554,6 +737,18 @@ function recommendedNextAction(input: {
   if (input.recentTicks.some((tick) => tick.status === 'dead')) return 'inspect_failed_tick'
   if (input.completedBeatWithoutPublicGameMasterMessage) return 'missing_public_game_master_message'
   if (input.publicMessageCount === 0) return 'trigger_location_room_tick'
+
+  const combatAlreadyRoutable = Boolean(
+    input.triggerReadiness.activeEncounterStatus ||
+    input.triggerReadiness.hasUnconsumedTrigger ||
+    input.promotion.eligible
+  )
+  if (input.config.gameplayEnabledForLocation && !input.adventureCatalog.hasVisibleCombatCatalog && !combatAlreadyRoutable) {
+    return 'missing_location_adventure_catalog'
+  }
+  if (input.promotion.eligible && !input.retryCadence.nextTickDue) {
+    return 'combat_ready_pending_auto_tick'
+  }
 
   const triggerBlockers = input.triggerReadiness.blockers.filter((blocker) => blocker !== 'missing_narrative_state')
   if (triggerBlockers.length > 0) return 'missing_trigger_readiness'
@@ -627,7 +822,9 @@ export class LocationRoomAdminDiagnosticsService {
       const durableIntent = buildDurableIntentSummary([], [])
       const retryCadence = buildRetryCadenceSummary(null, [], now, config.tickIntervalMinutes)
       const gmGeneration = summarizeGmGeneration(null)
+      const adventureCatalog = buildAdventureCatalogSummary(null, null)
       const triggerReadiness = buildTriggerReadinessSummary(null, gameplayEnabledForLocation, null, null)
+      const promotion = buildPromotionSummary(null, gameplayEnabledForLocation, null, [])
 
       return {
         generatedAt: now.toISOString(),
@@ -681,7 +878,9 @@ export class LocationRoomAdminDiagnosticsService {
           blocker: null,
         },
         gmGeneration,
+        adventureCatalog,
         triggerReadiness,
+        promotion,
         gameplay: {
           enabled: gameplayEnabledForLocation,
           link: null,
@@ -705,7 +904,9 @@ export class LocationRoomAdminDiagnosticsService {
           publicMessageCount: 0,
           retryCadence,
           gmGeneration,
+          adventureCatalog,
           triggerReadiness,
+          promotion,
           completedBeatWithoutPublicGameMasterMessage: false,
         }),
       }
@@ -754,7 +955,7 @@ export class LocationRoomAdminDiagnosticsService {
     ] = room
       ? await Promise.all([
         config.narrativeEnabled ? this.narrativeRepository.findStateByRoomId(room.id) : Promise.resolve(null),
-        config.narrativeEnabled ? this.narrativeRepository.listRecentBeatsByRoomId(room.id, 1) : Promise.resolve([]),
+        config.narrativeEnabled ? this.narrativeRepository.listRecentBeatsByRoomId(room.id, 10) : Promise.resolve([]),
         gameplayEnabledForLocation ? this.gameplayRepository.findStateByRoomId(room.id) : Promise.resolve(null),
         gameplayEnabledForLocation ? this.gameplayRepository.findActiveEncounterByRoomId(room.id) : Promise.resolve(null),
         gameplayEnabledForLocation ? this.gameplayRepository.listRecentTurnsByRoomId(room.id, 5) : Promise.resolve([]),
@@ -777,11 +978,18 @@ export class LocationRoomAdminDiagnosticsService {
     const durableIntent = buildDurableIntentSummary(activeTicks, recentTicks)
     const retryCadence = buildRetryCadenceSummary(room, activeTicks, now, config.tickIntervalMinutes)
     const gmGeneration = summarizeGmGeneration(latestBeat)
+    const adventureCatalog = buildAdventureCatalogSummary(location, narrativeState)
     const triggerReadiness = buildTriggerReadinessSummary(
       narrativeState,
       gameplayEnabledForLocation,
       gameplayState?.status ?? null,
       activeEncounter?.status ?? null
+    )
+    const promotion = buildPromotionSummary(
+      narrativeState,
+      gameplayEnabledForLocation,
+      activeEncounter?.status ?? null,
+      latestBeats
     )
     const diagnostics: LocationRoomHealthDiagnostics = {
       generatedAt: now.toISOString(),
@@ -840,7 +1048,9 @@ export class LocationRoomAdminDiagnosticsService {
         blocker: completedBeatWithoutPublicGameMasterMessage ? 'missing_public_game_master_message' : null,
       },
       gmGeneration,
+      adventureCatalog,
       triggerReadiness,
+      promotion,
       gameplay: {
         enabled: gameplayEnabledForLocation,
         link: room ? `/api/admin/eliza/location-rooms/${encodeURIComponent(locationId)}/gameplay` : null,
@@ -867,7 +1077,9 @@ export class LocationRoomAdminDiagnosticsService {
       publicMessageCount: publicTranscript.messageCount,
       retryCadence,
       gmGeneration,
+      adventureCatalog,
       triggerReadiness,
+      promotion,
       completedBeatWithoutPublicGameMasterMessage,
     })
 

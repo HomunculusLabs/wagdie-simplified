@@ -1,4 +1,6 @@
-import type { NormalizedLocationAdventureCatalog, LocationAdventureCatalogEntry } from '@/lib/domain/location/metadata-types'
+import { normalizeLocationMetadata } from '@/lib/domain/location/metadata'
+import { LOCATION_ADVENTURE_CATALOG_SECTIONS } from '@/lib/domain/location/metadata-types'
+import type { NormalizedLocationAdventureCatalog, LocationAdventureCatalogEntry, LocationAdventureCatalogSection } from '@/lib/domain/location/metadata-types'
 import type { PublicLocationRoomGameplayRolls } from './types'
 import type {
   NormalizedSceneCheckProposal,
@@ -958,6 +960,109 @@ export function seedAdventureMetadataFromCatalog(
     discoveries: catalog.defaults.discoveries,
     clocks: catalog.defaults.clocks,
   })
+}
+
+type CanonicalAdventureCatalogEntry = {
+  id: string
+  section: LocationAdventureCatalogSection
+  title: string | null
+  summary: string
+  tags: string[]
+  revealConditions: string[]
+  relatedEntryIds: string[]
+}
+
+type CanonicalAdventureCatalog = {
+  sections: Record<LocationAdventureCatalogSection, CanonicalAdventureCatalogEntry[]>
+  defaults: NormalizedLocationAdventureCatalog['defaults']
+}
+
+export type RefreshAdventureCatalogMetadataResult = {
+  metadata: Record<string, unknown>
+  catalog: NormalizedLocationAdventureCatalog | null
+  changed: boolean
+  catalogChanged: boolean
+  defaultsSeeded: boolean
+  sectionCounts: Record<LocationAdventureCatalogSection, number>
+}
+
+function canonicalAdventureCatalog(catalog: NormalizedLocationAdventureCatalog): CanonicalAdventureCatalog {
+  const sections = {} as Record<LocationAdventureCatalogSection, CanonicalAdventureCatalogEntry[]>
+  for (const section of LOCATION_ADVENTURE_CATALOG_SECTIONS) {
+    sections[section] = (catalog.sections[section] ?? []).map((entry) => ({
+      id: entry.id,
+      section: entry.section,
+      title: entry.title ?? null,
+      summary: entry.summary,
+      tags: [...entry.tags],
+      revealConditions: [...(entry.revealConditions ?? [])],
+      relatedEntryIds: [...(entry.relatedEntryIds ?? [])],
+    }))
+  }
+  return {
+    sections,
+    defaults: catalog.defaults,
+  }
+}
+
+function adventureCatalogKey(catalog: NormalizedLocationAdventureCatalog | null | undefined): string | null {
+  return catalog ? JSON.stringify(canonicalAdventureCatalog(catalog)) : null
+}
+
+export function refreshAdventureCatalogMetadataFromLocation(
+  metadata: Record<string, unknown> | null | undefined,
+  locationMetadata: unknown
+): RefreshAdventureCatalogMetadataResult {
+  const baseMetadata = { ...(metadata ?? {}) }
+  const catalog = normalizeLocationMetadata(locationMetadata).adventureCatalog ?? null
+  const currentCatalog = normalizeLocationMetadata({ adventureCatalog: baseMetadata.adventureCatalog }).adventureCatalog ?? null
+  const catalogChanged = adventureCatalogKey(catalog) !== adventureCatalogKey(currentCatalog)
+
+  const sectionCounts = {} as Record<LocationAdventureCatalogSection, number>
+  for (const section of LOCATION_ADVENTURE_CATALOG_SECTIONS) {
+    sectionCounts[section] = catalog?.sections[section]?.length ?? 0
+  }
+
+  if (!catalog) {
+    const hadCatalog = Object.prototype.hasOwnProperty.call(baseMetadata, 'adventureCatalog') || Boolean(currentCatalog)
+    if (hadCatalog) {
+      const metadataWithoutCatalog = { ...baseMetadata }
+      delete metadataWithoutCatalog.adventureCatalog
+      return {
+        metadata: metadataWithoutCatalog,
+        catalog: null,
+        changed: true,
+        catalogChanged: true,
+        defaultsSeeded: false,
+        sectionCounts,
+      }
+    }
+
+    return {
+      metadata: baseMetadata,
+      catalog: null,
+      changed: false,
+      catalogChanged: false,
+      defaultsSeeded: false,
+      sectionCounts,
+    }
+  }
+
+  const beforeAdventureKey = JSON.stringify(normalizeAdventureMemory(baseMetadata))
+  const catalogMetadata = catalogChanged
+    ? { ...baseMetadata, adventureCatalog: catalog }
+    : baseMetadata
+  const seededMetadata = seedAdventureMetadataFromCatalog(catalogMetadata, catalog)
+  const defaultsSeeded = JSON.stringify(normalizeAdventureMemory(seededMetadata)) !== beforeAdventureKey
+
+  return {
+    metadata: seededMetadata,
+    catalog,
+    changed: catalogChanged || defaultsSeeded,
+    catalogChanged,
+    defaultsSeeded,
+    sectionCounts,
+  }
 }
 
 function catalogRetrievalText(context: AdventureCatalogRetrievalContext): string {

@@ -43,6 +43,7 @@ import {
   mergeAdventureMetadata,
   normalizeAdventureMemory,
   normalizeAdventurePatch,
+  refreshAdventureCatalogMetadataFromLocation,
   type LocationRoomNarrativeState,
 } from '@/lib/eliza/locationRooms/narrativeTypes'
 import {
@@ -333,7 +334,7 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Non-aftermath beats must include a concrete currentObjective')
     expect(prompt).toContain('adventurePatch is private continuity memory')
     expect(prompt).toContain('activeDecision is rare')
-    expect(prompt).toContain('Do not spawn combat by default')
+    expect(prompt).toContain('Most beats keep requestedGameplayAction null')
     expect(prompt).toContain('requestedGameplayAction "start_combat"')
   })
 
@@ -475,7 +476,7 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Combat readiness: ready')
     expect(prompt).toContain('Last scene-check escalation: Decision: combat_ready')
     expect(prompt).toContain('Catalog: 80.10.ash-watcher')
-    expect(prompt).toContain('Do not start combat automatically')
+    expect(prompt).toContain('start combat only when the current fiction supports a clear fight')
     expect(prompt).toContain('keep structured danger in narrative, or request start_combat')
   })
 
@@ -658,6 +659,55 @@ describe('game-master beat generator helpers', () => {
       'Does the wall passage turn downward?',
       'Whether the low tunnel returns to the taproom',
     ])
+  })
+
+  it('refreshes normalized location catalog metadata without overwriting live adventure memory', () => {
+    const result = refreshAdventureCatalogMetadataFromLocation({
+      adventure: {
+        currentStakes: 'Live stakes must win.',
+        discoveries: ['The cellar already woke.'],
+        clocks: [{ id: 'live-clock', label: 'Live clock', value: 2, max: 4, summary: 'Live pressure.' }],
+      },
+      adventureCatalog: {
+        sections: {
+          '80_encounters': [{ id: 'old', summary: 'Old encounter' }],
+        },
+      },
+    }, {
+      adventureCatalog: {
+        defaults: {
+          currentStakes: 'Catalog defaults should not replace live stakes.',
+          discoveries: ['Catalog discovery'],
+        },
+        sections: {
+          '80_encounters': [{ id: 'roost-fall', title: 'Roost Fall', summary: 'Crows drop from the rafters.', tags: ['crows'] }],
+          '30_monsters': [{ id: 'ash-crow', title: 'Ash Crow', summary: 'An ash-black crow watches openly.' }],
+        },
+      },
+    })
+
+    expect(result.changed).toBe(true)
+    expect(result.catalogChanged).toBe(true)
+    expect(result.defaultsSeeded).toBe(false)
+    expect(result.sectionCounts['80_encounters']).toBe(1)
+    expect(result.sectionCounts['30_monsters']).toBe(1)
+    expect(result.metadata.adventureCatalog).toEqual(expect.objectContaining({
+      sections: expect.objectContaining({
+        '80_encounters': [expect.objectContaining({ id: 'roost-fall', section: '80_encounters' })],
+        '30_monsters': [expect.objectContaining({ id: 'ash-crow', section: '30_monsters' })],
+      }),
+    }))
+    expect(normalizeAdventureMemory(result.metadata)).toEqual(expect.objectContaining({
+      currentStakes: 'Live stakes must win.',
+      discoveries: ['The cellar already woke.'],
+      clocks: [expect.objectContaining({ id: 'live-clock', value: 2 })],
+    }))
+
+    const removed = refreshAdventureCatalogMetadataFromLocation(result.metadata, {})
+    expect(removed.changed).toBe(true)
+    expect(removed.catalogChanged).toBe(true)
+    expect(removed.metadata).not.toHaveProperty('adventureCatalog')
+    expect(normalizeAdventureMemory(removed.metadata).currentStakes).toBe('Live stakes must win.')
   })
 
   it('includes optional scene-check request guidance and normalizes sanitized GM requests', () => {
@@ -1318,7 +1368,7 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('For partial_success, failure, and critical_failure, publicNarration must be substantive')
     expect(prompt).toContain('Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality')
     expect(prompt).toContain('\"escalation\"')
-    expect(prompt).toContain('combat_ready means the next GM beat may choose to start combat')
+    expect(prompt).toContain('combat_ready means readiness, not a direct combat request')
 
     const catalogPrompt = buildGameMasterSceneCheckOutcomePrompt({
       ...outcomeInput,

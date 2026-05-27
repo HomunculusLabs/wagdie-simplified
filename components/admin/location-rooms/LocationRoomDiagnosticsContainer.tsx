@@ -251,9 +251,39 @@ export function LocationRoomDiagnosticsContainer() {
                 <Field label="Threat" value={diagnostics.triggerReadiness.threatLevel} />
                 <Field label="Requested action" value={diagnostics.triggerReadiness.requestedGameplayAction} />
                 <Field label="Trigger ID" value={diagnostics.triggerReadiness.triggerId} />
+                <Field label="Consumed trigger" value={diagnostics.triggerReadiness.consumedTriggerId} />
                 <Field label="Unconsumed trigger" value={diagnostics.triggerReadiness.hasUnconsumedTrigger} tone={statusTone(diagnostics.triggerReadiness.hasUnconsumedTrigger)} />
                 <Field label="Encounter seed" value={diagnostics.triggerReadiness.encounterSeedPresent} tone={statusTone(diagnostics.triggerReadiness.encounterSeedPresent)} />
+                <Field label="Seed source" value={diagnostics.triggerReadiness.encounterSeedSource} />
+                <Field label="Seed catalog-backed" value={diagnostics.triggerReadiness.encounterSeedCatalogBacked} tone={statusTone(diagnostics.triggerReadiness.encounterSeedCatalogBacked)} />
+                <Field label="Seed catalog IDs" value={diagnostics.triggerReadiness.encounterSeedCatalogEntryIds} />
                 <Field label="Blockers" value={diagnostics.triggerReadiness.blockers} tone={diagnostics.triggerReadiness.blockers.length > 0 ? 'text-red-200' : undefined} />
+              </dl>
+            </Panel>
+          </div>
+
+          <div className="grid gap-5 lg:grid-cols-2">
+            <Panel title="Adventure catalog">
+              <dl className="grid gap-3 sm:grid-cols-2">
+                <Field label="Catalog source" value={diagnostics.adventureCatalog.source} />
+                <Field label="Narrative catalog" value={diagnostics.adventureCatalog.narrativeStateCatalogPresent} tone={statusTone(diagnostics.adventureCatalog.narrativeStateCatalogPresent)} />
+                <Field label="Location catalog" value={diagnostics.adventureCatalog.locationCatalogPresent} tone={statusTone(diagnostics.adventureCatalog.locationCatalogPresent)} />
+                <Field label="Visible encounters" value={diagnostics.adventureCatalog.visibleEncounterCount} />
+                <Field label="Visible monsters" value={diagnostics.adventureCatalog.visibleMonsterCount} />
+                <Field label="Combat catalog" value={diagnostics.adventureCatalog.hasVisibleCombatCatalog} tone={statusTone(diagnostics.adventureCatalog.hasVisibleCombatCatalog)} />
+              </dl>
+            </Panel>
+
+            <Panel title="Combat promotion">
+              <dl className="grid gap-3 sm:grid-cols-2">
+                <Field label="Promotion eligible" value={diagnostics.promotion.eligible} tone={statusTone(diagnostics.promotion.eligible)} />
+                <Field label="Promotion blocker" value={diagnostics.promotion.blocker} tone={diagnostics.promotion.blocker ? 'text-red-200' : undefined} />
+                <Field label="Source beat" value={diagnostics.promotion.sourceBeatId} />
+                <Field label="Ready beat" value={diagnostics.promotion.lastCombatReadyBeatId} />
+                <Field label="Ready scene check" value={diagnostics.promotion.lastCombatReadySceneCheckId} />
+                <Field label="Ready at" value={diagnostics.promotion.lastCombatReadyAt} />
+                <Field label="Last promotion tick" value={diagnostics.promotion.lastPromotionTickId} />
+                <Field label="Last promotion at" value={diagnostics.promotion.lastPromotionAt} />
               </dl>
             </Panel>
           </div>

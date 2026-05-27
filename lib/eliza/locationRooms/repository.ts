@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from '@/lib/supabase'
+import { normalizeLocationMetadata } from '@/lib/domain/location/metadata'
 import {
   createOfficialLocationRoomId,
   createOfficialLocationServiceUserId,
@@ -142,12 +143,13 @@ function resolveLocationActiveState(metadata: Record<string, unknown> | null): b
 }
 
 function mapLocationDetails(row: LocationDetailsRow): LocationRoomLocationDetails {
+  const metadata = normalizeLocationMetadata(row.metadata)
   return {
     id: row.id,
     name: row.name,
     chainLocationId: row.chain_location_id === null ? null : String(row.chain_location_id),
-    active: resolveLocationActiveState(row.metadata),
-    metadata: row.metadata ?? {},
+    active: resolveLocationActiveState(metadata),
+    metadata,
     createdAt: row.created_at,
     updatedAt: row.updated_at ?? row.created_at,
   }

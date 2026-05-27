@@ -43,6 +43,9 @@ import {
   mergeNarrativeTtrpgMetadata,
   normalizeNarrativeSceneCheckMetadata,
   normalizeNarrativeTtrpgMetadata,
+  refreshAdventureCatalogMetadataFromLocation,
+  type LocationRoomNarrativeBeat,
+  type LocationRoomNarrativeState,
 } from './narrativeTypes'
 import {
   locationRoomMembershipRepository,
@@ -437,6 +440,24 @@ function isUnconsumedCombatTrigger(metadata: ReturnType<typeof normalizeNarrativ
   return metadata.requestedGameplayAction === 'start_combat' &&
     Boolean(metadata.lastCombatTriggerBeatId) &&
     metadata.consumedCombatTriggerBeatId !== metadata.lastCombatTriggerBeatId
+}
+
+function nullableMetadataId(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function isCombatReadySourceBeat(beat: LocationRoomNarrativeBeat): boolean {
+  if (beat.status !== 'completed') return false
+  const metadata = beat.metadata ?? {}
+  const sceneCheckEscalation = metadata.sceneCheckEscalation && typeof metadata.sceneCheckEscalation === 'object' && !Array.isArray(metadata.sceneCheckEscalation)
+    ? metadata.sceneCheckEscalation as Record<string, unknown>
+    : null
+  const lastSceneCheckEscalation = metadata.lastSceneCheckEscalation && typeof metadata.lastSceneCheckEscalation === 'object' && !Array.isArray(metadata.lastSceneCheckEscalation)
+    ? metadata.lastSceneCheckEscalation as Record<string, unknown>
+    : null
+  return metadata.combatReadiness === 'ready' ||
+    sceneCheckEscalation?.decision === 'combat_ready' ||
+    lastSceneCheckEscalation?.decision === 'combat_ready'
 }
 
 export function isLocationRoomGameplayEnabledForLocation(locationId: string): boolean {
@@ -1097,6 +1118,94 @@ export class LocationRoomService {
     return { enqueued, deduped }
   }
 
+  private async ensureNarrativeStateWithLocationCatalog(room: LocationRoom): Promise<LocationRoomNarrativeState> {
+    const locationDetails = await this.repository.getLocationDetails(room.locationId)
+    const seedMetadata = refreshAdventureCatalogMetadataFromLocation(undefined, locationDetails?.metadata)
+    let narrativeState = await this.narrativeRepository.ensureStateForRoom({
+      room,
+      ...(seedMetadata.changed ? { metadata: seedMetadata.metadata } : {}),
+    })
+    const refreshedMetadata = refreshAdventureCatalogMetadataFromLocation(narrativeState.metadata, locationDetails?.metadata)
+    if (refreshedMetadata.changed) {
+      narrativeState = await this.narrativeRepository.updateState(room, {
+        metadata: refreshedMetadata.metadata,
+      })
+    }
+    return narrativeState
+  }
+
+  private async resolveCombatReadyPromotionSourceBeatId(params: {
+    room: LocationRoom
+    metadata: Record<string, unknown>
+  }): Promise<string | null> {
+    const ttrpg = normalizeNarrativeTtrpgMetadata(params.metadata)
+    const recentBeats = await this.narrativeRepository.listRecentBeatsByRoomId(params.room.id, 10).catch(() => [])
+    const explicitReadyBeatId = nullableMetadataId(params.metadata.lastCombatReadyBeatId)
+    if (explicitReadyBeatId) {
+      const explicitBeat = recentBeats.find((beat) => beat.id === explicitReadyBeatId)
+      if (!explicitBeat || !isCombatReadySourceBeat(explicitBeat)) return null
+      return ttrpg.consumedCombatTriggerBeatId === explicitReadyBeatId ? null : explicitReadyBeatId
+    }
+
+    const lastBeatId = nullableMetadataId(params.metadata.lastBeatId)
+    if (lastBeatId) {
+      const lastBeat = recentBeats.find((beat) => beat.id === lastBeatId)
+      if (lastBeat && isCombatReadySourceBeat(lastBeat)) {
+        return ttrpg.consumedCombatTriggerBeatId === lastBeatId ? null : lastBeatId
+      }
+    }
+
+    const sourceBeat = recentBeats.find((beat) =>
+      beat.id !== ttrpg.consumedCombatTriggerBeatId && isCombatReadySourceBeat(beat)
+    )
+    return sourceBeat?.id ?? null
+  }
+
+  private async promoteCombatReadyNarrativeStateForAutoTick(params: {
+    room: LocationRoom
+    tick: LocationRoomTick
+    narrativeState: LocationRoomNarrativeState
+    now: Date
+  }): Promise<LocationRoomNarrativeState> {
+    const ttrpg = normalizeNarrativeTtrpgMetadata(params.narrativeState.metadata)
+
+    if (ttrpg.requestedGameplayAction === 'start_combat') return params.narrativeState
+    if (isUnconsumedCombatTrigger(ttrpg)) return params.narrativeState
+    if (ttrpg.ttrpgPhase !== 'threat') return params.narrativeState
+    if (ttrpg.combatReadiness !== 'ready') return params.narrativeState
+    if ((ttrpg.threatLevel ?? 0) < 3) return params.narrativeState
+    if (!ttrpg.lastEncounterSeed) return params.narrativeState
+
+    const sourceBeatId = await this.resolveCombatReadyPromotionSourceBeatId({
+      room: params.room,
+      metadata: params.narrativeState.metadata,
+    })
+    if (!sourceBeatId || ttrpg.consumedCombatTriggerBeatId === sourceBeatId) {
+      return params.narrativeState
+    }
+
+    return this.narrativeRepository.updateState(params.room, {
+      metadata: mergeNarrativeTtrpgMetadata(params.narrativeState.metadata, {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: ttrpg.threatLevel,
+        requestedGameplayAction: 'start_combat',
+        lastEncounterSeed: ttrpg.lastEncounterSeed,
+        lastCombatTriggerBeatId: sourceBeatId,
+      }, {
+        source: 'location-room-combat-ready-promotion',
+        lastCombatReadyPromotion: {
+          sourceBeatId,
+          tickId: params.tick.id,
+          promotedAt: params.now.toISOString(),
+        },
+        lastCombatReadyPromotionBeatId: sourceBeatId,
+        lastCombatReadyPromotionTickId: params.tick.id,
+        lastCombatReadyPromotionAt: params.now.toISOString(),
+      }),
+    })
+  }
+
   private async ensureAdminCombatTriggerForTick(params: {
     room: LocationRoom
     tick: LocationRoomTick
@@ -1489,12 +1598,18 @@ export class LocationRoomService {
         if (isAdminCombatIntent) {
           encounterTrigger = await this.ensureAdminCombatTriggerForTick({ room, tick, now })
         } else if (turnIntent === 'auto' || turnIntent === 'story') {
-          const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room })
+          let narrativeState = await this.ensureNarrativeStateWithLocationCatalog(room)
           const routeSceneCheck = normalizeNarrativeSceneCheckMetadata(narrativeState.metadata)
           preRouteSceneCheckRequestPresent = Boolean(routeSceneCheck.request)
           preRouteSceneCheckProposalPresent = Boolean(routeSceneCheck.proposal)
           preRouteSceneCheckProposalErrorPresent = Boolean(routeSceneCheck.proposalError)
           if (turnIntent === 'auto') {
+            narrativeState = await this.promoteCombatReadyNarrativeStateForAutoTick({
+              room,
+              tick,
+              narrativeState,
+              now,
+            })
             encounterTrigger = await this.buildEncounterTriggerFromNarrativeState(room, narrativeState.metadata)
           }
         } else if (turnIntent === 'combat') {

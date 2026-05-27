@@ -26,6 +26,7 @@ import {
   mergeNarrativeSceneCheckMetadata,
   mergeNarrativeTtrpgMetadata,
   normalizeAdventureMemory,
+  refreshAdventureCatalogMetadataFromLocation,
   normalizeAdventurePatch,
   normalizeDeclaredAction,
   normalizeNarrativeSceneCheckEscalationMetadata,
@@ -692,7 +693,18 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
 
   async processTurn(input: ProcessNarrativeLocationRoomTurnInput): Promise<ProcessNarrativeLocationRoomTurnResult> {
     const resolvedGameMasterAgentId = await this.gameMasterAgentResolver.resolveRuntimeGameMasterAgentId()
-    const narrativeState = await this.narrativeRepository.ensureStateForRoom({ room: input.room })
+    const locationDetails = await this.repository.getLocationDetails(input.room.locationId)
+    const seedMetadata = refreshAdventureCatalogMetadataFromLocation(undefined, locationDetails?.metadata)
+    let narrativeState = await this.narrativeRepository.ensureStateForRoom({
+      room: input.room,
+      ...(seedMetadata.changed ? { metadata: seedMetadata.metadata } : {}),
+    })
+    const refreshedMetadata = refreshAdventureCatalogMetadataFromLocation(narrativeState.metadata, locationDetails?.metadata)
+    if (refreshedMetadata.changed) {
+      narrativeState = await this.narrativeRepository.updateState(input.room, {
+        metadata: refreshedMetadata.metadata,
+      })
+    }
     const publicAuthorMessageStats = await this.repository.getPublicAuthorMessageStats(input.room.id)
     const progressionContext = buildGameMasterBeatProgressionContext({
       room: input.room,
@@ -974,6 +986,12 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
             lastBeatId: beat.id,
             lastTickId: input.tick.id,
             lastSelectedTokenId: input.speaker.tokenId,
+            ...(gameMasterOutput.combatReadiness === 'ready' && gameMasterOutput.requestedGameplayAction !== 'start_combat'
+              ? {
+                lastCombatReadyBeatId: beat.id,
+                lastCombatReadyAt: new Date().toISOString(),
+              }
+              : {}),
           }),
         })
         await this.narrativeRepository.markBeatCompleted(beat.id)
@@ -1270,6 +1288,13 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           lastSceneCheckId: sceneCheckId,
           lastSceneCheckOutcome: resolution.roll.tier,
           ...sceneCheckEscalationExtra,
+          ...(sceneCheckEscalation.decision === 'combat_ready'
+            ? {
+              lastCombatReadyBeatId: beat.id,
+              lastCombatReadySceneCheckId: sceneCheckId,
+              lastCombatReadyAt: new Date().toISOString(),
+            }
+            : {}),
         }),
       })
       await this.narrativeRepository.markBeatCompleted(beat.id)

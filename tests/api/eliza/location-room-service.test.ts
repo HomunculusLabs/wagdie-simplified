@@ -1959,6 +1959,322 @@ describe('location room domain service', () => {
     expect(repository.markTickCompleted).toHaveBeenCalledWith('tick-1')
   })
 
+  it('promotes sustained combat-ready metadata on an auto tick and routes through the existing trigger handoff', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const repository = makeRepository({
+      attachTickToGameplayRun: jest.fn(async () => tick({ gameplayRunId: 'run-1' })),
+      countCompletedGameplayTurnsForRun: jest.fn(async () => 1),
+    })
+    const narrativeRepository = makeNarrativeRepository(narrativeState({
+      metadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: null,
+        lastCombatReadyBeatId: 'beat-ready',
+        consumedCombatTriggerBeatId: null,
+        lastEncounterSeed: { title: 'Crow Ambush', summary: 'Crows descend.', stakes: 'Survive the roost.' },
+      },
+    }))
+    narrativeRepository.listRecentBeatsByRoomId.mockResolvedValueOnce([
+      { id: 'beat-ready', status: 'completed', metadata: { combatReadiness: 'ready' } } as any,
+    ])
+    const gameplayRepository = makeGameplayRepository({
+      createOrReuseActiveRun: jest.fn(async () => ({ run: gameplayRun({ id: 'run-1' }), reused: false })),
+      findActiveEncounterByRoomId: jest.fn(async () => null),
+      findRunById: jest.fn(async () => gameplayRun({ id: 'run-1' })),
+      findTurnByTickId: jest.fn(async () => null),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        status: 'completed',
+        selectedTokenId: 2,
+        messageId: 'msg-gameplay-action',
+        messageIds: ['msg-gameplay-action'],
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository,
+      narrativeRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, completed: 1, gameplayRuns: { updated: 1 } })
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        source: 'location-room-combat-ready-promotion',
+        requestedGameplayAction: 'start_combat',
+        lastCombatTriggerBeatId: 'beat-ready',
+        lastEncounterSeed: expect.objectContaining({ title: 'Crow Ambush' }),
+        lastCombatReadyPromotion: expect.objectContaining({
+          sourceBeatId: 'beat-ready',
+          tickId: 'tick-1',
+        }),
+      }),
+    }))
+    expect(gameplayCoordinator.processTurn).toHaveBeenCalledWith(expect.objectContaining({
+      encounterTrigger: expect.objectContaining({
+        source: 'narrative',
+        triggerId: 'beat-ready',
+        narrativeBeatId: 'beat-ready',
+        encounterSeed: expect.objectContaining({ title: 'Crow Ambush' }),
+      }),
+    }))
+    expect(narrativeCoordinator.processTurn).not.toHaveBeenCalled()
+  })
+
+  it('does not promote combat-ready metadata on story intent', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const storyTick = tick({ turnIntent: 'story' })
+    const repository = makeRepository({ claimDueTicks: jest.fn(async () => [storyTick]) })
+    const narrativeRepository = makeNarrativeRepository(narrativeState({
+      metadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: null,
+        lastCombatReadyBeatId: 'beat-ready',
+        consumedCombatTriggerBeatId: null,
+        lastEncounterSeed: { title: 'Waiting Crows', summary: 'The rafters shift.', stakes: 'Hold the room.' },
+      },
+    }))
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(async () => ({ selectedTokenId: 1, messageId: 'msg-character' })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayRepository = makeGameplayRepository({ findActiveEncounterByRoomId: jest.fn(async () => null) })
+    const service = new LocationRoomService(
+      repository,
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository,
+      narrativeRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, completed: 1 })
+    expect(narrativeRepository.updateState).not.toHaveBeenCalled()
+    expect(gameplayCoordinator.processTurn).not.toHaveBeenCalled()
+    expect(narrativeCoordinator.processTurn).toHaveBeenCalled()
+  })
+
+  it('does not promote an explicit combat-ready source id when the beat is not safe ready material', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const narrativeRepository = makeNarrativeRepository(narrativeState({
+      metadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: null,
+        lastCombatReadyBeatId: 'beat-ready',
+        consumedCombatTriggerBeatId: null,
+        lastEncounterSeed: { title: 'Unsafe Explicit Crows', summary: 'The rafters shift.', stakes: 'Hold the room.' },
+      },
+    }))
+    narrativeRepository.listRecentBeatsByRoomId.mockResolvedValueOnce([
+      { id: 'beat-ready', status: 'completed', metadata: { combatReadiness: 'foreshadow' } } as any,
+    ])
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(async () => ({ selectedTokenId: 1, messageId: 'msg-character' })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayRepository = makeGameplayRepository({ findActiveEncounterByRoomId: jest.fn(async () => null) })
+    const service = new LocationRoomService(
+      makeRepository(),
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository,
+      narrativeRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, completed: 1 })
+    expect(narrativeRepository.updateState).not.toHaveBeenCalled()
+    expect(gameplayCoordinator.processTurn).not.toHaveBeenCalled()
+    expect(narrativeCoordinator.processTurn).toHaveBeenCalled()
+  })
+
+  it('does not promote combat-ready metadata without a safe source beat', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const narrativeRepository = makeNarrativeRepository(narrativeState({
+      metadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: null,
+        consumedCombatTriggerBeatId: null,
+        lastEncounterSeed: { title: 'Sourceless Crows', summary: 'The rafters shift.', stakes: 'Hold the room.' },
+      },
+    }))
+    narrativeRepository.listRecentBeatsByRoomId.mockResolvedValueOnce([])
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(async () => ({ selectedTokenId: 1, messageId: 'msg-character' })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayRepository = makeGameplayRepository({ findActiveEncounterByRoomId: jest.fn(async () => null) })
+    const service = new LocationRoomService(
+      makeRepository(),
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository,
+      narrativeRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, completed: 1 })
+    expect(narrativeRepository.updateState).not.toHaveBeenCalled()
+    expect(gameplayCoordinator.processTurn).not.toHaveBeenCalled()
+    expect(narrativeCoordinator.processTurn).toHaveBeenCalled()
+  })
+
+  it('does not promote a bare lastBeatId unless the beat is a safe combat-ready source', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const narrativeRepository = makeNarrativeRepository(narrativeState({
+      metadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: null,
+        lastBeatId: 'beat-story',
+        consumedCombatTriggerBeatId: null,
+        lastEncounterSeed: { title: 'Unsafe Last Beat', summary: 'The rafters shift.', stakes: 'Hold the room.' },
+      },
+    }))
+    narrativeRepository.listRecentBeatsByRoomId.mockResolvedValueOnce([
+      { id: 'beat-story', status: 'completed', metadata: { combatReadiness: 'foreshadow' } } as any,
+    ])
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(async () => ({ selectedTokenId: 1, messageId: 'msg-character' })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayRepository = makeGameplayRepository({ findActiveEncounterByRoomId: jest.fn(async () => null) })
+    const service = new LocationRoomService(
+      makeRepository(),
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository,
+      narrativeRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, completed: 1 })
+    expect(narrativeRepository.updateState).not.toHaveBeenCalled()
+    expect(gameplayCoordinator.processTurn).not.toHaveBeenCalled()
+    expect(narrativeCoordinator.processTurn).toHaveBeenCalled()
+  })
+
+  it('does not promote a combat-ready source beat that has already been consumed', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const narrativeRepository = makeNarrativeRepository(narrativeState({
+      metadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: null,
+        lastCombatReadyBeatId: 'beat-ready',
+        consumedCombatTriggerBeatId: 'beat-ready',
+        lastEncounterSeed: { title: 'Consumed Crows', summary: 'The rafters already broke.', stakes: 'Hold the room.' },
+      },
+    }))
+    narrativeRepository.listRecentBeatsByRoomId.mockResolvedValueOnce([
+      { id: 'beat-ready', status: 'completed', metadata: { combatReadiness: 'ready' } } as any,
+    ])
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(async () => ({ selectedTokenId: 1, messageId: 'msg-character' })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const gameplayRepository = makeGameplayRepository({ findActiveEncounterByRoomId: jest.fn(async () => null) })
+    const service = new LocationRoomService(
+      makeRepository(),
+      makeMembership(),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository,
+      narrativeRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, completed: 1 })
+    expect(narrativeRepository.updateState).not.toHaveBeenCalled()
+    expect(gameplayCoordinator.processTurn).not.toHaveBeenCalled()
+    expect(narrativeCoordinator.processTurn).toHaveBeenCalled()
+  })
+
   it('routes an unconsumed narrative combat trigger into gameplay with seed and speaker instruction', async () => {
     mutableElizaConfig.mode = 'official'
     mutableNarrativeConfig.enabled = true

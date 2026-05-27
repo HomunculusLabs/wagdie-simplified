@@ -382,6 +382,63 @@ describe('location room narrative coordinator', () => {
     expect(narrativeRepository.markBeatCompleted).toHaveBeenCalledWith('beat-1')
   })
 
+  it('stamps combat-ready source metadata for a normal ready beat without direct combat', async () => {
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    const narrativeRepository = makeNarrativeRepository()
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: 'The roost grows claws in the rafters.',
+        speakerInstruction: 'React to the ready threat without forcing combat yet.',
+        stateAfter: {
+          stateSummary: 'The roost is ready to break into violence.',
+          currentObjective: 'Hold the taproom line.',
+          openThreads: ['What drops from the rafters?'],
+        },
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 3,
+        requestedGameplayAction: null,
+        encounterSeed: { title: 'Rafter Crows', summary: 'Crows gather above.', stakes: 'Hold the line.' },
+        sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'Hold the taproom line.' },
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({ officialAgentId: 'agent-1', content: 'I lift my blade toward the rafters.' })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })
+
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 3,
+        requestedGameplayAction: null,
+        lastCombatTriggerBeatId: null,
+        lastCombatReadyBeatId: 'beat-1',
+        lastCombatReadyAt: expect.any(String),
+        lastEncounterSeed: expect.objectContaining({ title: 'Rafter Crows' }),
+      }),
+    }))
+  })
+
   it('persists private adventure memory while omitting routine public adventure metadata for a normal narrative beat', async () => {
     const repository = makeRepository()
     usePriorGameMasterMessage(repository)
@@ -1418,6 +1475,9 @@ describe('location room narrative coordinator', () => {
         threatLevel: 4,
         requestedGameplayAction: null,
         lastCombatTriggerBeatId: null,
+        lastCombatReadyBeatId: 'beat-1',
+        lastCombatReadySceneCheckId: 'scene_check:beat-1:ash-marks',
+        lastCombatReadyAt: expect.any(String),
         lastEncounterSeed: expect.objectContaining({ title: 'Ash Watcher' }),
         lastSceneCheckEscalation: expect.objectContaining({
           decision: 'combat_ready',
@@ -1542,6 +1602,9 @@ describe('location room narrative coordinator', () => {
         requestedGameplayAction: 'start_combat',
         lastCombatTriggerBeatId: 'beat-explicit',
         consumedCombatTriggerBeatId: null,
+        lastCombatReadyBeatId: 'beat-1',
+        lastCombatReadySceneCheckId: 'scene_check:beat-1:ash-marks',
+        lastCombatReadyAt: expect.any(String),
         lastEncounterSeed: expect.objectContaining({ title: 'Waiting Maw' }),
         lastSceneCheckEscalation: expect.objectContaining({ decision: 'combat_ready' }),
       }),
@@ -2322,6 +2385,9 @@ describe('location room narrative coordinator', () => {
         threatLevel: 4,
         requestedGameplayAction: null,
         lastCombatTriggerBeatId: null,
+        lastCombatReadyBeatId: 'beat-1',
+        lastCombatReadySceneCheckId: 'scene_check:beat-1:ash-marks',
+        lastCombatReadyAt: expect.any(String),
         lastEncounterSeed: expect.objectContaining({ title: 'Stored Watcher' }),
         sceneCheckEscalations: expect.objectContaining({
           'scene_check:beat-1:ash-marks': expect.objectContaining({

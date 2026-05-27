@@ -561,6 +561,238 @@ describe('LocationRoomAdminDiagnosticsService', () => {
     expect(result.recommendedNextAction).toBe('inspect_gm_repair_failure')
   })
 
+  it('reports catalog counts, seed metadata, and auto-promotion eligibility', async () => {
+    mutableNarrative.enabled = true
+    mutableGameplay.enabled = true
+    mutableGameplay.locationAllowlist = ['11']
+    const roomRepository = makeRoomRepository({
+      getLocationDetails: jest.fn(async (locationId: string) => location({
+        id: locationId,
+        metadata: {
+          adventureCatalog: {
+            sections: {
+              '80_encounters': [
+                { id: 'roost-fall', title: 'Roost Fall', summary: 'Crows drop from the rafters.', tags: ['crows'] },
+                { id: 'roost-swarm', title: 'Roost Swarm', summary: 'A second visible swarm spills from the rafters.' },
+                { id: 'hidden-roost', title: 'Hidden Roost', summary: 'A hidden roost waits.', revealConditions: ['secret'] },
+              ],
+              '30_monsters': [
+                { id: 'ash-crow', title: 'Ash Crow', summary: 'An ash-black crow watches openly.' },
+              ],
+            },
+          },
+        },
+      })),
+    })
+    const narrativeRepository = makeNarrativeRepository({
+      findStateByRoomId: jest.fn(async () => narrativeState({
+        metadata: {
+          adventureCatalog: {
+            sections: {
+              '80_encounters': [
+                { id: 'roost-fall', section: '80_encounters', title: 'Roost Fall', summary: 'Crows drop from the rafters.', tags: ['crows'], revealConditions: [], relatedEntryIds: [] },
+              ],
+              '30_monsters': [
+                { id: 'ash-crow', section: '30_monsters', title: 'Ash Crow', summary: 'An ash-black crow watches openly.', tags: [], revealConditions: [], relatedEntryIds: [] },
+              ],
+            },
+            defaults: { arcSummary: null, currentStakes: null, openingDecision: null, discoveries: [], clocks: [] },
+          },
+          ttrpgPhase: 'threat',
+          combatReadiness: 'ready',
+          threatLevel: 4,
+          requestedGameplayAction: null,
+          lastEncounterSeed: {
+            title: 'Roost Fall',
+            source: 'location_catalog',
+            catalogEntryIds: ['roost-fall', 'ash-crow'],
+            encounterHints: ['Crows drop from the rafters.'],
+            monsterHints: ['An ash-black crow watches openly.'],
+          },
+          lastCombatReadyBeatId: 'beat-ready',
+          lastCombatReadyAt: '2026-05-23T11:30:00.000Z',
+          lastCombatTriggerBeatId: null,
+          consumedCombatTriggerBeatId: null,
+        },
+      })),
+      listRecentBeatsByRoomId: jest.fn(async () => [narrativeBeat({ id: 'beat-ready', metadata: { combatReadiness: 'ready' } })]),
+    })
+
+    const result = await makeService({ roomRepository, narrativeRepository }).inspectLocation('11')
+
+    expect(result.adventureCatalog).toMatchObject({
+      source: 'narrative_state',
+      visibleEncounterCount: 1,
+      visibleMonsterCount: 1,
+      hasVisibleCombatCatalog: true,
+      narrativeStateCatalogPresent: true,
+      locationCatalogPresent: true,
+    })
+    expect(result.triggerReadiness).toMatchObject({
+      encounterSeedPresent: true,
+      encounterSeedSource: 'location_catalog',
+      encounterSeedCatalogBacked: true,
+      encounterSeedCatalogEntryIds: ['roost-fall', 'ash-crow'],
+      encounterSeedEncounterHintCount: 1,
+      encounterSeedMonsterHintCount: 1,
+    })
+    expect(result.promotion).toMatchObject({
+      eligible: true,
+      blocker: null,
+      sourceBeatId: 'beat-ready',
+      lastCombatReadyBeatId: 'beat-ready',
+      lastCombatReadyAt: '2026-05-23T11:30:00.000Z',
+    })
+    expect(result.recommendedNextAction).toBe('combat_ready_pending_auto_tick')
+  })
+
+  it('reports nested narrative locationMetadata catalog before falling back to the location row', async () => {
+    mutableNarrative.enabled = true
+    mutableGameplay.enabled = true
+    mutableGameplay.locationAllowlist = ['11']
+    const roomRepository = makeRoomRepository({
+      getLocationDetails: jest.fn(async (locationId: string) => location({
+        id: locationId,
+        metadata: {
+          adventureCatalog: {
+            sections: {
+              '80_encounters': [{ id: 'row-ambush', title: 'Row Ambush', summary: 'Row metadata fallback.' }],
+            },
+          },
+        },
+      })),
+    })
+    const narrativeRepository = makeNarrativeRepository({
+      findStateByRoomId: jest.fn(async () => narrativeState({
+        metadata: {
+          locationMetadata: {
+            adventureCatalog: {
+              sections: {
+                '30_monsters': [{ id: 'nested-crow', title: 'Nested Crow', summary: 'Nested metadata crow.' }],
+              },
+            },
+          },
+          ttrpgPhase: 'exploration',
+          combatReadiness: 'foreshadow',
+          threatLevel: 2,
+          requestedGameplayAction: null,
+        },
+      })),
+    })
+
+    const result = await makeService({ roomRepository, narrativeRepository }).inspectLocation('11')
+
+    expect(result.adventureCatalog).toMatchObject({
+      source: 'narrative_state',
+      visibleEncounterCount: 0,
+      visibleMonsterCount: 1,
+      hasVisibleCombatCatalog: true,
+      narrativeStateCatalogPresent: true,
+      locationCatalogPresent: true,
+    })
+  })
+
+  it('distinguishes missing combat catalog data from ready promotion waits', async () => {
+    mutableNarrative.enabled = true
+    mutableGameplay.enabled = true
+    mutableGameplay.locationAllowlist = ['11']
+    const narrativeRepository = makeNarrativeRepository({
+      findStateByRoomId: jest.fn(async () => narrativeState({
+        metadata: {
+          ttrpgPhase: 'threat',
+          combatReadiness: 'foreshadow',
+          threatLevel: 2,
+          requestedGameplayAction: null,
+          lastEncounterSeed: null,
+          lastCombatTriggerBeatId: null,
+          consumedCombatTriggerBeatId: null,
+        },
+      })),
+    })
+
+    const result = await makeService({ narrativeRepository }).inspectLocation('11')
+
+    expect(result.adventureCatalog).toMatchObject({
+      source: 'missing',
+      visibleEncounterCount: 0,
+      visibleMonsterCount: 0,
+      hasVisibleCombatCatalog: false,
+    })
+    expect(result.promotion).toMatchObject({ eligible: false, blocker: 'not_combat_ready' })
+    expect(result.recommendedNextAction).toBe('missing_location_adventure_catalog')
+  })
+
+  it('reports missing source when explicit combat-ready beat id is not safe ready material', async () => {
+    mutableNarrative.enabled = true
+    mutableGameplay.enabled = true
+    mutableGameplay.locationAllowlist = ['11']
+    const roomRepository = makeRoomRepository({
+      getLocationDetails: jest.fn(async (locationId: string) => location({
+        id: locationId,
+        metadata: {
+          adventureCatalog: {
+            sections: {
+              '80_encounters': [{ id: 'safe-ambush', title: 'Safe Ambush', summary: 'Visible ambush.' }],
+            },
+          },
+        },
+      })),
+    })
+    const narrativeRepository = makeNarrativeRepository({
+      findStateByRoomId: jest.fn(async () => narrativeState({
+        metadata: {
+          ttrpgPhase: 'threat',
+          combatReadiness: 'ready',
+          threatLevel: 4,
+          requestedGameplayAction: null,
+          lastCombatReadyBeatId: 'beat-ready',
+          consumedCombatTriggerBeatId: null,
+          lastEncounterSeed: { title: 'Unsafe Explicit Source', summary: 'Crows move openly.', stakes: 'Survive the room.' },
+        },
+      })),
+      listRecentBeatsByRoomId: jest.fn(async () => [narrativeBeat({ id: 'beat-ready', metadata: { combatReadiness: 'foreshadow' } })]),
+    })
+
+    const result = await makeService({ roomRepository, narrativeRepository }).inspectLocation('11')
+
+    expect(result.promotion).toMatchObject({
+      eligible: false,
+      blocker: 'missing_source_beat',
+      sourceBeatId: null,
+      lastCombatReadyBeatId: 'beat-ready',
+    })
+    expect(result.recommendedNextAction).toBe('wait_for_cadence')
+  })
+
+  it('does not let missing catalog advice mask an already promotable ready state', async () => {
+    mutableNarrative.enabled = true
+    mutableGameplay.enabled = true
+    mutableGameplay.locationAllowlist = ['11']
+    const narrativeRepository = makeNarrativeRepository({
+      findStateByRoomId: jest.fn(async () => narrativeState({
+        metadata: {
+          ttrpgPhase: 'threat',
+          combatReadiness: 'ready',
+          threatLevel: 4,
+          requestedGameplayAction: null,
+          lastCombatReadyBeatId: 'beat-ready',
+          consumedCombatTriggerBeatId: null,
+          lastEncounterSeed: { title: 'Fallback Crow Pressure', summary: 'Crows move openly.', stakes: 'Survive the room.' },
+        },
+      })),
+      listRecentBeatsByRoomId: jest.fn(async () => [narrativeBeat({ id: 'beat-ready', metadata: { combatReadiness: 'ready' } })]),
+    })
+
+    const result = await makeService({ narrativeRepository }).inspectLocation('11')
+
+    expect(result.adventureCatalog).toMatchObject({
+      source: 'missing',
+      hasVisibleCombatCatalog: false,
+    })
+    expect(result.promotion).toMatchObject({ eligible: true, blocker: null, sourceBeatId: 'beat-ready' })
+    expect(result.recommendedNextAction).toBe('combat_ready_pending_auto_tick')
+  })
+
   it('recommends missing trigger/readiness when narrative progression lacks required structure', async () => {
     mutableNarrative.enabled = true
     const narrativeRepository = makeNarrativeRepository({
