@@ -414,6 +414,43 @@ export function buildGameMasterBeatProgressionContext(input: {
   }
 }
 
+const GENERIC_NARRATIVE_PHRASES = [
+  'room shifts',
+  'scene shifts',
+  'pressure gathers',
+  'danger gathers',
+  'repeated hesitation',
+  'something moves just out of sight',
+  'standing still',
+  'the room answers',
+  'the room waits',
+  'the room notices',
+] as const
+
+const CONCRETE_NARRATIVE_ANCHOR_PATTERN = /\b(?:altar|arch|ash|bar|beam|bell|bell rope|bench|blade|boat|book|bridge|candle|cart|cask|casks|cave|cellar|chain|chamber|chest|corridor|courtyard|crate|crow|crows|dock|door|doorway|feather|feathers|floor|floorboard|floorboards|forest|fountain|gate|glyph|grate|hall|idol|key|landing|lantern|lanterns|ledge|lever|lock|mark|marks|mask|mirror|passage|path|pit|platform|pool|rafter|rafters|river|road|rookery|roof|rope|route|salt|scratch|scratches|seam|shelf|shrine|shutter|shutters|stair|stairs|statue|stream|symbol|table|taproom|threshold|throne|torch|tower|track|tracks|tree|tunnel|wagon|wall|well|window)\b/i
+
+function weakGenericNarrativePhrase(value: string): string | null {
+  const normalized = value.toLowerCase().replace(/\s+/g, ' ')
+  return GENERIC_NARRATIVE_PHRASES.find((phrase) => normalized.includes(phrase)) ?? null
+}
+
+function validateConcreteNarrativeText(
+  value: string,
+  options: { label: string; requireConcreteAnchor?: boolean }
+): void {
+  const normalized = normalizeOfficialResponseText(value).replace(/\s+/g, ' ').trim()
+  if (!normalized) return
+
+  const hasAnchor = CONCRETE_NARRATIVE_ANCHOR_PATTERN.test(normalized)
+  const weakPhrase = weakGenericNarrativePhrase(normalized)
+  if (weakPhrase && !hasAnchor) {
+    throw new Error(`${options.label} uses generic pressure language without a concrete visible anchor: ${weakPhrase}`)
+  }
+  if (options.requireConcreteAnchor && !hasAnchor) {
+    throw new Error(`${options.label} must name a concrete visible object, route, or threat anchor`)
+  }
+}
+
 export function validateGameMasterBeatProgressionContract(output: {
   publicNarration?: string | null
   speakerInstruction?: string | null
@@ -446,6 +483,13 @@ export function validateGameMasterBeatProgressionContract(output: {
     isFlatOpeningState(output)
   ) {
     throw new Error('Game-master beat response must visibly escalate beyond flat opening state')
+  }
+
+  if (output.publicNarration?.trim()) {
+    validateConcreteNarrativeText(output.publicNarration, {
+      label: 'Game-master beat response publicNarration',
+      requireConcreteAnchor: Boolean(output.progressionContext?.requirePublicNarration),
+    })
   }
 
   if (output.ttrpgPhase !== 'aftermath') {
@@ -551,19 +595,19 @@ function buildFallbackGameMasterBeat(
   const publicNarration = progressionContext?.requirePublicNarration
     ? trimToLimit(
       progressionContext.requireOpeningPublicNarration
-        ? 'A cold hush settles over the Crow\'s Den as the room seems to notice the gathered dead all at once. Salt-stained boards creak under no visible foot, and a guttering lantern throws three clear choices into view: the dark stair, the watched doorway, and the table where fresh scratches mark a warning. The air offers no answer, only pressure, as if the place is waiting for someone to choose what fear is worth following. Whatever happens next should come from the characters, but the room has made it clear that standing still will not keep them safe.'
-        : 'The room shifts because repeated hesitation has changed the scene: something in the Crow\'s Den moves just out of sight, turning the old pressure into a visible omen the characters must answer.',
+        ? 'The Crow\'s Den answers with objects, not silence: the bell rope twitches above the bar, black feathers slip from the rafters, and salt scratches mark the cellar stair. A shutter knocks open just enough to show the rookery path while the long table creaks toward the doorway. The characters can quiet the bell, test the stair, or watch the rafters, but each choice gives the tavern a different way to answer.'
+        : 'The bell rope jerks once above the bar, shaking black feathers from the rafters while the cellar stair scrapes open another inch. The visible choice changes: control the bell, test the stair, or watch the rookery path before it closes.',
       limits.publicNarrationMaxLength
     )
     : null
 
   const stateAfter = {
     stateSummary: trimToLimit(
-      input.narrativeState.stateSummary || 'The Crow\'s Den has opened into an unresolved scene that waits on the characters\' response.',
+      input.narrativeState.stateSummary || 'The Crow\'s Den has exposed a bell rope, rafter signs, and cellar stair that wait on the characters\' response.',
       limits.stateSummaryMaxLength
-    ) ?? 'The Crow\'s Den waits on the characters\' response.',
+    ) ?? 'The Crow\'s Den waits on a choice around the bell, rafters, or cellar stair.',
     currentObjective: trimToLimit(
-      input.narrativeState.currentObjective || `Let ${input.speaker.name} choose how to engage with the room's immediate danger.`,
+      input.narrativeState.currentObjective || `Let ${input.speaker.name} choose how to engage the bell rope, rafters, or cellar stair.`,
       limits.stateSummaryMaxLength
     ),
     openThreads: (existingThreads.length > 0 ? existingThreads : [
@@ -576,17 +620,17 @@ function buildFallbackGameMasterBeat(
   const combatReadiness: LocationRoomCombatReadiness = progressionContext?.requireEscalationBeyondOpening ? 'foreshadow' : 'none'
   const threatLevel = progressionContext?.requireEscalationBeyondOpening ? 1 : 0
   const adventurePatch = normalizeAdventurePatch({
-    currentStakes: 'The room will answer delay with a sharper omen.',
+    currentStakes: 'The bell rope, rafters, and cellar stair each offer a different risk if ignored.',
     lastOutcome: {
       kind: 'beat',
       sourceId: 'fallback-game-master-beat',
-      summary: 'The room sharpened its pressure while leaving the next response in the characters\' hands.',
+      summary: 'A visible Crow\'s Den feature changed and left the next response in the characters\' hands.',
     },
   })
 
   validateGameMasterBeatProgressionContract({
     publicNarration,
-    speakerInstruction: `Respond in ${input.speaker.name}'s own voice to the room's sharpened pressure.`,
+    speakerInstruction: `Respond in ${input.speaker.name}'s own voice to the changed bell, rafters, or cellar stair.`,
     stateAfter,
     ttrpgPhase,
     combatReadiness,
@@ -859,7 +903,7 @@ function buildProgressionContextLines(context?: GameMasterBeatProgressionContext
     lines.push('Public narration is REQUIRED for this beat.')
     lines.push(`Reason: ${reason}`)
     if (context.publicNarrationRequirementReason === 'recurring_public_gm_beat_cadence') {
-      lines.push('Cadence beat guidance: re-frame visible space, pressure, routes, and options without starting combat unless an explicit combat trigger is already justified.')
+      lines.push('Cadence beat guidance: name one changed visible object or route, then give one actionable choice; do not rely on abstract pressure or room-shift language unless anchored to a concrete feature.')
     }
   } else {
     lines.push('Public narration is optional for this beat because a public Game Master message already exists and the scene is not stuck in flat opening state.')
@@ -908,6 +952,7 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     '- speakerInstruction/stateSummary required; use eligible token ids.',
     `- selectedSpeakerTokenId must be ${input.speaker.tokenId}.`,
     '- Keep public narration public-safe.',
+    '- PublicNarration: concrete object/route/threat; no generic pressure-only copy.',
     ...(input.progressionContext?.requireOpeningPublicNarration
       ? [
         '- Opening publicNarration must be a rich table-setting GM beat: 4-6 sentences and roughly 300-650 characters.',
@@ -1115,7 +1160,8 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '- Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality, wallets, or private chain data.',
     '- Narrate a consequence that fits the outcome tier and preserves future player agency; keep it natural prose, not an adventure-state panel.',
     '- Vary the first sentence/opening from recent GM outcome openings while preserving roll facts; do not reuse an exact opening.',
-    '- For partial_success, failure, and critical_failure, publicNarration must be substantive (roughly 180+ characters), show a visible consequence such as cost, complication, pressure, danger, blocked route, lost opportunity, harder choice, hostile response, or obligation, and leave a changed situation or next choice rather than finality.',
+    '- For partial_success, failure, and critical_failure, publicNarration must be substantive (roughly 180+ characters), show a visible consequence such as cost, complication, blocked route, lost opportunity, harder choice, hostile response, obligation, or a concrete danger, and leave a changed situation or next choice rather than finality.',
+    '- publicNarration: concrete object/route/threat; no pressure-only opening.',
     '- Treat adventurePatch as private durable memory for the resolved roll. activeDecision remains rare and only for a genuine new fork.',
     '- escalation is raw intent; backend will normalize it. Use decision none, danger, or combat_ready case-by-case.',
     '- Scene-check outcomes must never request combat directly: do not output requestedGameplayAction or lastCombatTriggerBeatId.',
@@ -1187,11 +1233,22 @@ function validateSceneCheckOutcomePublicNarration(
     throw new Error('Game-master scene-check outcome response publicNarration contains unsafe mechanics, reward, fatality, finality, wallet, or private chain language')
   }
 
-  if (!isFailureTier(tier)) return
+  if (!isFailureTier(tier)) {
+    validateConcreteNarrativeText(normalized, {
+      label: 'Game-master scene-check outcome response publicNarration',
+      requireConcreteAnchor: true,
+    })
+    return
+  }
 
   if (normalized.length < FAILURE_TIER_PUBLIC_NARRATION_MIN_CHARS) {
     throw new Error(`Game-master scene-check outcome response publicNarration is too short for ${tier} consequence narration`)
   }
+
+  validateConcreteNarrativeText(normalized, {
+    label: 'Game-master scene-check outcome response publicNarration',
+    requireConcreteAnchor: true,
+  })
   if (!FAILURE_TIER_CONSEQUENCE_PATTERN.test(normalized)) {
     throw new Error(`Game-master scene-check outcome response publicNarration missing visible consequence language for ${tier}`)
   }
@@ -1286,24 +1343,26 @@ function buildFallbackSceneCheckPublicNarration(input: GenerateGameMasterSceneCh
   const outcome = roll.tier.replace(/_/g, ' ')
   const action = truncatePromptValue(input.characterAction, 180)
 
+  const focus = fallbackSceneCheckFocus(input)
+
   if (roll.tier === 'critical_success') {
-    return `A clean opening answers ${actor}'s ${checkLabel} check as ${outcome} (${roll.total} vs DC ${roll.dc}). The action—${action}—finds a useful route, clue, or advantage without adding new pressure, and the next character can decide how boldly to use it.`
+    return `A clean opening around the ${focus} answers ${actor}'s ${checkLabel} check as ${outcome} (${roll.total} vs DC ${roll.dc}). The action—${action}—finds a usable clue, route, or advantage there, and the next character can decide how boldly to use it.`
   }
   if (roll.tier === 'success') {
-    return `A steadier path appears after ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—moves the room forward with a safer position or clear clue, leaving the group with a practical next choice instead of closing the scene.`
+    return `A steadier path appears beside the ${focus} after ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—moves the scene forward with a safer position or clear clue, leaving the group with a practical next choice instead of closing the scene.`
   }
   if (roll.tier === 'partial_success') {
-    return `Progress comes with a price when ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—does make progress, but the room answers with a cost: pressure gathers, one route narrows, and the group must choose whether to press the opening or shift to a safer approach.`
+    return `Progress comes with a price at the ${focus} when ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—does make progress, but a nearby route narrows, a visible complication marks the ${focus}, and the group must choose whether to press the opening or shift to a safer approach.`
   }
   if (roll.tier === 'failure') {
-    return `The room refuses to stay harmless after ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—fails forward into a visible complication: attention turns hostile, an easy route is blocked, and the next choice must answer that pressure rather than pretending nothing changed.`
+    return `The ${focus} refuses the easy answer after ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—fails forward into a visible complication: a route around the ${focus} is blocked, attention turns hostile, and the next choice must answer that changed path rather than pretending nothing moved.`
   }
-  return `The mistake hits hard as ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—triggers a hard setback: danger escalates, a lost opportunity changes the room's position, and the group still has agency to choose whether to recover, retreat, or risk a harder path.`
+  return `The ${focus} bites back as ${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc}). The attempt—${action}—triggers a hard setback: a lost opportunity changes the route around the ${focus}, and the group still has agency to choose whether to recover, retreat, or risk a harder path.`
 }
 
 function fallbackSceneCheckFocus(input: GenerateGameMasterSceneCheckOutcomeInput): string {
   const action = input.characterAction.toLowerCase()
-  const match = action.match(/\b(?:door|stair|stairs|route|path|passage|arch|shelf|latch|wall|marks?|scratches|bell|table|bar|tunnel|grate|window|threshold|cellar|landing)\b/i)
+  const match = action.match(/\b(?:door|stair|stairs|route|path|passage|arch|shelf|latch|wall|marks?|scratches|bell|table|bar|tunnel|grate|window|threshold|cellar|landing|rafter|rafters|rookery|crow|crows|feather|feathers|taproom|cask|casks|shutter|shutters|lantern|lanterns|floorboard|floorboards|seam|salt|ash)\b/i)
   return match?.[0]
     ? match[0].replace(/s$/, '')
     : input.resolution.roll.checkLabel.toLowerCase()
@@ -1326,9 +1385,9 @@ function fallbackSceneCheckSpatialContext(input: GenerateGameMasterSceneCheckOut
   if (input.resolution.roll.tier === 'partial_success') {
     return {
       currentArea: existing.currentArea,
-      landmarks: [`pressure gathers around the ${focus}`],
+      landmarks: [`visible cost marks the ${focus}`],
       routes: [`narrowed route near the ${focus}`],
-      unresolvedSpatialQuestions: [`Which approach best answers the pressure around the ${focus}?`],
+      unresolvedSpatialQuestions: [`Which route around the ${focus} remains safest?`],
     }
   }
 
@@ -1344,14 +1403,15 @@ function fallbackSceneCheckAdventurePatch(input: GenerateGameMasterSceneCheckOut
   const roll = input.resolution.roll
   const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
   const outcome = roll.tier.replace(/_/g, ' ')
-  const baseSummary = `${actor}'s ${roll.checkLabel.toLowerCase()} check resolved as ${outcome}; the room must now answer that result.`
+  const focus = fallbackSceneCheckFocus(input)
+  const baseSummary = `${actor}'s ${roll.checkLabel.toLowerCase()} check resolved as ${outcome}; the ${focus} now changes the next choice.`
   const status = roll.tier === 'critical_success' || roll.tier === 'success' ? 'advantage' : 'complication'
   const consequenceSummary = roll.tier === 'critical_success'
     ? `${actor}'s attempt opens a strong advantage or clear route for the next choice.`
     : roll.tier === 'success'
       ? `${actor}'s attempt creates progress with a clean clue or safer position.`
       : roll.tier === 'partial_success'
-        ? `${actor}'s attempt makes progress, but it also adds pressure and narrows a route the room cannot ignore.`
+        ? `${actor}'s attempt makes progress, but it also marks the ${focus} with a cost and narrows a nearby route.`
         : roll.tier === 'failure'
           ? `${actor}'s attempt fails forward into a visible complication that blocks an easy route and changes the next choice.`
           : `${actor}'s attempt triggers a hard setback that escalates danger and makes the next route harder.`
@@ -1359,7 +1419,7 @@ function fallbackSceneCheckAdventurePatch(input: GenerateGameMasterSceneCheckOut
   return normalizeAdventurePatch({
     currentStakes: roll.tier === 'critical_success' || roll.tier === 'success'
       ? 'The resolved scene check creates a visible opening the group can use.'
-      : 'The resolved scene check changes the room with visible pressure and a harder next choice.',
+      : `The resolved scene check changes the ${focus} with a visible cost and a harder next choice.`,
     consequence: {
       id: 'scene-check-outcome',
       summary: consequenceSummary,
@@ -1385,7 +1445,7 @@ export function buildFallbackGameMasterSceneCheckOutcome(
   const publicNarration = trimToLimit(
     buildFallbackSceneCheckPublicNarration(input),
     limits.publicNarrationMaxLength
-  ) ?? 'The scene check resolves, and the room shifts around the result.'
+  ) ?? 'The scene check resolves, and the bell rope or cellar stair changes the next choice.'
   const rawEscalation = roll.tier === 'failure' || roll.tier === 'critical_failure'
     ? {
       decision: 'danger',

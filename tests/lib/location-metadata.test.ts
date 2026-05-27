@@ -78,6 +78,40 @@ describe('location metadata adventure catalog', () => {
     expect(metadata.bounds).toEqual([[-15, -5], [35, 45]])
   })
 
+  it('keeps Crow\'s Den encounter and monster catalog entries visible', () => {
+    const catalog = normalizeLocationAdventureCatalog({
+      defaults: {
+        arcSummary: 'The Crow\'s Den is a shuttered taproom with a baited bell, rookery rafters, and a cellar stair.',
+        currentStakes: 'The characters must decide whether to control the bell, test the cellar stair, or risk the rafters.',
+      },
+      sections: {
+        '80_encounters': [
+          {
+            id: 'crows-den-bell-bait',
+            section: '80_encounters',
+            title: 'Bell Bait',
+            summary: 'The taproom bell gives one sharp ring, and black feathers shake loose from the rafters while the cellar stair answers with scraping movement.',
+            tags: ['bell', 'rafters', 'cellar'],
+          },
+        ],
+        '30_monsters': [
+          {
+            id: 'crows-den-rafter-crow-wight',
+            section: '30_monsters',
+            title: 'Rafter Crow-Wight',
+            summary: 'An ash-black crow-wight folds itself among the beams, speaking in borrowed tavern whispers before dropping toward anyone near the bell rope.',
+            tags: ['crow', 'rafters', 'bell'],
+          },
+        ],
+      },
+    })
+
+    expect(catalog?.sections['80_encounters']).toHaveLength(1)
+    expect(catalog?.sections['30_monsters']).toHaveLength(1)
+    expect(catalog?.sections['80_encounters'][0].id).toBe('crows-den-bell-bait')
+    expect(catalog?.sections['30_monsters'][0].id).toBe('crows-den-rafter-crow-wight')
+  })
+
   it('caps oversized sections and drops invalid ids or public-unsafe text', () => {
     const catalog = normalizeLocationAdventureCatalog({
       defaults: {

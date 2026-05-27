@@ -40,6 +40,7 @@ export type NarrativeQualityMetrics = {
   publicGameMasterBeatCount: number
   publicGameMasterBeatMaxGap: number
   spatialContinuitySignalCount: number
+  genericPressurePhraseCount: number
 }
 
 export type NarrativeQualitySubmetrics = {
@@ -83,6 +84,7 @@ const STRONG_FAILURE_PATTERN = /cost|price|hostile|complication|fewer safe optio
 const AGENCY_PATTERN = /\b(choose|choice|option|decide|approach|press|bargain|retreat|withdraw|risk|act on|exploit|protect|follow|accept|trade|ask what|specific choice|concrete risk)\b/i
 const CONTINUITY_PATTERN = /\b(stakes|consequence|cost|clue|clock|pressure|objective|unresolved|last|now|price|discover|found|evidence|outcome|thread|obligation|mark)\b/i
 const SPATIAL_CONTINUITY_PATTERN = /\b(room|door|stair|cellar|route|path|threshold|wall|table|tunnel|landing|arch|floor|passage|landmark|exit)\b/i
+const GENERIC_PRESSURE_PATTERN = /\b(room shifts|scene shifts|pressure gathers|danger gathers|repeated hesitation|something moves just out of sight|standing still|the room answers|the room waits|the room notices)\b/i
 
 export function analyzeNarrativeMessages(
   messages: NarrativeQualityMessage[],
@@ -126,6 +128,7 @@ export function analyzeNarrativeMessages(
     publicGameMasterBeatCount: gameMasterBeats.length,
     publicGameMasterBeatMaxGap: maxPublicGameMasterBeatGap(messages),
     spatialContinuitySignalCount: countSpatialContinuitySignals(messages, gmOutcomes),
+    genericPressurePhraseCount: countGenericPressurePhrases([...gameMasterBeats, ...gmOutcomes]),
   }
 }
 
@@ -186,6 +189,7 @@ export function warningsForNarrativeQuality(
   if (options.requireFailureOutcome !== false && metrics.failureOutcomeCount < 1) warnings.push(options.minTranscriptMessages ? 'no failure/complication outcomes observed' : 'no failure outcomes observed')
   if (metrics.weakFailureOutcomeCount > 0) warnings.push(`${metrics.weakFailureOutcomeCount} weak failure outcomes`)
   if (metrics.repeatedOutcomePrefixCount > repeatedOutcomePrefixWarningThreshold) warnings.push(`${metrics.repeatedOutcomePrefixCount} repeated outcome openings`)
+  if (metrics.genericPressurePhraseCount > 0) warnings.push(`${metrics.genericPressurePhraseCount} generic pressure phrases`)
   if (metrics.totalMessages >= 20) {
     if (metrics.publicGameMasterBeatCount < 2) warnings.push(`calibration: too few public GM beats (${metrics.publicGameMasterBeatCount})`)
     if (metrics.publicGameMasterBeatMaxGap > 10) warnings.push(`calibration: public GM beat gap too wide (${metrics.publicGameMasterBeatMaxGap})`)
@@ -350,6 +354,10 @@ function maxPublicGameMasterBeatGap(messages: NarrativeQualityMessage[]): number
     maxGap = Math.max(maxGap, Math.max(0, gapEnd - currentBeatIndex - 1))
   }
   return maxGap
+}
+
+function countGenericPressurePhrases(messages: NarrativeQualityMessage[]): number {
+  return messages.filter((message) => GENERIC_PRESSURE_PATTERN.test(message.content)).length
 }
 
 function countSpatialContinuitySignals(

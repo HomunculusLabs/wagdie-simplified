@@ -8,7 +8,8 @@ Canonical Crow's Den location is `locations.id='11'`. Do not smoke against legac
 - Confirm Crow's Den canonical id remains `11` and chain-backed location data points to `chain_location_id='11'`.
 - Confirm at least two eligible participants are staked/synced at location `11`.
 - Confirm official ElizaOS and the game-master agent resolve successfully in admin diagnostics.
-- Confirm diagnostics show a visible Crow's Den combat catalog: `adventureCatalog.hasVisibleCombatCatalog=true`, with non-zero visible `80_encounters` and/or `30_monsters` counts. If this reports `missing_location_adventure_catalog`, do not add placeholder production copy; obtain product-approved public-safe encounter/monster text or use a dev-only fixture outside production migrations.
+- Confirm `GET /api/locations/11` returns `metadata.adventureCatalog.sections['80_encounters']` and `['30_monsters']` with non-empty visible entries.
+- Confirm diagnostics show a visible Crow's Den combat catalog: `adventureCatalog.hasVisibleCombatCatalog=true`, with non-zero visible `80_encounters` and/or `30_monsters` counts. If this reports `missing_location_adventure_catalog`, do not proceed with story/combat smoke until the catalog migration has been applied.
 
 ## Smoke Path
 
@@ -25,7 +26,8 @@ Canonical Crow's Den location is `locations.id='11'`. Do not smoke against legac
 11. Verify diagnostics distinguish these operator states: missing catalog data, foreshadowing, ready pending auto promotion, pending trigger, consumed trigger, active encounter, retry wait, normal cadence wait, missing public GM message, and parse/repair failure.
 12. On a fresh/reset canonical Crow's Den room, verify the first completed narrative tick creates at least one public `author_kind='game_master'` message before/alongside character output.
 13. After repeated room activity, verify narrative state does not remain flat indefinitely: `ttrpgPhase='story'`, `combatReadiness='none'`, and `threatLevel=0|null` should escalate visibly without requiring combat.
-14. If completed narrative beats and public agent messages exist but no public GM messages exist, verify diagnostics recommend `missing_public_game_master_message`.
+14. Verify recent public GM messages and scene-check outcomes name concrete Crow's Den anchors such as the bell rope, rafters, shutters, table, cellar stair, salt, feathers, casks, or floorboards; reject generic pressure-only copy such as “room shifts,” “pressure gathers,” or “repeated hesitation.”
+15. If completed narrative beats and public agent messages exist but no public GM messages exist, verify diagnostics recommend `missing_public_game_master_message`.
 
 ## Notes
 

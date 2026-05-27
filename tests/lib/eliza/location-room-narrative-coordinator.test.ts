@@ -682,7 +682,7 @@ describe('location room narrative coordinator', () => {
     const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
       generateBeat: jest.fn(async () => ({
         gameMasterAgentId: 'gm-1',
-        publicNarration: 'The room shifts before anyone can mistake the silence for safety.',
+        publicNarration: 'The bell rope twitches above the bar before anyone can mistake the silence for safety.',
         speakerInstruction: 'Use the private pressure to choose a response without needing a public GM beat.',
         stateAfter: {
           stateSummary: 'The same quiet pressure hangs over the room.',
@@ -724,7 +724,7 @@ describe('location room narrative coordinator', () => {
 
     expect(result).toEqual({ selectedTokenId: 1, messageId: 'msg-character' })
     expect(narrativeRepository.storeBeatGameMasterOutput).toHaveBeenCalledWith('beat-1', expect.objectContaining({
-      publicNarration: 'The room shifts before anyone can mistake the silence for safety.',
+      publicNarration: 'The bell rope twitches above the bar before anyone can mistake the silence for safety.',
       speakerInstruction: 'Use the private pressure to choose a response without needing a public GM beat.',
     }))
     expect(repository.appendMessage).toHaveBeenCalledTimes(1)
@@ -1264,7 +1264,7 @@ describe('location room narrative coordinator', () => {
     const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
       generateBeat: jest.fn(async () => ({
         gameMasterAgentId: 'gm-1',
-        publicNarration: 'The room shifts before anyone can mistake the silence for safety.',
+        publicNarration: 'The bell rope twitches above the bar before anyone can mistake the silence for safety.',
         speakerInstruction: 'If Ash inspects the scratches, let the uncertainty resolve as a scene check.',
         stateAfter: {
           stateSummary: 'Scratches on the wall may hide a route or warning.',

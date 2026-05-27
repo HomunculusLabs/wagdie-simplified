@@ -612,7 +612,7 @@ describe('game-master beat generator helpers', () => {
       progressionContext: context,
     })
     expect(prompt).toContain('recurring public GM beat cadence is due')
-    expect(prompt).toContain('without starting combat unless an explicit combat trigger')
+    expect(prompt).toContain('name the changed object, route, or threat')
   })
 
   it('normalizes old and patched spatial adventure metadata safely and merges newest bounded entries', () => {
@@ -1363,9 +1363,10 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Tier rules for adventurePatch')
     expect(prompt).toContain('partial_success: progress plus complication')
     expect(prompt).toContain('Spatial context')
-    expect(prompt).toContain('cellar stair under the arch')
+    expect(prompt).toContain('root-choked cellar door')
     expect(prompt).toContain('adventurePatch.spatialContext')
     expect(prompt).toContain('For partial_success, failure, and critical_failure, publicNarration must be substantive')
+    expect(prompt).toContain('publicNarration: concrete object/route/threat')
     expect(prompt).toContain('Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality')
     expect(prompt).toContain('\"escalation\"')
     expect(prompt).toContain('combat_ready means readiness, not a direct combat request')
@@ -1513,11 +1514,11 @@ describe('game-master beat generator helpers', () => {
         : { consequence: { summary: `${tier} leaves a durable complication.`, status: 'complication', tier } }
       const tierOutput = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
         publicNarration: tier === 'critical_success' || tier === 'success'
-          ? 'The roll result changes the room.'
+          ? 'The ash-marked stair opens a safer route beside the taproom table.'
           : strongFailureNarration,
-        stateSummary: 'The room changed after the roll.',
-        currentObjective: 'Answer the changed room.',
-        openThreads: ['What changes next?'],
+        stateSummary: 'The ash-marked stair changed after the roll.',
+        currentObjective: 'Answer the changed stair route.',
+        openThreads: ['What changes next at the stair?'],
         adventurePatch: tierPatch,
       }), tierInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })
       expect(tierOutput.adventurePatch).toBeTruthy()
@@ -1558,6 +1559,16 @@ describe('game-master beat generator helpers', () => {
         consequence: { summary: 'The failed check leaves a durable complication.', status: 'complication', tier: 'failure' },
       },
     }), failureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow('visible consequence')
+
+    expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'Pressure gathers while the room answers with a cost, and everyone must choose how to proceed through the complication before the next move arrives without changing any visible feature in the scene.',
+      stateSummary: 'The room changed after the roll.',
+      currentObjective: 'Answer the changed room.',
+      openThreads: ['What changes next?'],
+      adventurePatch: {
+        consequence: { summary: 'The failed check leaves a durable complication.', status: 'complication', tier: 'failure' },
+      },
+    }), failureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow('generic pressure language')
   })
 
   it('rejects durable adventurePatch consequences when failure-tier public narration is weak', () => {
@@ -1653,7 +1664,7 @@ describe('game-master beat generator helpers', () => {
       outputs.push(output.publicNarration)
       expect(output.metadata.fallbackUsed).toBe(true)
       expect(output.publicNarration.length).toBeGreaterThanOrEqual(180)
-      expect(output.publicNarration).toMatch(/complication|blocked|pressure|danger|lost opportunity|harder path/i)
+      expect(output.publicNarration).toMatch(/complication|blocked|lost opportunity|harder path|harder route/i)
       expect(output.publicNarration).toMatch(/choose|next choice|recover|retreat|risk|approach/i)
       expect(output.adventurePatch.consequenceLedger?.[0]).toEqual(expect.objectContaining({ tier }))
     }

@@ -117,7 +117,7 @@ export function buildRecentSceneCheckPatternLines(messages: LocationRoomMessage[
 
   return [
     `Recent scene-check pattern context: check types ${pattern.checkTypes.length > 0 ? pattern.checkTypes.join(' -> ') : 'None.'}; repeated run ${pattern.repeatedRun ? `${pattern.repeatedRun.checkType} x${pattern.repeatedRun.count}` : 'None.'}; GM outcome openings ${pattern.outcomeOpenings.length > 0 ? pattern.outcomeOpenings.map((opening) => `"${opening}"`).join(' | ') : 'None.'}.`,
-    'Repetition guidance: avoid the same checkType/opening when another semantically valid option fits.',
+    'Repetition guidance: avoid the same checkType/opening when another semantically valid option fits; avoid generic pressure openings and name the changed object, route, or threat instead.',
   ]
 }
 
