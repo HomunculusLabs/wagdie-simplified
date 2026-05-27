@@ -181,7 +181,7 @@ type ParsedBeat = Record<string, unknown>
 
 const DEFAULT_GM_AUTHOR_NAME = 'Game Master'
 const OPENING_PUBLIC_NARRATION_MIN_CHARS = 280
-const OPENING_PUBLIC_NARRATION_MIN_SENTENCES = 4
+const OPENING_PUBLIC_NARRATION_MIN_SENTENCES = 3
 const GM_PROMPT_TRANSCRIPT_MAX_CHARS = 800
 const GM_PROMPT_STATE_SUMMARY_MAX_CHARS = 450
 const GM_PROMPT_OBJECTIVE_MAX_CHARS = 240
@@ -955,7 +955,7 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     '- PublicNarration: concrete object/route/threat; no generic pressure-only copy.',
     ...(input.progressionContext?.requireOpeningPublicNarration
       ? [
-        '- Opening publicNarration must be a rich table-setting GM beat: 4-6 sentences and roughly 300-650 characters.',
+        '- Opening publicNarration must be a rich table-setting GM beat: 3-5 sentences and roughly 300-650 characters.',
         '- Opening publicNarration must give players material to act on: sensory location detail, immediate situation, 2-3 interactable hooks, stakes/tension, and an unresolved prompt.',
         '- Do not make the opener a two-sentence summary. Do not solve the mystery, start combat, or speak for the selected character.',
         '- Opening speakerInstruction should give the selected character 2-3 concrete ways to respond in their own voice.',
