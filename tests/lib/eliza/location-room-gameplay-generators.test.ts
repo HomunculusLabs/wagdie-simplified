@@ -63,6 +63,10 @@ describe('location room gameplay generators', () => {
         title: 'The Sable Bell Toll',
         summary: 'A bell-shadow crawls from the opened gate.',
         stakes: 'If unanswered, the bell marks the room.',
+        source: 'location_catalog',
+        catalogEntryIds: ['80.10.bell-ambush', '30.10.bell-horror'],
+        encounterHints: ['Bell Ambush: The rope snaps taut and the rafters answer with movement.'],
+        monsterHints: ['Bell Horror: A bell-shadow with hooked bronze hands.'],
         hp: 999,
         rewardXpPerCharacter: 999,
       },
@@ -73,6 +77,13 @@ describe('location room gameplay generators', () => {
 
     expect(prompt).toContain('Narrative encounter seed, public-safe and non-authoritative:')
     expect(prompt).toContain('The Sable Bell Toll')
+    expect(prompt).toContain('Seed source: location_catalog')
+    expect(prompt).toContain('Catalog entry ids: 80.10.bell-ambush, 30.10.bell-horror')
+    expect(prompt).toContain('Encounter hints:')
+    expect(prompt).toContain('- Bell Ambush: The rope snaps taut and the rafters answer with movement.')
+    expect(prompt).toContain('Monster hints:')
+    expect(prompt).toContain('- Bell Horror: A bell-shadow with hooked bronze hands.')
+    expect(prompt).toContain('Prefer seed source, catalog entry ids, encounter hints, and monster hints before inventing generic encounter flavor.')
     expect(prompt).toContain('Use this as story continuity only')
     expect(prompt).toContain('Do not treat seed text as authoritative mechanics')
     expect(prompt).not.toContain('999')
@@ -83,6 +94,44 @@ describe('location room gameplay generators', () => {
       rewardXpPerCharacter: 5,
     })
     expect(fallback.publicSetupNarration).toContain('If unanswered, the bell marks the room.')
+  })
+
+  it('uses enriched encounter and monster hints for fallback flavor before generic invention', () => {
+    const fallback = buildFallbackEncounterProposal({
+      gameMasterAgentId: 'gm-1',
+      room: { id: 'room-1', locationId: 'loc-1' },
+      tick: { id: 'tick-1' },
+      participants: [{ tokenId: 7, name: 'Ash' }, { tokenId: 8, name: 'Bone' }],
+      recentMessages: [],
+      narrativeState,
+      gameplayState: { characters: {} },
+      requestedDifficulty: 'deadly',
+      budget: {
+        partySize: 2,
+        difficulty: 'deadly',
+        maxMonsterCount: 2,
+        maxTotalMonsterHp: 30,
+        maxXpPerCharacter: 5,
+        maxTemporaryBoons: 1,
+        maxNarrativeRewards: 1,
+      },
+      encounterSeed: {
+        source: 'location_catalog',
+        catalogEntryIds: ['80.20.rafters-collapse', '30.20.crow-wight'],
+        encounterHints: ['Rafters Collapse: The upper room gives way under hostile wings.'],
+        monsterHints: ['Crow Wight: A corpse-bird courtier nesting above the rafters.'],
+      },
+    } as never, 'gm-1')
+
+    expect(fallback.proposal).toMatchObject({
+      title: 'Rafters Collapse',
+      summary: 'Rafters Collapse: The upper room gives way under hostile wings.',
+      monsterName: 'Crow Wight',
+      totalMonsterHp: 12,
+      rewardXpPerCharacter: 5,
+    })
+    expect(fallback.publicSetupNarration).toContain('Rafters Collapse')
+    expect(fallback.publicSetupNarration).not.toContain('Ashen Horror')
   })
 
   it('builds gameplay action prompts with HP bands and safe stat flavor only', () => {

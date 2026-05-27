@@ -97,6 +97,12 @@ describe('location room adventure metadata helpers', () => {
       consequenceLedger: [],
       discoveries: [],
       clocks: [],
+      spatialContext: {
+        currentArea: null,
+        landmarks: [],
+        routes: [],
+        unresolvedSpatialQuestions: [],
+      },
       lastDeclaredAction: null,
       lastOutcome: null,
     })

@@ -310,6 +310,48 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('requestedGameplayAction "start_combat"')
   })
 
+  it('shows prior scene-check escalation so the next GM beat can choose danger or combat', () => {
+    const state = narrativeState()
+    const prompt = buildGameMasterBeatPrompt({
+      gameMasterAgentId: 'gm-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages: [message()],
+      narrativeState: {
+        ...state,
+        metadata: {
+          ...state.metadata,
+          ttrpgPhase: 'threat',
+          combatReadiness: 'ready',
+          threatLevel: 4,
+          lastEncounterSeed: {
+            title: 'Ash Watcher',
+            source: 'location_catalog',
+            catalogEntryIds: ['80.10.ash-watcher'],
+            encounterHints: ['The watcher blocks the stair.'],
+            monsterHints: ['Ash-thin thing behind the bell.'],
+          },
+          lastSceneCheckEscalation: {
+            decision: 'combat_ready',
+            dangerKind: 'monster_pressure',
+            reason: 'The failed search turned the watcher hostile.',
+            threatLevel: 4,
+            encounterSeed: { title: 'Ash Watcher' },
+            catalogEntryIds: ['80.10.ash-watcher'],
+          },
+        },
+      },
+    })
+
+    expect(prompt).toContain('Combat readiness: ready')
+    expect(prompt).toContain('Last scene-check escalation: Decision: combat_ready')
+    expect(prompt).toContain('Catalog: 80.10.ash-watcher')
+    expect(prompt).toContain('Do not start combat automatically')
+    expect(prompt).toContain('keep structured danger in narrative, or request start_combat')
+  })
+
   it('includes bounded spatial context in GM beat prompts when present', () => {
     const prompt = buildGameMasterBeatPrompt({
       gameMasterAgentId: 'gm-1',
@@ -1148,6 +1190,62 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('adventurePatch.spatialContext')
     expect(prompt).toContain('For partial_success, failure, and critical_failure, publicNarration must be substantive')
     expect(prompt).toContain('Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality')
+    expect(prompt).toContain('\"escalation\"')
+    expect(prompt).toContain('combat_ready means the next GM beat may choose to start combat')
+
+    const catalogPrompt = buildGameMasterSceneCheckOutcomePrompt({
+      ...outcomeInput,
+      recentMessages: [],
+      narrativeState: {
+        id: 'state-catalog',
+        roomId: 'room-1',
+        locationId: 'loc-1',
+        stateSummary: 'Ash pressure rises.',
+        currentObjective: 'Answer the stair.',
+        openThreads: ['What watches?'],
+        createdAt: now,
+        updatedAt: now,
+        metadata: {
+          adventureCatalog: {
+            defaults: {},
+            sections: {
+              '80_encounters': [{
+                id: '80.99.hidden-ending',
+                section: '80_encounters',
+                title: 'Hidden Ending',
+                summary: 'A reveal-gated ending should not be prompt-visible.',
+                tags: ['ash'],
+                revealConditions: ['discovery:hidden-ending'],
+              }, {
+                id: '80.10.ash-pressure',
+                section: '80_encounters',
+                title: 'Ash Pressure',
+                summary: 'The stair answers with public pressure.',
+                tags: ['ash'],
+              }],
+              '30_monsters': [{
+                id: '30.99.hidden-monster',
+                section: '30_monsters',
+                title: 'Hidden Monster',
+                summary: 'A reveal-gated monster should not be prompt-visible.',
+                tags: ['ash'],
+                revealConditions: ['discovery:hidden-monster'],
+              }, {
+                id: '30.10.ash-watcher',
+                section: '30_monsters',
+                title: 'Ash Watcher',
+                summary: 'A visible watcher presses close.',
+                tags: ['ash'],
+              }],
+            },
+          },
+        },
+      },
+    })
+    expect(catalogPrompt).toContain('80.10.ash-pressure')
+    expect(catalogPrompt).toContain('30.10.ash-watcher')
+    expect(catalogPrompt).not.toContain('80.99.hidden-ending')
+    expect(catalogPrompt).not.toContain('30.99.hidden-monster')
 
     const output = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
       publicNarration: strongFailureNarration,
@@ -1167,6 +1265,17 @@ describe('game-master beat generator helpers', () => {
           landmarks: ['ash-marked seam'],
           routes: ['hidden stair descending from the taproom'],
           unresolvedSpatialQuestions: ['Where the descending stair opens below'],
+        },
+      },
+      escalation: {
+        decision: 'combat_ready',
+        dangerKind: 'monster_pressure',
+        reason: 'The failed search turns the watcher toward the stair.',
+        threatLevel: 4,
+        encounterSeed: {
+          title: 'Ash Watcher',
+          summary: 'A watcher presses toward the stair.',
+          stakes: 'Hold the stair or draw it away.',
         },
       },
     }), outcomeInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })
@@ -1192,6 +1301,19 @@ describe('game-master beat generator helpers', () => {
       }),
     }))
     expect(output.metadata.adventurePatch).toEqual(output.adventurePatch)
+    expect(output.escalation).toEqual(expect.objectContaining({
+      decision: 'combat_ready',
+      dangerKind: 'monster_pressure',
+      threatLevel: 4,
+      encounterSeed: expect.objectContaining({ title: 'Ash Watcher' }),
+    }))
+    expect(output.ttrpgMetadataPatch).toEqual(expect.objectContaining({
+      ttrpgPhase: 'threat',
+      combatReadiness: 'ready',
+      threatLevel: 4,
+      requestedGameplayAction: null,
+    }))
+    expect(output.ttrpgMetadataPatch).not.toHaveProperty('lastCombatTriggerBeatId')
 
     expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
       publicNarration: 'It changes.',

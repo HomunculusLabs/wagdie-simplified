@@ -43,10 +43,40 @@ export type LocationRoomMessageKind = typeof LOCATION_ROOM_MESSAGE_KINDS[number]
 
 export type LocationRoomRequestedGameplayAction = 'start_combat'
 
+export const LOCATION_ROOM_ENCOUNTER_SEED_SOURCES = ['gm', 'location_catalog', 'fallback', 'admin'] as const
+export type LocationRoomEncounterSeedSource = typeof LOCATION_ROOM_ENCOUNTER_SEED_SOURCES[number]
+
+export const LOCATION_ROOM_SCENE_CHECK_ESCALATION_DECISIONS = ['none', 'danger', 'combat_ready'] as const
+export type LocationRoomSceneCheckEscalationDecision = typeof LOCATION_ROOM_SCENE_CHECK_ESCALATION_DECISIONS[number]
+
+export const LOCATION_ROOM_SCENE_CHECK_DANGER_KINDS = [
+  'trap',
+  'hazard',
+  'pursuit',
+  'social_threat',
+  'monster_pressure',
+  'environment',
+  'unknown',
+] as const
+export type LocationRoomSceneCheckDangerKind = typeof LOCATION_ROOM_SCENE_CHECK_DANGER_KINDS[number]
+
 export type LocationRoomEncounterSeed = {
   title?: string | null
   summary?: string | null
   stakes?: string | null
+  source?: LocationRoomEncounterSeedSource | null
+  catalogEntryIds?: string[]
+  encounterHints?: string[]
+  monsterHints?: string[]
+}
+
+export type LocationRoomSceneCheckEscalation = {
+  decision: LocationRoomSceneCheckEscalationDecision
+  dangerKind: LocationRoomSceneCheckDangerKind
+  reason: string | null
+  threatLevel?: number | null
+  encounterSeed?: LocationRoomEncounterSeed | null
+  catalogEntryIds?: string[]
 }
 
 export type LocationRoom = {

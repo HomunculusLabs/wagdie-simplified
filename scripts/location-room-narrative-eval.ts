@@ -4,6 +4,24 @@ import { scoreNarrativeQuality, type NarrativeQualityMessage } from './location-
 
 type PublicMessage = NarrativeQualityMessage
 
+type PublicRoomStatus = {
+  ttrpg: {
+    phase?: string | null
+    combatReadiness?: string | null
+    threatLevel?: number | null
+  } | null
+  gameplay: {
+    mode?: string | null
+    status?: string | null
+    encounterStatus?: string | null
+    encounterTitle?: string | null
+  } | null
+}
+
+type PublicRoomSnapshot = PublicRoomStatus & {
+  messages: PublicMessage[]
+}
+
 type Config = {
   baseUrl: string
   locationId: string
@@ -57,7 +75,8 @@ async function main(): Promise<void> {
     await triggerTick(config, index + 1)
   }
 
-  const messages = await fetchMessages(config)
+  const snapshot = await fetchRoomSnapshot(config)
+  const messages = snapshot.messages
   const quality = scoreNarrativeQuality({
     messages,
     warningOptions: {
@@ -69,6 +88,8 @@ async function main(): Promise<void> {
   const scoreWarnings = quality.gmNarrativeQualityScore < config.minScore
     ? [`GNQS below minimum (${quality.gmNarrativeQualityScore} < ${config.minScore})`]
     : []
+  const escalationWarnings = escalationObservabilityWarnings(snapshot, quality.rawMetrics)
+  const warnings = [...quality.warnings, ...escalationWarnings]
 
   console.log(JSON.stringify({
     locationId: config.locationId,
@@ -80,11 +101,13 @@ async function main(): Promise<void> {
     grade: quality.grade,
     submetrics: quality.submetrics,
     metrics: quality.rawMetrics,
-    warnings: quality.warnings,
+    ttrpg: snapshot.ttrpg,
+    gameplay: snapshot.gameplay,
+    warnings,
     scoreWarnings,
   }, null, 2))
 
-  if (config.failOnWarnings && (quality.warnings.length > 0 || scoreWarnings.length > 0)) {
+  if (config.failOnWarnings && (warnings.length > 0 || scoreWarnings.length > 0)) {
     process.exitCode = 1
   }
 }
@@ -105,8 +128,9 @@ async function triggerTick(config: Config, tickNumber: number): Promise<void> {
   }
 }
 
-async function fetchMessages(config: Config): Promise<PublicMessage[]> {
+async function fetchRoomSnapshot(config: Config): Promise<PublicRoomSnapshot> {
   const messages: PublicMessage[] = []
+  let status: PublicRoomStatus = { ttrpg: null, gameplay: null }
   let page = 1
   let hasMore = true
 
@@ -120,6 +144,23 @@ async function fetchMessages(config: Config): Promise<PublicMessage[]> {
     const body = JSON.parse(text) as {
       messages?: PublicMessage[]
       pagination?: { hasMore?: boolean }
+      ttrpg?: { phase?: string | null; combatReadiness?: string | null; threatLevel?: number | null }
+      gameplay?: { mode?: string | null; status?: string | null; encounter?: { publicTitle?: string | null; status?: string | null } | null }
+    }
+    if (page === 1) {
+      status = {
+        ttrpg: body.ttrpg ? {
+          phase: body.ttrpg.phase ?? null,
+          combatReadiness: body.ttrpg.combatReadiness ?? null,
+          threatLevel: body.ttrpg.threatLevel ?? null,
+        } : null,
+        gameplay: body.gameplay ? {
+          mode: body.gameplay.mode ?? null,
+          status: body.gameplay.status ?? null,
+          encounterStatus: body.gameplay.encounter?.status ?? null,
+          encounterTitle: body.gameplay.encounter?.publicTitle ?? null,
+        } : null,
+      }
     }
     const pageMessages = Array.isArray(body.messages) ? body.messages : []
     messages.push(...pageMessages)
@@ -128,7 +169,20 @@ async function fetchMessages(config: Config): Promise<PublicMessage[]> {
     page += 1
   }
 
-  return messages.slice(0, config.pageSize)
+  return { ...status, messages: messages.slice(0, config.pageSize) }
+}
+
+function escalationObservabilityWarnings(snapshot: PublicRoomSnapshot, metrics: { totalMessages: number; failureOutcomeCount: number }): string[] {
+  if (metrics.totalMessages < 20 || metrics.failureOutcomeCount < 2) return []
+  const ttrpg = snapshot.ttrpg
+  const gameplay = snapshot.gameplay
+  const hasEscalation = ttrpg?.phase === 'threat' ||
+    ttrpg?.phase === 'combat' ||
+    ttrpg?.combatReadiness === 'foreshadow' ||
+    ttrpg?.combatReadiness === 'ready' ||
+    (typeof ttrpg?.threatLevel === 'number' && ttrpg.threatLevel > 0) ||
+    gameplay?.status === 'active_encounter'
+  return hasEscalation ? [] : ['calibration: repeated failure outcomes observed with no public escalation state']
 }
 
 main().catch((error) => {

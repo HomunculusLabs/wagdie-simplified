@@ -28,6 +28,7 @@ import {
   analyzeNarrativeMessages,
   narrativeHarnessScenarios,
   runNarrativeCombatSeparationProbe,
+  runNarrativeEscalationValidationProbe,
   runNarrativeHarness,
 } from './location-room-narrative-harness'
 import { scoreNarrativeQuality } from '../../../scripts/location-room-narrative-quality'
@@ -104,6 +105,55 @@ describe('location room narrative quality harness', () => {
       gameplayRunCreates: 1,
     })
     expect(result.adminCombat.gameplayRunId).toMatch(/^run-/)
+  })
+
+  it('validates failed scene-check escalation without bypassing explicit combat triggers', async () => {
+    const result = await runNarrativeEscalationValidationProbe()
+
+    expect(result.failedSceneCheck).toMatchObject({
+      status: 'completed',
+      phase: 'threat',
+      combatReadiness: 'foreshadow',
+      threatLevel: expect.any(Number),
+      requestedGameplayAction: null,
+      lastCombatTriggerBeatId: null,
+      seedSource: 'location_catalog',
+    })
+    expect(result.failedSceneCheck.sceneCheckId).toMatch(/^scene_check:/)
+    expect(result.failedSceneCheck.seedCatalogEntryIds).toEqual(expect.arrayContaining([
+      '80.10.rafters-ambush',
+      '30.10.crow-wight',
+    ]))
+    expect(result.failedSceneCheck.encounterHints).toEqual(expect.arrayContaining([
+      'Rafters Ambush: The rafters answer a failed check with hostile wings and a slammed exit.',
+    ]))
+    expect(result.failedSceneCheck.monsterHints).toEqual(expect.arrayContaining([
+      'Crow Wight: A hostile crow-wight nests above the tavern rafters.',
+    ]))
+
+    expect(result.autoWithoutTrigger).toMatchObject({
+      status: 'completed',
+      gameplayProcessCalls: 0,
+      gameplayRunCreates: 0,
+      messageDomain: 'narrative',
+      requestedGameplayAction: null,
+    })
+
+    expect(result.storyWithExplicitStartCombat).toMatchObject({
+      status: 'completed',
+      gameplayProcessCalls: 0,
+      gameplayRunCreates: 0,
+      messageDomain: 'narrative',
+      requestedGameplayAction: 'start_combat',
+    })
+    expect(result.storyWithExplicitStartCombat.triggerId).toMatch(/^beat-/)
+
+    expect(result.autoWithExplicitTrigger).toMatchObject({
+      status: 'completed',
+      gameplayProcessCalls: 1,
+      gameplayRunCreates: 1,
+    })
+    expect(result.autoWithExplicitTrigger.gameplayRunId).toMatch(/^run-/)
   })
 
   it('flags weak narrative output from public transcript messages', () => {

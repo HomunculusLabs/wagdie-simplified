@@ -14,12 +14,19 @@ import type {
   LocationRoom,
   LocationRoomCombatReadiness,
   LocationRoomEncounterSeed,
+  LocationRoomEncounterSeedSource,
   LocationRoomRequestedGameplayAction,
+  LocationRoomSceneCheckDangerKind,
+  LocationRoomSceneCheckEscalation,
+  LocationRoomSceneCheckEscalationDecision,
   LocationRoomTick,
   LocationRoomTtrpgPhase,
 } from './types'
 import {
   LOCATION_ROOM_COMBAT_READINESS_VALUES,
+  LOCATION_ROOM_ENCOUNTER_SEED_SOURCES,
+  LOCATION_ROOM_SCENE_CHECK_DANGER_KINDS,
+  LOCATION_ROOM_SCENE_CHECK_ESCALATION_DECISIONS,
   LOCATION_ROOM_TTRPG_PHASES,
 } from './types'
 
@@ -115,6 +122,11 @@ export type LocationRoomNarrativeTtrpgMetadata = {
 }
 
 export type LocationRoomNarrativeTtrpgMetadataPatch = Partial<LocationRoomNarrativeTtrpgMetadata>
+
+export type LocationRoomNarrativeSceneCheckEscalationMetadata = {
+  lastSceneCheckEscalation: LocationRoomSceneCheckEscalation | null
+  sceneCheckEscalations: Record<string, LocationRoomSceneCheckEscalation>
+}
 
 export type LocationRoomNarrativeSceneCheckMessageIds = {
   characterAction?: string | null
@@ -609,19 +621,112 @@ export function normalizeRequestedGameplayAction(value: unknown): LocationRoomRe
   return value === 'start_combat' ? 'start_combat' : null
 }
 
+function normalizeEncounterSeedSource(value: unknown): LocationRoomEncounterSeedSource | null {
+  return hasStringValue(LOCATION_ROOM_ENCOUNTER_SEED_SOURCES, value) ? value : null
+}
+
+function normalizeEncounterSeedIdList(value: unknown, maxItems: number): string[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const item of value) {
+    const id = normalizeAdventureId(item)
+    if (!id || seen.has(id)) continue
+    seen.add(id)
+    result.push(id)
+    if (result.length >= maxItems) break
+  }
+  return result
+}
+
+function normalizeEncounterSeedHints(value: unknown, maxItems: number): string[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const item of value) {
+    const hint = nullableAdventureText(item, 240)
+    if (!hint) continue
+    const key = hint.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(hint)
+    if (result.length >= maxItems) break
+  }
+  return result
+}
+
 export function normalizeEncounterSeed(value: unknown): LocationRoomEncounterSeed | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const candidate = value as Record<string, unknown>
-  const title = nullableTrimmedString(candidate.title ?? candidate.publicTitle, 80)
-  const summary = nullableTrimmedString(candidate.summary ?? candidate.publicSummary, 500)
-  const stakes = nullableTrimmedString(candidate.stakes, 240)
+  const title = nullableAdventureText(candidate.title ?? candidate.publicTitle, 80)
+  const summary = nullableAdventureText(candidate.summary ?? candidate.publicSummary, 500)
+  const stakes = nullableAdventureText(candidate.stakes, 240)
+  const source = normalizeEncounterSeedSource(candidate.source)
+  const catalogEntryIds = normalizeEncounterSeedIdList(candidate.catalogEntryIds ?? candidate.catalog_entry_ids, 8)
+  const encounterHints = normalizeEncounterSeedHints(candidate.encounterHints ?? candidate.encounter_hints, 4)
+  const monsterHints = normalizeEncounterSeedHints(candidate.monsterHints ?? candidate.monster_hints, 4)
 
-  if (!title && !summary && !stakes) return null
+  if (!title && !summary && !stakes && !catalogEntryIds.length && !encounterHints.length && !monsterHints.length) return null
 
   return {
     ...(title ? { title } : {}),
     ...(summary ? { summary } : {}),
     ...(stakes ? { stakes } : {}),
+    ...(source ? { source } : {}),
+    ...(catalogEntryIds.length ? { catalogEntryIds } : {}),
+    ...(encounterHints.length ? { encounterHints } : {}),
+    ...(monsterHints.length ? { monsterHints } : {}),
+  }
+}
+
+function normalizeSceneCheckEscalationDecision(value: unknown): LocationRoomSceneCheckEscalationDecision | null {
+  return hasStringValue(LOCATION_ROOM_SCENE_CHECK_ESCALATION_DECISIONS, value) ? value : null
+}
+
+function normalizeSceneCheckDangerKind(value: unknown): LocationRoomSceneCheckDangerKind {
+  return hasStringValue(LOCATION_ROOM_SCENE_CHECK_DANGER_KINDS, value) ? value : 'unknown'
+}
+
+function normalizeSceneCheckCatalogIds(value: unknown): string[] {
+  return normalizeEncounterSeedIdList(value, 8)
+}
+
+export function normalizeNarrativeSceneCheckEscalation(value: unknown): LocationRoomSceneCheckEscalation | null {
+  if (!isRecord(value)) return null
+  const decision = normalizeSceneCheckEscalationDecision(value.decision)
+  if (!decision) return null
+  const reason = nullableAdventureText(value.reason, 240)
+  const threatLevel = normalizeThreatLevel(value.threatLevel)
+  const encounterSeed = normalizeEncounterSeed(value.encounterSeed)
+  const catalogEntryIds = normalizeSceneCheckCatalogIds(value.catalogEntryIds)
+  return {
+    decision,
+    dangerKind: normalizeSceneCheckDangerKind(value.dangerKind),
+    reason,
+    ...(threatLevel != null ? { threatLevel } : {}),
+    ...(encounterSeed ? { encounterSeed } : {}),
+    ...(catalogEntryIds.length ? { catalogEntryIds } : {}),
+  }
+}
+
+export function normalizeNarrativeSceneCheckEscalationMetadata(
+  metadata: Record<string, unknown> | null | undefined
+): LocationRoomNarrativeSceneCheckEscalationMetadata {
+  const source = metadata ?? {}
+  const rawEscalations = isRecord(source.sceneCheckEscalations) ? source.sceneCheckEscalations : {}
+  const sceneCheckEscalations: Record<string, LocationRoomSceneCheckEscalation> = {}
+  for (const [rawId, rawEscalation] of Object.entries(rawEscalations).slice(-8)) {
+    const id = nullableId(rawId)
+    const escalation = normalizeNarrativeSceneCheckEscalation(rawEscalation)
+    if (!id || !escalation) continue
+    sceneCheckEscalations[id] = escalation
+  }
+
+  const lastSceneCheckEscalation = normalizeNarrativeSceneCheckEscalation(source.lastSceneCheckEscalation)
+  const storedEscalationValues = Object.values(sceneCheckEscalations)
+  return {
+    sceneCheckEscalations,
+    lastSceneCheckEscalation: lastSceneCheckEscalation ?? storedEscalationValues[storedEscalationValues.length - 1] ?? null,
   }
 }
 

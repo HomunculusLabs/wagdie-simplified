@@ -1304,6 +1304,250 @@ describe('location room narrative coordinator', () => {
     expect(gameMasterGenerator.generateSceneCheckOutcome).toHaveBeenCalled()
   })
 
+  it('persists scene-check outcome escalation as combat-ready metadata without creating a combat trigger', async () => {
+    const request = normalizeSceneCheckRequest({
+      id: 'ash-marks',
+      actionIntent: 'search',
+      rollChoice: { source: 'fixed', checkType: 'perception' },
+    })
+    if (!request.ok) throw new Error(request.error)
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: `msg-${repository.appendMessage.mock.calls.length}`,
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository()
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: { ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 0 },
+    })
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Search the ash marks.',
+        stateAfter: {
+          stateSummary: 'The ash marks invite a search.',
+          currentObjective: 'Search the ash marks.',
+          openThreads: ['What do the marks hide?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: request.value,
+        adventurePatch: { currentStakes: 'Search the ash marks.' },
+        metadata: { sceneCheck: { request: request.value, proposal: null, proposalError: null } },
+      })),
+      generateSceneCheckOutcome: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: 'The ash marks answer with pressure: attention turns hostile, the route narrows, and the group must choose how to answer the watcher.',
+        stateAfter: {
+          stateSummary: 'The ash marks have turned the watcher toward the stair.',
+          currentObjective: 'Choose how to answer the watcher.',
+          openThreads: ['Does the group hold the stair or draw the watcher away?'],
+        },
+        adventurePatch: {
+          consequenceLedger: [{ id: 'watcher-turns', source: 'scene', summary: 'The watcher turns toward the stair.', status: 'complication' as const, tier: 'failure' }],
+        },
+        escalation: {
+          decision: 'combat_ready',
+          dangerKind: 'monster_pressure',
+          reason: 'The watcher is now close enough for the next GM beat to choose combat.',
+          threatLevel: 4,
+          encounterSeed: {
+            title: 'Ash Watcher',
+            summary: 'A hostile watcher presses toward the stair.',
+            stakes: 'Hold the stair or draw it away.',
+          },
+          catalogEntryIds: ['80.10.ash-watcher'],
+        },
+        ttrpgMetadataPatch: {
+          ttrpgPhase: 'threat',
+          combatReadiness: 'ready',
+          threatLevel: 4,
+          requestedGameplayAction: null,
+          lastEncounterSeed: {
+            title: 'Ash Watcher',
+            summary: 'A hostile watcher presses toward the stair.',
+            stakes: 'Hold the stair or draw it away.',
+          },
+        },
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I search the ash for the hidden watcher.',
+        declaredAction: { summary: 'Ash searches the ash for the hidden watcher.', actionIntent: 'search' },
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1'),
+      () => 0
+    )
+
+    await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })
+
+    expect(repository.appendMessage.mock.calls[2][0].metadata).toEqual(expect.objectContaining({
+      messageKind: 'gm_outcome',
+      sceneCheckEscalation: expect.objectContaining({ decision: 'combat_ready' }),
+    }))
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: null,
+        lastCombatTriggerBeatId: null,
+        lastEncounterSeed: expect.objectContaining({ title: 'Ash Watcher' }),
+        lastSceneCheckEscalation: expect.objectContaining({
+          decision: 'combat_ready',
+          dangerKind: 'monster_pressure',
+          threatLevel: 4,
+        }),
+        sceneCheckEscalations: expect.objectContaining({
+          'scene_check:beat-1:ash-marks': expect.objectContaining({ decision: 'combat_ready' }),
+        }),
+      }),
+    }))
+  })
+
+  it('preserves an unrelated unconsumed explicit combat trigger after scene-check outcome escalation', async () => {
+    const request = normalizeSceneCheckRequest({
+      id: 'ash-marks',
+      actionIntent: 'search',
+      rollChoice: { source: 'fixed', checkType: 'perception' },
+    })
+    if (!request.ok) throw new Error(request.error)
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: `msg-${repository.appendMessage.mock.calls.length}`,
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository()
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 5,
+        requestedGameplayAction: 'start_combat',
+        lastCombatTriggerBeatId: 'beat-explicit',
+        consumedCombatTriggerBeatId: null,
+        lastEncounterSeed: {
+          title: 'Waiting Maw',
+          summary: 'An existing combat trigger waits at the gate.',
+          stakes: 'Answer the gate.',
+        },
+      },
+    })
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Search the ash marks.',
+        stateAfter: {
+          stateSummary: 'The ash marks invite a search.',
+          currentObjective: 'Search the ash marks.',
+          openThreads: ['What do the marks hide?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: request.value,
+        adventurePatch: { currentStakes: 'Search the ash marks.' },
+        metadata: { sceneCheck: { request: request.value, proposal: null, proposalError: null } },
+      })),
+      generateSceneCheckOutcome: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: 'The ash marks answer with pressure: attention turns hostile, the route narrows, and the group must choose how to answer the watcher.',
+        stateAfter: {
+          stateSummary: 'The ash marks have turned the watcher toward the stair.',
+          currentObjective: 'Choose how to answer the watcher.',
+          openThreads: ['Does the group hold the stair or draw the watcher away?'],
+        },
+        adventurePatch: {
+          consequenceLedger: [{ id: 'watcher-turns', source: 'scene', summary: 'The watcher turns toward the stair.', status: 'complication' as const, tier: 'failure' }],
+        },
+        escalation: {
+          decision: 'combat_ready',
+          dangerKind: 'monster_pressure',
+          reason: 'The watcher is now close enough for the next GM beat to choose combat.',
+          threatLevel: 4,
+          encounterSeed: {
+            title: 'Ash Watcher',
+            summary: 'A hostile watcher presses toward the stair.',
+            stakes: 'Hold the stair or draw it away.',
+          },
+        },
+        metadata: {},
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I search the ash for the hidden watcher.',
+        declaredAction: { summary: 'Ash searches the ash for the hidden watcher.', actionIntent: 'search' },
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1'),
+      () => 0
+    )
+
+    await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })
+
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 5,
+        requestedGameplayAction: 'start_combat',
+        lastCombatTriggerBeatId: 'beat-explicit',
+        consumedCombatTriggerBeatId: null,
+        lastEncounterSeed: expect.objectContaining({ title: 'Waiting Maw' }),
+        lastSceneCheckEscalation: expect.objectContaining({ decision: 'combat_ready' }),
+      }),
+    }))
+  })
+
   it('avoids a third consecutive backend-inferred perception check when another valid fallback fits', async () => {
     const repository = makeRepository()
     usePriorGameMasterMessage(repository)
@@ -1996,6 +2240,22 @@ describe('location room narrative coordinator', () => {
       },
       metadata: {
         sceneCheckRequest: request.value,
+        sceneCheckEscalations: {
+          'scene_check:beat-1:ash-marks': {
+            decision: 'combat_ready',
+            dangerKind: 'monster_pressure',
+            reason: 'Stored escalation is authoritative.',
+            threatLevel: 4,
+            encounterSeed: { title: 'Stored Watcher', summary: 'The stored seed remains stable.' },
+          },
+        },
+        lastSceneCheckEscalation: {
+          decision: 'combat_ready',
+          dangerKind: 'monster_pressure',
+          reason: 'Stored escalation is authoritative.',
+          threatLevel: 4,
+          encounterSeed: { title: 'Stored Watcher', summary: 'The stored seed remains stable.' },
+        },
         sceneCheck: {
           id: 'scene_check:beat-1:ash-marks',
           request: request.value,
@@ -2023,6 +2283,13 @@ describe('location room narrative coordinator', () => {
           openThreads: ['What follows?'],
         },
         adventurePatch: { currentStakes: 'Follow what the stored roll revealed.' },
+        escalation: {
+          decision: 'combat_ready',
+          dangerKind: 'monster_pressure',
+          reason: 'This regenerated seed must not replace stored escalation.',
+          threatLevel: 5,
+          encounterSeed: { title: 'Regenerated Watcher', summary: 'Should not win.' },
+        },
         metadata: {},
       })),
     }
@@ -2049,6 +2316,20 @@ describe('location room narrative coordinator', () => {
     expect(turnGenerator.generateTurn).not.toHaveBeenCalled()
     expect(repository.appendMessage.mock.calls[0][0].content).toBe('Stored character action.')
     expect((repository.appendMessage.mock.calls[1][0].metadata?.publicRolls as any).action.roll.total).toBe(99)
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: null,
+        lastCombatTriggerBeatId: null,
+        lastEncounterSeed: expect.objectContaining({ title: 'Stored Watcher' }),
+        sceneCheckEscalations: expect.objectContaining({
+          'scene_check:beat-1:ash-marks': expect.objectContaining({
+            encounterSeed: expect.objectContaining({ title: 'Stored Watcher' }),
+          }),
+        }),
+      }),
+    }))
   })
 
   it('marks an existing beat failed or dead for service retry bookkeeping', async () => {

@@ -14,6 +14,10 @@ import {
   type GameMasterGenerationResponseFlags,
 } from './gameMasterGenerator'
 import {
+  normalizeSceneCheckEscalation,
+  ttrpgPatchForSceneCheckEscalation,
+} from './encounterEscalation'
+import {
   locationRoomNarrativeRepository,
   type LocationRoomNarrativeRepository,
 } from './narrativeRepository'
@@ -24,6 +28,7 @@ import {
   normalizeAdventureMemory,
   normalizeAdventurePatch,
   normalizeDeclaredAction,
+  normalizeNarrativeSceneCheckEscalationMetadata,
   normalizeNarrativeSceneCheckMetadata,
   normalizeNarrativeTtrpgMetadata,
   recordAdventureDeclaredAction,
@@ -59,6 +64,7 @@ import type {
   LocationRoomMessage,
   LocationRoomNarrativeTurnContext,
   LocationRoomParticipant,
+  LocationRoomSceneCheckEscalation,
   LocationRoomTick,
   PublicLocationRoomGameplayRolls,
 } from './types'
@@ -243,6 +249,50 @@ function buildLastSceneCheckOutcome(input: {
       summary: input.summary,
     },
   }, { sourceId: input.sceneSourceId })
+}
+
+function preserveUnrelatedCombatTriggerForSceneCheck(input: {
+  metadata: Record<string, unknown>
+  patch: ReturnType<typeof ttrpgPatchForSceneCheckEscalation>
+  beatId: string
+  sceneCheckId: string
+  sceneSourceId: string
+}): ReturnType<typeof ttrpgPatchForSceneCheckEscalation> {
+  const current = normalizeNarrativeTtrpgMetadata(input.metadata)
+  const triggerId = current.lastCombatTriggerBeatId
+  const hasUnconsumedExplicitTrigger = current.requestedGameplayAction === 'start_combat' &&
+    Boolean(triggerId) &&
+    current.consumedCombatTriggerBeatId !== triggerId
+  const belongsToCurrentSceneCheckPath = triggerId === input.beatId ||
+    triggerId === input.sceneCheckId ||
+    triggerId === input.sceneSourceId
+
+  if (!hasUnconsumedExplicitTrigger || belongsToCurrentSceneCheckPath) return input.patch
+
+  const safePatch = { ...input.patch }
+  delete safePatch.ttrpgPhase
+  delete safePatch.combatReadiness
+  delete safePatch.threatLevel
+  delete safePatch.requestedGameplayAction
+  delete safePatch.lastEncounterSeed
+  delete safePatch.lastCombatTriggerBeatId
+  return safePatch
+}
+
+function sceneCheckEscalationStorageExtra(input: {
+  metadata: Record<string, unknown>
+  sceneCheckId: string
+  escalation: LocationRoomSceneCheckEscalation
+}): Record<string, unknown> {
+  const stored = normalizeNarrativeSceneCheckEscalationMetadata(input.metadata)
+  const entries = Object.entries({
+    ...stored.sceneCheckEscalations,
+    [input.sceneCheckId]: input.escalation,
+  }).slice(-8)
+  return {
+    sceneCheckEscalations: Object.fromEntries(entries),
+    lastSceneCheckEscalation: input.escalation,
+  }
 }
 
 function storeableDeclaredAction(
@@ -1098,6 +1148,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         metadata: {
           ...generatedOutcome.metadata,
           adventurePatch: outcomeAdventurePatch,
+          sceneCheckEscalation: generatedOutcome.escalation ?? generatedOutcome.metadata?.sceneCheckEscalation,
         },
       }
       beat = await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(beat.metadata, {
@@ -1116,6 +1167,31 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       tier: resolution.roll.tier,
       summary: outcome.publicNarration,
     }), { sourceId: sceneAdventureSourceId })
+    const storedEscalations = normalizeNarrativeSceneCheckEscalationMetadata(beat.metadata)
+    const storedEscalation = storedEscalations.sceneCheckEscalations[sceneCheckId]
+    const normalizedEscalationResult = storedEscalation
+      ? {
+        escalation: storedEscalation,
+        ttrpgMetadataPatch: ttrpgPatchForSceneCheckEscalation(storedEscalation),
+      }
+      : normalizeSceneCheckEscalation({
+        narrativeState: {
+          currentObjective: outcome.stateAfter.currentObjective,
+          openThreads: outcome.stateAfter.openThreads,
+          metadata: sceneAdventureMetadata,
+        },
+        rawEscalation: outcome.metadata?.sceneCheckEscalation,
+        recentOutcomeSummary: outcome.publicNarration,
+        fallbackSummary: outcome.publicNarration,
+        rollTier: resolution.roll.tier,
+        selectedTokenId: resolution.actorTokenId,
+      })
+    const sceneCheckEscalation = normalizedEscalationResult.escalation
+    const sceneCheckEscalationExtra = sceneCheckEscalationStorageExtra({
+      metadata: sceneAdventureMetadata,
+      sceneCheckId,
+      escalation: sceneCheckEscalation,
+    })
     const outcomeMessage = await this.repository.appendMessage({
       roomId: input.room.id,
       locationId: input.room.locationId,
@@ -1148,12 +1224,32 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           dc: resolution.roll.dc,
           tier: resolution.roll.tier,
         },
+        sceneCheckEscalation,
       },
     })
     messageIds = messageIdsWith(messageIds, outcomeMessage.id)
 
+    const sceneCheckTtrpgPatch = preserveUnrelatedCombatTriggerForSceneCheck({
+      metadata: sceneAdventureMetadata,
+      patch: {
+        ttrpgPhase: gameMasterOutput.ttrpgPhase,
+        combatReadiness: gameMasterOutput.combatReadiness,
+        threatLevel: gameMasterOutput.threatLevel,
+        lastEncounterSeed: gameMasterOutput.encounterSeed,
+        ...normalizedEscalationResult.ttrpgMetadataPatch,
+        requestedGameplayAction: null,
+        lastCombatTriggerBeatId: null,
+      },
+      beatId: beat.id,
+      sceneCheckId,
+      sceneSourceId: sceneAdventureSourceId,
+    })
+
     try {
-      await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(beat.metadata, {
+      await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata({
+        ...beat.metadata,
+        ...sceneCheckEscalationExtra,
+      }, {
         messageIds: {
           ...storedSceneCheck.messageIds,
           characterAction: actionMessage.id,
@@ -1166,22 +1262,14 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         stateSummary: outcome.stateAfter.stateSummary,
         currentObjective: outcome.stateAfter.currentObjective,
         openThreads: outcome.stateAfter.openThreads,
-        metadata: mergeNarrativeTtrpgMetadata(sceneAdventureMetadata, {
-          ttrpgPhase: gameMasterOutput.ttrpgPhase,
-          combatReadiness: gameMasterOutput.combatReadiness,
-          threatLevel: gameMasterOutput.threatLevel,
-          requestedGameplayAction: gameMasterOutput.requestedGameplayAction,
-          lastEncounterSeed: gameMasterOutput.encounterSeed,
-          lastCombatTriggerBeatId: gameMasterOutput.requestedGameplayAction === 'start_combat'
-            ? beat.id
-            : null,
-        }, {
+        metadata: mergeNarrativeTtrpgMetadata(sceneAdventureMetadata, sceneCheckTtrpgPatch, {
           source: 'location-room-scene-check',
           lastBeatId: beat.id,
           lastTickId: input.tick.id,
           lastSelectedTokenId: input.speaker.tokenId,
           lastSceneCheckId: sceneCheckId,
           lastSceneCheckOutcome: resolution.roll.tier,
+          ...sceneCheckEscalationExtra,
         }),
       })
       await this.narrativeRepository.markBeatCompleted(beat.id)

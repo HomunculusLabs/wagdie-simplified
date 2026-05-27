@@ -16,6 +16,10 @@ import {
   type SceneCheckResolution,
 } from './sceneChecks/types'
 import {
+  normalizeSceneCheckEscalation,
+  visibleSceneCheckEscalationCatalogEntries,
+} from './encounterEscalation'
+import {
   LOCATION_ROOM_COMBAT_READINESS_VALUES,
   LOCATION_ROOM_TTRPG_PHASES,
   type LocationRoom,
@@ -26,6 +30,7 @@ import {
   type LocationRoomParticipant,
   type LocationRoomPublicAuthorMessageStats,
   type LocationRoomRequestedGameplayAction,
+  type LocationRoomSceneCheckEscalation,
   type LocationRoomTick,
   type LocationRoomTtrpgPhase,
 } from './types'
@@ -34,6 +39,7 @@ import {
   normalizeEncounterSeed,
   normalizeAdventureMemory,
   normalizeAdventurePatch,
+  normalizeNarrativeSceneCheckEscalationMetadata,
   normalizeNarrativeTtrpgMetadata,
   normalizeRequestedGameplayAction,
   normalizeThreatLevel,
@@ -42,6 +48,7 @@ import {
   type LocationRoomAdventurePatch,
   type LocationRoomNarrativeState,
   type LocationRoomNarrativeStateSnapshot,
+  type LocationRoomNarrativeTtrpgMetadataPatch,
   type LocationRoomSpatialContext,
 } from './narrativeTypes'
 
@@ -135,10 +142,13 @@ export type GameMasterSceneCheckOutcomeOutput = {
   publicNarration: string
   stateAfter: LocationRoomNarrativeStateSnapshot
   adventurePatch: LocationRoomAdventurePatch
+  escalation?: LocationRoomSceneCheckEscalation
+  ttrpgMetadataPatch?: LocationRoomNarrativeTtrpgMetadataPatch
   metadata: {
     rawResponseLength?: number
     fallbackUsed?: boolean
     adventurePatch?: LocationRoomAdventurePatch
+    sceneCheckEscalation?: LocationRoomSceneCheckEscalation
   }
 }
 
@@ -813,7 +823,23 @@ function formatEncounterSeed(seed: LocationRoomEncounterSeed | null): string {
     seed.title ? `Title: ${seed.title}` : null,
     seed.summary ? `Summary: ${seed.summary}` : null,
     seed.stakes ? `Stakes: ${seed.stakes}` : null,
+    seed.source ? `Source: ${seed.source}` : null,
+    seed.catalogEntryIds?.length ? `Catalog: ${seed.catalogEntryIds.join(', ')}` : null,
+    seed.encounterHints?.length ? `Encounter hints: ${seed.encounterHints.join(' | ')}` : null,
+    seed.monsterHints?.length ? `Monster hints: ${seed.monsterHints.join(' | ')}` : null,
   ].filter(Boolean).join(' | ') || 'None.', GM_PROMPT_ENCOUNTER_SEED_MAX_CHARS)
+}
+
+function formatSceneCheckEscalation(escalation: LocationRoomSceneCheckEscalation | null): string {
+  if (!escalation) return 'None.'
+  return truncatePromptValue([
+    `Decision: ${escalation.decision}`,
+    `Danger kind: ${escalation.dangerKind}`,
+    escalation.threatLevel != null ? `Threat: ${escalation.threatLevel}` : null,
+    escalation.reason ? `Reason: ${escalation.reason}` : null,
+    escalation.catalogEntryIds?.length ? `Catalog: ${escalation.catalogEntryIds.join(', ')}` : null,
+    escalation.encounterSeed ? `Seed: ${formatEncounterSeed(escalation.encounterSeed)}` : null,
+  ].filter(Boolean).join(' | '), 420)
 }
 
 function buildProgressionContextLines(context?: GameMasterBeatProgressionContext): string[] {
@@ -853,6 +879,16 @@ function buildProgressionContextLines(context?: GameMasterBeatProgressionContext
   }
 
   return lines
+}
+
+function buildCombatReadyDecisionLines(ttrpg: ReturnType<typeof normalizeNarrativeTtrpgMetadata>): string[] {
+  if (ttrpg.combatReadiness !== 'ready') return []
+  return [
+    'Combat-ready pressure is present from prior fiction.',
+    '- Decide case-by-case whether this beat keeps danger as narrative pressure or emits requestedGameplayAction=\"start_combat\".',
+    '- Do not start combat automatically just because combatReadiness is ready.',
+    '- If the fiction now clearly demands structured combat, use requestedGameplayAction=\"start_combat\" with the last encounter seed.',
+  ]
 }
 
 function buildSceneCheckContractLines(): string[] {
@@ -900,6 +936,7 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
       : []),
     '- Use catalog entries only as bounded private inspiration; live adventure memory is more authoritative.',
     '- Do not spawn combat by default; most beats keep requestedGameplayAction null.',
+    '- If current combatReadiness is ready from a prior scene-check escalation, choose case-by-case: keep structured danger in narrative, or request start_combat only when the fiction now clearly demands combat. Do not start combat automatically.',
     '- requestedGameplayAction "start_combat" requires clear fights plus threat/ready/threatLevel >= 3 and encounterSeed.',
     ...buildSceneCheckContractLines(),
   ]
@@ -984,6 +1021,7 @@ function formatAdventureMemoryLines(input: Pick<GenerateGameMasterBeatInput, 'na
 
 function buildNarrativeStateLines(input: Pick<GenerateGameMasterBeatInput, 'narrativeState' | 'speaker'>): string[] {
   const ttrpg = normalizeNarrativeTtrpgMetadata(input.narrativeState.metadata)
+  const sceneCheckEscalation = normalizeNarrativeSceneCheckEscalationMetadata(input.narrativeState.metadata)
   return [
     'Current private narrative state:',
     `Continuity summary: ${truncatePromptValue(input.narrativeState.stateSummary || 'No established continuity yet.', GM_PROMPT_STATE_SUMMARY_MAX_CHARS)}`,
@@ -995,6 +1033,8 @@ function buildNarrativeStateLines(input: Pick<GenerateGameMasterBeatInput, 'narr
     `Threat level: ${ttrpg.threatLevel ?? 'None.'}`,
     `Requested gameplay action: ${ttrpg.requestedGameplayAction ?? 'None.'}`,
     `Last encounter seed: ${formatEncounterSeed(ttrpg.lastEncounterSeed)}`,
+    `Last scene-check escalation: ${formatSceneCheckEscalation(sceneCheckEscalation.lastSceneCheckEscalation)}`,
+    ...buildCombatReadyDecisionLines(ttrpg),
     ...formatAdventureMemoryLines(input),
   ]
 }
@@ -1051,23 +1091,29 @@ function formatSceneCheckRollFacts(input: Pick<GenerateGameMasterSceneCheckOutco
   ]
 }
 
+function formatSceneCheckEscalationCatalogCandidates(narrativeState: LocationRoomNarrativeState): string[] {
+  const rawCatalog = narrativeState.metadata.adventureCatalog ??
+    (typeof narrativeState.metadata.locationMetadata === 'object' && narrativeState.metadata.locationMetadata !== null && !Array.isArray(narrativeState.metadata.locationMetadata)
+      ? (narrativeState.metadata.locationMetadata as Record<string, unknown>).adventureCatalog
+      : undefined)
+  const catalog = normalizeLocationAdventureCatalog(rawCatalog)
+  if (!catalog) return ['Escalation catalog candidates (80_encounters / 30_monsters): None available.']
+  const encounterEntries = visibleSceneCheckEscalationCatalogEntries(catalog.sections['80_encounters'] ?? []).slice(0, 3)
+  const monsterEntries = visibleSceneCheckEscalationCatalogEntries(catalog.sections['30_monsters'] ?? []).slice(0, 3)
+  const candidateLines = [
+    ...encounterEntries.map((entry) => `- [80_encounters] ${entry.id}${entry.title ? ` ${entry.title}` : ''}: ${truncatePromptValue(entry.summary, 120)}`),
+    ...monsterEntries.map((entry) => `- [30_monsters] ${entry.id}${entry.title ? ` ${entry.title}` : ''}: ${truncatePromptValue(entry.summary, 120)}`),
+  ]
+  return [
+    'Escalation catalog candidates (private; prefer for encounterSeed/catalogEntryIds when relevant):',
+    candidateLines.length > 0 ? candidateLines.join('\n') : 'None available.',
+  ]
+}
+
 function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
   return [
     'Return only a JSON object with this exact scene-check outcome contract:',
-    '{',
-    '  "publicNarration": "public GM consequence of the resolved scene check",',
-    '  "stateSummary": "updated private continuity summary after the roll",',
-    '  "currentObjective": "updated objective after the roll",',
-    '  "openThreads": ["short unresolved thread"],',
-    '  "adventurePatch": {',
-    '    "currentStakes": "updated stakes, or omit",',
-    '    "activeDecision": {"id":"decision-id","prompt":"rare fictional fork prompt","options":[{"id":"option-id","label":"option"}]},',
-    '    "consequence": {"id":"scene-check-consequence","summary":"tier-appropriate durable consequence","status":"open | resolved | advantage | complication","tier":"success"},',
-    '    "discoveries": ["durable clue or reveal"],',
-    '    "clockUpdates": [{"id":"clock-id","label":"clock label","value":1,"max":6,"summary":"absolute pressure after the roll"}],',
-    '    "spatialContext": {"currentArea":null,"landmarks":[],"routes":[],"unresolvedSpatialQuestions":[]}',
-    '  }',
-    '}',
+    '{ "publicNarration":"public GM consequence", "stateSummary":"updated continuity", "currentObjective":"updated objective", "openThreads":["thread"], "adventurePatch":{"currentStakes":"risk","consequence":{"summary":"durable consequence","status":"open | resolved | advantage | complication","tier":"success"},"discoveries":["clue"],"clockUpdates":[],"spatialContext":{"currentArea":null,"landmarks":[],"routes":[],"unresolvedSpatialQuestions":[]}}, "escalation":{"decision":"none | danger | combat_ready","dangerKind":"trap | hazard | pursuit | social_threat | monster_pressure | environment | unknown","reason":"brief reason","threatLevel":0,"encounterSeed":{"title":"title","summary":"pressure","stakes":"stakes"},"catalogEntryIds":["80.10"]} }',
     '',
     'Rules:',
     '- Output JSON only: no markdown fences, no commentary, no prose outside the object.',
@@ -1077,13 +1123,12 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '- Vary the first sentence/opening from recent GM outcome openings while preserving roll facts; do not reuse an exact opening.',
     '- For partial_success, failure, and critical_failure, publicNarration must be substantive (roughly 180+ characters), show a visible consequence such as cost, complication, pressure, danger, blocked route, lost opportunity, harder choice, hostile response, or obligation, and leave a changed situation or next choice rather than finality.',
     '- Treat adventurePatch as private durable memory for the resolved roll. activeDecision remains rare and only for a genuine new fork.',
+    '- escalation is raw intent; backend will normalize it. Use decision none, danger, or combat_ready case-by-case.',
+    '- Scene-check outcomes must never request combat directly: do not output requestedGameplayAction or lastCombatTriggerBeatId.',
+    '- combat_ready means the next GM beat may choose to start combat; it does not route immediately to combat.',
+    '- Prefer listed 80_encounters and 30_monsters catalog candidates for encounterSeed/catalogEntryIds when the roll creates danger or combat readiness.',
     '- Use adventurePatch.spatialContext additively when the roll reveals, opens, blocks, narrows, or questions visible areas/routes/landmarks.',
-    '- Tier rules for adventurePatch:',
-    '  - critical_success: major discovery, advantage, opened route, or reduced pressure.',
-    '  - success: progress with low/no cost; include a discovery, advantage, clarified decision, stakes update, or clock change.',
-    '  - partial_success: progress plus complication, clock pressure, or harder choice; consequence is required.',
-    '  - failure: fail-forward complication, lost opportunity, or increased pressure; consequence is required.',
-    '  - critical_failure: hard setback, danger escalation, major complication, or clock advance; consequence is required.',
+    '- Tier rules for adventurePatch: critical_success/success add progress or discovery; partial_success: progress plus complication; failure/critical_failure require a consequence and changed next choice.',
     '- publicNarration, stateSummary, currentObjective, openThreads, and tier-appropriate adventurePatch are required.',
   ]
 }
@@ -1110,6 +1155,8 @@ export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMaster
     '',
     'Backend-computed roll facts:',
     ...formatSceneCheckRollFacts(input),
+    '',
+    ...formatSceneCheckEscalationCatalogCandidates(input.narrativeState),
     '',
     ...formatSpatialContext(normalizeAdventureMemory(input.narrativeState.metadata).spatialContext),
     '',
@@ -1208,6 +1255,14 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
   const adventurePatch = normalizeAdventurePatch(parsed.adventurePatch ?? parsed.adventure_patch, {
     sourceId: input.sceneCheckId,
   })
+  const normalizedEscalation = normalizeSceneCheckEscalation({
+    narrativeState: input.narrativeState,
+    rawEscalation: parsed.escalation ?? parsed.sceneCheckEscalation ?? parsed.scene_check_escalation,
+    recentOutcomeSummary: publicNarration,
+    fallbackSummary: publicNarration,
+    rollTier: input.resolution.roll.tier,
+    selectedTokenId: input.resolution.actorTokenId,
+  })
   validateSceneCheckOutcomePublicNarration(input.resolution.roll.tier, publicNarration)
   if (hasDuplicateRecentOutcomeOpening(publicNarration, input.recentMessages)) {
     throw new Error('Game-master scene-check outcome response reuses a recent outcome opening')
@@ -1223,9 +1278,12 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
       openThreads,
     },
     adventurePatch,
+    escalation: normalizedEscalation.escalation,
+    ttrpgMetadataPatch: normalizedEscalation.ttrpgMetadataPatch,
     metadata: {
       rawResponseLength: raw.length,
       adventurePatch,
+      sceneCheckEscalation: normalizedEscalation.escalation,
     },
   }
 }
@@ -1337,6 +1395,31 @@ export function buildFallbackGameMasterSceneCheckOutcome(
     buildFallbackSceneCheckPublicNarration(input),
     limits.publicNarrationMaxLength
   ) ?? 'The scene check resolves, and the room shifts around the result.'
+  const rawEscalation = roll.tier === 'failure' || roll.tier === 'critical_failure'
+    ? {
+      decision: 'danger',
+      dangerKind: roll.tier === 'critical_failure' ? 'monster_pressure' : 'unknown',
+      reason: `${roll.tier}_fallback_escalation`,
+    }
+    : roll.tier === 'partial_success'
+      ? {
+        decision: 'danger',
+        dangerKind: 'unknown',
+        reason: 'partial_success_fallback_pressure',
+      }
+      : {
+        decision: 'none',
+        dangerKind: 'unknown',
+        reason: 'successful_scene_check_no_escalation',
+      }
+  const normalizedEscalation = normalizeSceneCheckEscalation({
+    narrativeState: input.narrativeState,
+    rawEscalation,
+    recentOutcomeSummary: publicNarration,
+    fallbackSummary: publicNarration,
+    rollTier: roll.tier,
+    selectedTokenId: input.resolution.actorTokenId,
+  })
 
   return {
     gameMasterAgentId,
@@ -1356,9 +1439,12 @@ export function buildFallbackGameMasterSceneCheckOutcome(
       ).slice(0, limits.openThreadsMaxCount),
     },
     adventurePatch,
+    escalation: normalizedEscalation.escalation,
+    ttrpgMetadataPatch: normalizedEscalation.ttrpgMetadataPatch,
     metadata: {
       fallbackUsed: true,
       adventurePatch,
+      sceneCheckEscalation: normalizedEscalation.escalation,
     },
   }
 }

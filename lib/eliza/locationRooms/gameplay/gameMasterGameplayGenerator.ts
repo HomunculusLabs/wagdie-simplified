@@ -140,12 +140,21 @@ function formatNarrativeState(state: LocationRoomNarrativeState): string {
   ].join('\n')
 }
 
+function formatSeedList(label: string, values: string[] | undefined): string | null {
+  if (!values?.length) return null
+  return `${label}:\n${values.map((value) => `- ${value}`).join('\n')}`
+}
+
 function formatEncounterSeed(seed: LocationRoomEncounterSeed | null | undefined): string | null {
   if (!seed) return null
   const parts = [
     seed.title ? `Title: ${seed.title}` : null,
     seed.summary ? `Summary: ${seed.summary}` : null,
     seed.stakes ? `Stakes: ${seed.stakes}` : null,
+    seed.source ? `Seed source: ${seed.source}` : null,
+    seed.catalogEntryIds?.length ? `Catalog entry ids: ${seed.catalogEntryIds.join(', ')}` : null,
+    formatSeedList('Encounter hints', seed.encounterHints),
+    formatSeedList('Monster hints', seed.monsterHints),
   ].filter(Boolean)
   return parts.length > 0 ? parts.join('\n') : null
 }
@@ -153,6 +162,13 @@ function formatEncounterSeed(seed: LocationRoomEncounterSeed | null | undefined)
 function functionSafeSeedText(value: string | null | undefined, fallback: string): string {
   const trimmed = value?.replace(/\s+/g, ' ').trim()
   return trimmed || fallback
+}
+
+function titleFromSeedHint(value: string | null | undefined): string | null {
+  const trimmed = value?.replace(/\s+/g, ' ').trim()
+  if (!trimmed) return null
+  const [title] = trimmed.split(':')
+  return title?.trim().slice(0, 80) || null
 }
 
 function formatDiceRollResult(result: GameplayDiceRollResult): string {
@@ -375,11 +391,16 @@ export function normalizeGameplayEncounterProposalResponse(
 
 export function buildFallbackEncounterProposal(input: GenerateGameplayEncounterProposalInput, gameMasterAgentId: string): GameplayEncounterProposalOutput {
   const locationName = input.room.locationId ? `Location ${input.room.locationId}` : 'The room'
-  const monsterName = input.requestedDifficulty === 'deadly' ? 'Ashen Horror' : 'Restless Shade'
   const seed = input.encounterSeed ?? null
-  const title = functionSafeSeedText(seed?.title, `${monsterName} Encounter`)
-  const summary = functionSafeSeedText(seed?.summary, `${monsterName} tests the room as the party presses forward.`)
-  const stakes = functionSafeSeedText(seed?.stakes, 'the gathered characters must answer')
+  const primaryEncounterHint = seed?.encounterHints?.[0]
+  const primaryMonsterHint = seed?.monsterHints?.[0]
+  const monsterName = functionSafeSeedText(
+    titleFromSeedHint(primaryMonsterHint),
+    input.requestedDifficulty === 'deadly' ? 'Ashen Horror' : 'Restless Shade'
+  )
+  const title = functionSafeSeedText(seed?.title ?? titleFromSeedHint(primaryEncounterHint), `${monsterName} Encounter`)
+  const summary = functionSafeSeedText(seed?.summary ?? primaryEncounterHint ?? primaryMonsterHint, `${monsterName} tests the room as the party presses forward.`)
+  const stakes = functionSafeSeedText(seed?.stakes ?? primaryEncounterHint, 'the gathered characters must answer')
   const publicSetupNarration = seed
     ? `${locationName} darkens around ${title}; ${stakes}.`
     : `${locationName} darkens as ${monsterName} manifests before the gathered characters.`
@@ -475,6 +496,7 @@ export function buildGameplayEncounterProposalPrompt(input: GenerateGameplayEnco
     '',
     encounterSeed ? 'Narrative encounter seed, public-safe and non-authoritative:' : null,
     encounterSeed,
+    encounterSeed ? 'Prefer seed source, catalog entry ids, encounter hints, and monster hints before inventing generic encounter flavor. Treat hints as public-safe inspiration only.' : null,
     encounterSeed ? 'Use this as story continuity only. Do not treat seed text as authoritative mechanics, DCs, HP, rewards, or private state.' : null,
     encounterSeed ? '' : null,
     'Return only JSON with this contract:',

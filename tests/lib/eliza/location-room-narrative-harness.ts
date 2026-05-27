@@ -19,7 +19,7 @@ import type {
 } from '@/lib/eliza/locationRooms/gameMasterGenerator'
 import type { LocationRoomMembershipRepository } from '@/lib/eliza/locationRooms/membership'
 import type { LocationRoomNarrativeRepository } from '@/lib/eliza/locationRooms/narrativeRepository'
-import { normalizeAdventureMemory } from '@/lib/eliza/locationRooms/narrativeTypes'
+import { normalizeAdventureMemory, normalizeNarrativeTtrpgMetadata } from '@/lib/eliza/locationRooms/narrativeTypes'
 import type {
   LocationRoomNarrativeBeat,
   LocationRoomNarrativeState,
@@ -97,6 +97,43 @@ export type NarrativeCombatSeparationProbeResult = {
     gameplayRunCreates: number
   }
   adminCombat: {
+    status: string
+    gameplayRunId: string | null
+    gameplayProcessCalls: number
+    gameplayRunCreates: number
+  }
+}
+
+export type NarrativeEscalationValidationProbeResult = {
+  failedSceneCheck: {
+    status: string
+    sceneCheckId: string | null
+    phase: string
+    combatReadiness: string
+    threatLevel: number | null
+    requestedGameplayAction: string | null
+    lastCombatTriggerBeatId: string | null
+    seedSource: string | null
+    seedCatalogEntryIds: string[]
+    encounterHints: string[]
+    monsterHints: string[]
+  }
+  autoWithoutTrigger: {
+    status: string
+    gameplayProcessCalls: number
+    gameplayRunCreates: number
+    messageDomain: string | null
+    requestedGameplayAction: string | null
+  }
+  storyWithExplicitStartCombat: {
+    status: string
+    gameplayProcessCalls: number
+    gameplayRunCreates: number
+    messageDomain: string | null
+    requestedGameplayAction: string | null
+    triggerId: string | null
+  }
+  autoWithExplicitTrigger: {
     status: string
     gameplayRunId: string | null
     gameplayProcessCalls: number
@@ -599,6 +636,10 @@ class InMemoryNarrativeRepository {
     this.state = { ...initialNarrativeState(scenario), metadata: initialMetadata }
   }
 
+  getState(): LocationRoomNarrativeState {
+    return this.state
+  }
+
   async findStateByRoomId(): Promise<LocationRoomNarrativeState | null> {
     return this.state
   }
@@ -874,6 +915,48 @@ class ScriptedGameMasterBeatGenerator implements GameMasterBeatGenerator {
   }
 }
 
+class ExplicitCombatStartBeatGenerator implements GameMasterBeatGenerator {
+  async generateBeat(input: GenerateGameMasterBeatInput): Promise<GameMasterBeatOutput> {
+    const ttrpg = normalizeNarrativeTtrpgMetadata(input.narrativeState.metadata)
+    const encounterSeed = ttrpg.lastEncounterSeed ?? {
+      title: 'Catalog Threat Breaks Cover',
+      summary: 'The catalog-seeded danger finally enters the room openly.',
+      stakes: 'Survive the threat that the failed scene check exposed.',
+      source: 'fallback' as const,
+    }
+
+    const stateAfter: LocationRoomNarrativeStateSnapshot = {
+      stateSummary: `${input.narrativeState.stateSummary} The danger breaks cover and demands structured combat.`,
+      currentObjective: 'Survive the threat that has fully emerged.',
+      openThreads: [...input.narrativeState.openThreads, 'The explicit combat trigger is now unconsumed.'].slice(-4),
+    }
+
+    return {
+      gameMasterAgentId: 'gm-harness',
+      publicNarration: 'The foreshadowed pressure breaks cover: claws scrape the rafters, the exit slams shut, and the room must answer in combat.',
+      speakerInstruction: 'React to the threat entering combat; do not resolve the combat in prose.',
+      stateAfter,
+      ttrpgPhase: 'threat',
+      combatReadiness: 'ready',
+      threatLevel: 5,
+      requestedGameplayAction: 'start_combat',
+      encounterSeed,
+      sceneCheckRequest: null,
+      adventurePatch: {
+        currentStakes: 'The party must survive the catalog-seeded threat.',
+        discoveries: ['The earlier failed check exposed the threat clearly enough for combat.'],
+      },
+      metadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 5,
+        requestedGameplayAction: 'start_combat',
+        encounterSeed,
+      },
+    }
+  }
+}
+
 class ScriptedTurnGenerator implements OfficialLocationRoomTurnGenerator {
   private turn = 0
 
@@ -1078,6 +1161,150 @@ function warningOptionsForHarness(ticksPerScenario: number) {
     minRollCards: Math.floor(ticksPerScenario / 5),
     maxRollCards: Math.ceil(ticksPerScenario / 2),
     repeatedOutcomePrefixWarningThreshold: 1,
+  }
+}
+
+export async function runNarrativeEscalationValidationProbe(): Promise<NarrativeEscalationValidationProbeResult> {
+  const scenario: NarrativeHarnessScenario = {
+    ...narrativeHarnessScenarios[0],
+    id: 'escalation-validation',
+    checkEvery: 1,
+    gmNarrationEvery: 1,
+    rollProfile: 'fail-heavy',
+  }
+  const repository = new InMemoryLocationRoomRepository(scenario)
+  const narrativeRepository = new InMemoryNarrativeRepository(scenario, { adventureCatalog: escalationAdventureCatalog() })
+  const membership = new StaticMembershipRepository(scenario)
+  const turnGenerator = new ScriptedTurnGenerator(scenario)
+  const resolver: GameMasterAgentResolver = { resolveRuntimeGameMasterAgentId: async () => 'gm-harness' }
+  const gameplayRepository = new InMemoryGameplayRepository(scenario)
+  const gameplayCoordinator = new CountingGameplayCoordinator()
+
+  function serviceFor(gmGenerator: GameMasterBeatGenerator): LocationRoomService {
+    const narrativeCoordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository as unknown as LocationRoomRepository,
+      narrativeRepository as unknown as LocationRoomNarrativeRepository,
+      gmGenerator,
+      turnGenerator,
+      resolver,
+      rngSequenceFor('fail-heavy')
+    )
+    return new LocationRoomService(
+      repository as unknown as LocationRoomRepository,
+      membership,
+      turnGenerator,
+      narrativeCoordinator,
+      resolver,
+      gameplayCoordinator as unknown as LocationRoomGameplayCoordinator,
+      gameplayRepository as unknown as LocationRoomGameplayRepository,
+      narrativeRepository as unknown as LocationRoomNarrativeRepository
+    )
+  }
+
+  async function request(service: LocationRoomService, intent: LocationRoomTurnIntent, index: number) {
+    return withHarnessElizaConfig(() => service.requestTickAndProcess(scenario.locationId, {
+      actor: 'admin',
+      walletAddress: '0x0000000000000000000000000000000000000000',
+      intent,
+      now: new Date(new Date(BASE_TIME).getTime() + index * 120_000),
+    }), { gameplayEnabled: true, gameplayLocationAllowlist: [scenario.locationId] })
+  }
+
+  const failedSceneResult = await request(serviceFor(new ScriptedGameMasterBeatGenerator(scenario)), 'story', 0)
+  const failedState = narrativeRepository.getState()
+  const failedTtrpg = normalizeNarrativeTtrpgMetadata(failedState.metadata)
+  const failedSeed = failedTtrpg.lastEncounterSeed
+
+  const autoWithoutTriggerStartCalls = gameplayCoordinator.processCalls
+  const autoWithoutTriggerStartCreates = gameplayRepository.createRunCalls
+  const autoWithoutTriggerResult = await request(serviceFor(new ScriptedGameMasterBeatGenerator({ ...scenario, checkEvery: 99 })), 'auto', 1)
+  const autoWithoutTriggerState = normalizeNarrativeTtrpgMetadata(narrativeRepository.getState().metadata)
+  const autoWithoutTriggerLastMessage = repository.messages.at(-1)
+  const autoWithoutTriggerProbe = {
+    status: autoWithoutTriggerResult.processing.result?.status ?? autoWithoutTriggerResult.processing.status,
+    gameplayProcessCalls: gameplayCoordinator.processCalls - autoWithoutTriggerStartCalls,
+    gameplayRunCreates: gameplayRepository.createRunCalls - autoWithoutTriggerStartCreates,
+    messageDomain: typeof autoWithoutTriggerLastMessage?.metadata?.messageDomain === 'string' ? autoWithoutTriggerLastMessage.metadata.messageDomain : null,
+    requestedGameplayAction: autoWithoutTriggerState.requestedGameplayAction,
+  }
+
+  const explicitStartCalls = gameplayCoordinator.processCalls
+  const explicitStartCreates = gameplayRepository.createRunCalls
+  const storyWithExplicitResult = await request(serviceFor(new ExplicitCombatStartBeatGenerator()), 'story', 2)
+  const explicitTriggerState = normalizeNarrativeTtrpgMetadata(narrativeRepository.getState().metadata)
+  const storyWithExplicitLastMessage = repository.messages.at(-1)
+  const storyWithExplicitProbe = {
+    status: storyWithExplicitResult.processing.result?.status ?? storyWithExplicitResult.processing.status,
+    gameplayProcessCalls: gameplayCoordinator.processCalls - explicitStartCalls,
+    gameplayRunCreates: gameplayRepository.createRunCalls - explicitStartCreates,
+    messageDomain: typeof storyWithExplicitLastMessage?.metadata?.messageDomain === 'string' ? storyWithExplicitLastMessage.metadata.messageDomain : null,
+    requestedGameplayAction: explicitTriggerState.requestedGameplayAction,
+    triggerId: explicitTriggerState.lastCombatTriggerBeatId,
+  }
+
+  const autoTriggerStartCalls = gameplayCoordinator.processCalls
+  const autoTriggerStartCreates = gameplayRepository.createRunCalls
+  const autoWithExplicitResult = await request(serviceFor(new ScriptedGameMasterBeatGenerator({ ...scenario, checkEvery: 99 })), 'auto', 3)
+  const autoWithExplicitProbe = {
+    status: autoWithExplicitResult.processing.result?.status ?? autoWithExplicitResult.processing.status,
+    gameplayRunId: autoWithExplicitResult.processing.result?.gameplayRunId ?? null,
+    gameplayProcessCalls: gameplayCoordinator.processCalls - autoTriggerStartCalls,
+    gameplayRunCreates: gameplayRepository.createRunCalls - autoTriggerStartCreates,
+  }
+
+  return {
+    failedSceneCheck: {
+      status: failedSceneResult.processing.result?.status ?? failedSceneResult.processing.status,
+      sceneCheckId: failedSceneResult.processing.result?.sceneCheckId ?? null,
+      phase: failedTtrpg.ttrpgPhase,
+      combatReadiness: failedTtrpg.combatReadiness,
+      threatLevel: failedTtrpg.threatLevel,
+      requestedGameplayAction: failedTtrpg.requestedGameplayAction,
+      lastCombatTriggerBeatId: failedTtrpg.lastCombatTriggerBeatId,
+      seedSource: failedSeed?.source ?? null,
+      seedCatalogEntryIds: failedSeed?.catalogEntryIds ?? [],
+      encounterHints: failedSeed?.encounterHints ?? [],
+      monsterHints: failedSeed?.monsterHints ?? [],
+    },
+    autoWithoutTrigger: autoWithoutTriggerProbe,
+    storyWithExplicitStartCombat: storyWithExplicitProbe,
+    autoWithExplicitTrigger: autoWithExplicitProbe,
+  }
+}
+
+function escalationAdventureCatalog() {
+  return {
+    defaults: {
+      arcSummary: null,
+      currentStakes: null,
+      openingDecision: null,
+      discoveries: [],
+      clocks: [],
+    },
+    sections: {
+      '00_setting': [],
+      '10_plot': [],
+      '20_characters': [],
+      '30_monsters': [{
+        id: '30.10.crow-wight',
+        section: '30_monsters',
+        title: 'Crow Wight',
+        summary: 'A hostile crow-wight nests above the tavern rafters.',
+        tags: ['crow', 'hostile', 'threat'],
+      }],
+      '40_places': [],
+      '50_items': [],
+      '60_shops_services': [],
+      '70_factions': [],
+      '80_encounters': [{
+        id: '80.10.rafters-ambush',
+        section: '80_encounters',
+        title: 'Rafters Ambush',
+        summary: 'The rafters answer a failed check with hostile wings and a slammed exit.',
+        tags: ['crow', 'hostile', 'ambush'],
+      }],
+      '90_rules_guidance': [],
+    },
   }
 }
 
