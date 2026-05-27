@@ -267,11 +267,22 @@ type LocationRoomHealthGameMasterGenerationSummary = {
   status: GameMasterGenerationDiagnostics['status'] | 'not_available'
   repairAttempted: boolean
   repaired: boolean
+  fallbackUsed: boolean
+  recoveries: string[]
   initialErrorCategory: string | null
   repairErrorCategory: string | null
+  transportStage: string | null
   initialResponseLength: number | null
   repairResponseLength: number | null
   safeError: string | null
+  recentAcceptedCount: number
+  recentRepairedCount: number
+  recentRepairFailedCount: number
+  recentRecoveredCount: number
+  recentLegacyFallbackCount: number
+  latestFailureCategory: string | null
+  latestTransportStage: string | null
+  latestRecoveries: string[]
 }
 
 type LocationRoomTriggerReadinessBlocker =
@@ -430,15 +441,86 @@ function safeMetadataObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 
-function safeCategory(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const trimmed = value.replace(/[^a-z0-9_.:-]/gi, '').trim()
-  return trimmed ? trimmed.slice(0, 80) : null
+const SAFE_GM_GENERATION_ERROR_CATEGORIES = new Set([
+  'empty_response',
+  'missing_json_object',
+  'invalid_json',
+  'speaker_constraint',
+  'token_constraint',
+  'progression_contract',
+  'missing_required_field',
+  'validation_error',
+  'repair_transport_error',
+])
+
+const SAFE_GM_GENERATION_TRANSPORT_STAGES = new Set([
+  'start_agent',
+  'create_session',
+  'send_message',
+  'collect_stream',
+  'create_repair_session',
+  'repair_send_message',
+  'repair_collect_stream',
+])
+
+const SAFE_GM_GENERATION_RECOVERIES = new Set([
+  'adventure_patch_defaulted_from_model_prose',
+  'scene_check_request_dropped_invalid_optional',
+  'scene_check_adventure_patch_defaulted_from_model_prose',
+  'scene_check_escalation_normalized',
+])
+
+function safeKnownValue(value: unknown, allowed: Set<string>): string | null {
+  return typeof value === 'string' && allowed.has(value) ? value : null
+}
+
+function safeErrorCategory(value: unknown): string | null {
+  return safeKnownValue(value, SAFE_GM_GENERATION_ERROR_CATEGORIES)
+}
+
+function safeTransportStage(value: unknown): string | null {
+  return safeKnownValue(value, SAFE_GM_GENERATION_TRANSPORT_STAGES)
 }
 
 function safeLength(value: unknown): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null
   return Math.max(0, Math.floor(value))
+}
+
+function safeRecoveryList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  for (const item of value) {
+    const safe = safeKnownValue(item, SAFE_GM_GENERATION_RECOVERIES)
+    if (safe) seen.add(safe)
+  }
+  return Array.from(seen).slice(0, 8)
+}
+
+function sceneCheckOutcomeMetadata(beat: LocationRoomNarrativeBeat | null | undefined): Record<string, unknown> | null {
+  const sceneCheck = safeMetadataObject(beat?.metadata.sceneCheck)
+  const outcome = safeMetadataObject(sceneCheck?.gmOutcome)
+  return safeMetadataObject(outcome?.metadata)
+}
+
+function generationRecordsForBeat(beat: LocationRoomNarrativeBeat | null | undefined): Record<string, unknown>[] {
+  const records: Record<string, unknown>[] = []
+  const beatGeneration = safeMetadataObject(beat?.metadata.gmGeneration)
+  if (beatGeneration) records.push(beatGeneration)
+  const outcomeGeneration = safeMetadataObject(sceneCheckOutcomeMetadata(beat)?.gmGeneration)
+  if (outcomeGeneration) records.push(outcomeGeneration)
+  return records
+}
+
+function countLegacyFallbackOccurrences(beat: LocationRoomNarrativeBeat): number {
+  let count = 0
+  if (beat.metadata.fallbackUsed === true) count += 1
+  for (const record of generationRecordsForBeat(beat)) {
+    if (record.fallbackUsed === true) count += 1
+  }
+  const outcomeMetadata = sceneCheckOutcomeMetadata(beat)
+  if (outcomeMetadata?.fallbackUsed === true) count += 1
+  return count
 }
 
 function nullableMetadataId(value: unknown): string | null {
@@ -575,22 +657,64 @@ function buildPromotionSummary(
   }
 }
 
-function summarizeGmGeneration(beat: LocationRoomNarrativeBeat | null): LocationRoomHealthGameMasterGenerationSummary {
-  const gmGeneration = safeMetadataObject(beat?.metadata.gmGeneration)
+function summarizeGmGeneration(
+  beat: LocationRoomNarrativeBeat | null,
+  recentBeats: LocationRoomNarrativeBeat[] = beat ? [beat] : []
+): LocationRoomHealthGameMasterGenerationSummary {
+  const records = generationRecordsForBeat(beat)
+  const gmGeneration = records[records.length - 1] ?? null
   const status = gmGeneration?.status === 'accepted' || gmGeneration?.status === 'repaired' || gmGeneration?.status === 'repair_failed'
     ? gmGeneration.status
     : 'not_available'
+
+  let recentAcceptedCount = 0
+  let recentRepairedCount = 0
+  let recentRepairFailedCount = 0
+  let recentRecoveredCount = 0
+  let recentLegacyFallbackCount = 0
+  let latestFailureCategory: string | null = null
+  let latestTransportStage: string | null = null
+  let latestRecoveries: string[] = []
+
+  for (const recentBeat of recentBeats) {
+    recentLegacyFallbackCount += countLegacyFallbackOccurrences(recentBeat)
+    for (const record of generationRecordsForBeat(recentBeat)) {
+      if (record.status === 'accepted') recentAcceptedCount += 1
+      if (record.status === 'repaired') recentRepairedCount += 1
+      if (record.status === 'repair_failed') recentRepairFailedCount += 1
+      const recoveries = safeRecoveryList(record.recoveries)
+      if (recoveries.length > 0) {
+        recentRecoveredCount += 1
+        if (latestRecoveries.length === 0) latestRecoveries = recoveries
+      }
+      if (!latestFailureCategory && record.status === 'repair_failed') {
+        latestFailureCategory = safeErrorCategory(record.repairErrorCategory) ?? safeErrorCategory(record.initialErrorCategory)
+      }
+      if (!latestTransportStage) latestTransportStage = safeTransportStage(record.transportStage)
+    }
+  }
 
   return {
     latestBeatStatus: beat?.status ?? null,
     status,
     repairAttempted: gmGeneration?.repairAttempted === true,
     repaired: gmGeneration?.repaired === true,
-    initialErrorCategory: safeCategory(gmGeneration?.initialErrorCategory),
-    repairErrorCategory: safeCategory(gmGeneration?.repairErrorCategory),
+    fallbackUsed: gmGeneration?.fallbackUsed === true,
+    recoveries: safeRecoveryList(gmGeneration?.recoveries),
+    initialErrorCategory: safeErrorCategory(gmGeneration?.initialErrorCategory),
+    repairErrorCategory: safeErrorCategory(gmGeneration?.repairErrorCategory),
+    transportStage: safeTransportStage(gmGeneration?.transportStage),
     initialResponseLength: safeLength(gmGeneration?.initialResponseLength),
     repairResponseLength: safeLength(gmGeneration?.repairResponseLength),
     safeError: sanitizeStoredError(beat?.lastError, SAFE_NARRATIVE_ERROR),
+    recentAcceptedCount,
+    recentRepairedCount,
+    recentRepairFailedCount,
+    recentRecoveredCount,
+    recentLegacyFallbackCount,
+    latestFailureCategory,
+    latestTransportStage,
+    latestRecoveries,
   }
 }
 
@@ -977,7 +1101,7 @@ export class LocationRoomAdminDiagnosticsService {
     )
     const durableIntent = buildDurableIntentSummary(activeTicks, recentTicks)
     const retryCadence = buildRetryCadenceSummary(room, activeTicks, now, config.tickIntervalMinutes)
-    const gmGeneration = summarizeGmGeneration(latestBeat)
+    const gmGeneration = summarizeGmGeneration(latestBeat, latestBeats)
     const adventureCatalog = buildAdventureCatalogSummary(location, narrativeState)
     const triggerReadiness = buildTriggerReadinessSummary(
       narrativeState,

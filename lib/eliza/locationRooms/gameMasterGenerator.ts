@@ -72,13 +72,21 @@ export type GameMasterGenerationResponseFlags = {
   startsWithJsonObject: boolean
 }
 
+export type GameMasterGenerationRecoveryKey =
+  | 'adventure_patch_defaulted_from_model_prose'
+  | 'scene_check_request_dropped_invalid_optional'
+  | 'scene_check_adventure_patch_defaulted_from_model_prose'
+  | 'scene_check_escalation_normalized'
+
 export type GameMasterGenerationDiagnostics = {
   status: 'accepted' | 'repaired' | 'repair_failed'
   repairAttempted: boolean
   repaired: boolean
   fallbackUsed?: boolean
+  recoveries?: GameMasterGenerationRecoveryKey[]
   initialErrorCategory?: string
   repairErrorCategory?: string
+  transportStage?: string
   initialResponseLength?: number
   repairResponseLength?: number
   initialResponseFlags?: GameMasterGenerationResponseFlags
@@ -155,6 +163,7 @@ export type GameMasterSceneCheckOutcomeOutput = {
     fallbackUsed?: boolean
     adventurePatch?: LocationRoomAdventurePatch
     sceneCheckEscalation?: LocationRoomSceneCheckEscalation
+    gmGeneration?: GameMasterGenerationDiagnostics
   }
 }
 
@@ -314,6 +323,72 @@ function parseSceneCheckRequest(value: unknown): NormalizedSceneCheckRequest | n
     throw new Error(`Game-master beat response sceneCheckRequest is invalid: ${normalized.error}`)
   }
   return normalized.value
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function hasAdventurePatchProgressionSignal(adventurePatch: LocationRoomAdventurePatch): boolean {
+  return Boolean(
+    adventurePatch.activeDecision ||
+    adventurePatch.currentStakes ||
+    (adventurePatch.consequenceLedger?.length ?? 0) > 0 ||
+    adventurePatch.lastOutcome ||
+    (adventurePatch.discoveries?.length ?? 0) > 0 ||
+    (adventurePatch.clocks?.length ?? 0) > 0
+  )
+}
+
+function uniqueRecoveryKeys(keys: GameMasterGenerationRecoveryKey[]): GameMasterGenerationRecoveryKey[] {
+  return Array.from(new Set(keys))
+}
+
+function synthesizeBeatAdventurePatchFromModelProse(input: {
+  publicNarration: string | null
+  speakerInstruction: string
+  currentObjective: string | null
+}): LocationRoomAdventurePatch {
+  const summary = trimToLimit(
+    input.publicNarration ?? input.speakerInstruction ?? input.currentObjective,
+    320
+  ) ?? 'The model-authored game-master beat changed the active room pressure.'
+  const currentStakes = trimToLimit(
+    input.currentObjective ?? input.speakerInstruction ?? input.publicNarration,
+    300
+  ) ?? 'The model-authored game-master beat carries the next visible choice.'
+
+  return normalizeAdventurePatch({
+    currentStakes,
+    lastOutcome: {
+      kind: 'beat',
+      sourceId: 'game-master-model-prose',
+      summary,
+    },
+  })
+}
+
+function synthesizeSceneCheckAdventurePatchFromModelProse(input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'sceneCheckId' | 'resolution'>, publicNarration: string): LocationRoomAdventurePatch {
+  const tier = input.resolution.roll.tier
+  const summary = trimToLimit(publicNarration, 320) ?? 'The model-authored scene-check outcome changed the next choice.'
+  const status = tier === 'critical_success' || tier === 'success' ? 'advantage' : 'complication'
+
+  return normalizeAdventurePatch({
+    currentStakes: trimToLimit(publicNarration, 300),
+    consequence: {
+      id: 'scene-check-outcome',
+      summary,
+      status,
+      tier,
+    },
+    discoveries: tier === 'critical_success' || tier === 'success' ? [summary] : [],
+    lastOutcome: {
+      kind: 'scene_check',
+      sourceId: input.sceneCheckId,
+      tier,
+      summary,
+    },
+  }, { sourceId: input.sceneCheckId })
 }
 
 function isFlatOpeningState(input: {
@@ -737,12 +812,30 @@ export function normalizeGameMasterBeatResponse(
     parsed.requestedGameplayAction ?? parsed.requested_gameplay_action
   )
   const encounterSeed = parseEncounterSeed(parsed.encounterSeed ?? parsed.encounter_seed)
-  const sceneCheckRequest = parseSceneCheckRequest(parsed.sceneCheckRequest ?? parsed.scene_check_request)
-  const adventurePatch = normalizeAdventurePatch(parsed.adventurePatch ?? parsed.adventure_patch)
+  const recoveries: GameMasterGenerationRecoveryKey[] = []
+  const rawSceneCheckRequest = parsed.sceneCheckRequest ?? parsed.scene_check_request
+  let sceneCheckRequest: NormalizedSceneCheckRequest | null = null
+  try {
+    sceneCheckRequest = parseSceneCheckRequest(rawSceneCheckRequest)
+  } catch (error) {
+    if (requestedGameplayAction === 'start_combat') {
+      throw error
+    }
+    recoveries.push('scene_check_request_dropped_invalid_optional')
+  }
+  let adventurePatch = normalizeAdventurePatch(parsed.adventurePatch ?? parsed.adventure_patch)
   const publicNarration = parseOptionalString(
     parsed.publicNarration ?? parsed.public_narration,
     limits.publicNarrationMaxLength
   )
+  if (!hasAdventurePatchProgressionSignal(adventurePatch)) {
+    adventurePatch = synthesizeBeatAdventurePatchFromModelProse({
+      publicNarration,
+      speakerInstruction,
+      currentObjective,
+    })
+    recoveries.push('adventure_patch_defaulted_from_model_prose')
+  }
   const stateAfter = {
     stateSummary,
     currentObjective,
@@ -792,6 +885,16 @@ export function normalizeGameMasterBeatResponse(
         proposalError: null,
       },
       adventurePatch,
+      ...(recoveries.length > 0
+        ? {
+          gmGeneration: {
+            status: 'accepted',
+            repairAttempted: false,
+            repaired: false,
+            recoveries: uniqueRecoveryKeys(recoveries),
+          },
+        }
+        : {}),
     },
   }
 }
@@ -1300,22 +1403,50 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
   if (openThreads.length === 0) {
     throw new Error('Game-master scene-check outcome response missing openThreads')
   }
-  const adventurePatch = normalizeAdventurePatch(parsed.adventurePatch ?? parsed.adventure_patch, {
+  const recoveries: GameMasterGenerationRecoveryKey[] = []
+  let adventurePatch = normalizeAdventurePatch(parsed.adventurePatch ?? parsed.adventure_patch, {
     sourceId: input.sceneCheckId,
   })
+  const rawEscalation = parsed.escalation ?? parsed.sceneCheckEscalation ?? parsed.scene_check_escalation
+  if (!isPlainRecord(rawEscalation)) {
+    recoveries.push('scene_check_escalation_normalized')
+  }
   const normalizedEscalation = normalizeSceneCheckEscalation({
     narrativeState: input.narrativeState,
-    rawEscalation: parsed.escalation ?? parsed.sceneCheckEscalation ?? parsed.scene_check_escalation,
+    rawEscalation,
     recentOutcomeSummary: publicNarration,
     fallbackSummary: publicNarration,
     rollTier: input.resolution.roll.tier,
     selectedTokenId: input.resolution.actorTokenId,
   })
+  if (isPlainRecord(rawEscalation)) {
+    const rawDecision = rawEscalation.decision ?? rawEscalation.escalationDecision ?? rawEscalation.escalation_decision ?? rawEscalation.escalation
+    const rawDecisionText = typeof rawDecision === 'string' ? rawDecision.trim() : null
+    const rawThreatLevel = rawEscalation.threatLevel ?? rawEscalation.threat_level
+    const rawDecisionWasNormalized = Boolean(
+      rawDecision != null &&
+      (
+        !rawDecisionText ||
+        !['none', 'danger', 'combat_ready'].includes(rawDecisionText) ||
+        normalizedEscalation.escalation.decision !== rawDecisionText
+      )
+    )
+    const rawThreatLevelWasNormalized = rawThreatLevel != null && normalizeThreatLevel(rawThreatLevel) == null
+    if (rawDecisionWasNormalized || rawThreatLevelWasNormalized) {
+      recoveries.push('scene_check_escalation_normalized')
+    }
+  }
   validateSceneCheckOutcomePublicNarration(input.resolution.roll.tier, publicNarration)
   if (hasDuplicateRecentOutcomeOpening(publicNarration, input.recentMessages)) {
     throw new Error('Game-master scene-check outcome response reuses a recent outcome opening')
   }
-  validateSceneCheckOutcomeAdventurePatch(input.resolution.roll.tier, adventurePatch)
+  try {
+    validateSceneCheckOutcomeAdventurePatch(input.resolution.roll.tier, adventurePatch)
+  } catch {
+    adventurePatch = synthesizeSceneCheckAdventurePatchFromModelProse(input, publicNarration)
+    recoveries.push('scene_check_adventure_patch_defaulted_from_model_prose')
+    validateSceneCheckOutcomeAdventurePatch(input.resolution.roll.tier, adventurePatch)
+  }
 
   return {
     gameMasterAgentId: options.gameMasterAgentId,
@@ -1332,6 +1463,16 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
       rawResponseLength: raw.length,
       adventurePatch,
       sceneCheckEscalation: normalizedEscalation.escalation,
+      ...(recoveries.length > 0
+        ? {
+          gmGeneration: {
+            status: 'accepted',
+            repairAttempted: false,
+            repaired: false,
+            recoveries: uniqueRecoveryKeys(recoveries),
+          },
+        }
+        : {}),
     },
   }
 }
@@ -1516,10 +1657,10 @@ function categorizeBeatResponseError(error: unknown): string {
   if (/invalid JSON/i.test(message)) return 'invalid_json'
   if (/selectedSpeakerTokenId|selected speaker/i.test(message)) return 'speaker_constraint'
   if (/token id|featuredTokenIds/i.test(message)) return 'token_constraint'
+  if (/missing .*speakerInstruction|missing .*stateSummary|missing .*publicNarration|publicNarration is required/i.test(message)) return 'missing_required_field'
   if (/currentObjective|openThreads|start_combat|combatReadiness|ttrpgPhase|threatLevel|encounterSeed|requestedGameplayAction|sceneCheckRequest|adventurePatch|story pressure|publicNarration|flat opening|visibly escalate/i.test(message)) {
     return 'progression_contract'
   }
-  if (/missing .*speakerInstruction|missing .*stateSummary/i.test(message)) return 'missing_required_field'
   return 'validation_error'
 }
 
@@ -1557,6 +1698,46 @@ function buildGameMasterBeatRepairPrompt(
   ].join('\n'))
 }
 
+function buildGameMasterSceneCheckOutcomeRepairPrompt(
+  input: GenerateGameMasterSceneCheckOutcomeInput,
+  diagnostics: GameMasterGenerationDiagnostics
+): string {
+  return clampGameMasterSceneCheckOutcomePrompt([
+    'Your previous game-master scene-check outcome response failed the required JSON contract.',
+    `Failure category: ${diagnostics.initialErrorCategory ?? 'validation_error'}`,
+    `Previous response length: ${diagnostics.initialResponseLength ?? 0}`,
+    '',
+    'Repair by producing one fresh valid response. Do not explain the repair.',
+    '',
+    'Backend-computed roll facts:',
+    ...formatSceneCheckRollFacts(input),
+    '',
+    ...formatSceneCheckEscalationCatalogCandidates(input.narrativeState),
+    '',
+    ...formatSpatialContext(normalizeAdventureMemory(input.narrativeState.metadata).spatialContext),
+    '',
+    ...buildRecentSceneCheckPatternLines(input.recentMessages),
+    '',
+    ...buildNarrativeStateLines(input),
+    '',
+    ...buildGameMasterSceneCheckOutcomeContractLines(),
+  ].join('\n'))
+}
+
+function mergeGenerationDiagnostics(
+  existing: GameMasterGenerationDiagnostics | undefined,
+  diagnostics: GameMasterGenerationDiagnostics
+): GameMasterGenerationDiagnostics {
+  const recoveries = uniqueRecoveryKeys([
+    ...(existing?.recoveries ?? []),
+    ...(diagnostics.recoveries ?? []),
+  ])
+  return {
+    ...diagnostics,
+    ...(recoveries.length > 0 ? { recoveries } : {}),
+  }
+}
+
 function withGenerationDiagnostics(
   output: GameMasterBeatOutput,
   diagnostics: GameMasterGenerationDiagnostics
@@ -1565,7 +1746,20 @@ function withGenerationDiagnostics(
     ...output,
     metadata: {
       ...output.metadata,
-      gmGeneration: diagnostics,
+      gmGeneration: mergeGenerationDiagnostics(output.metadata.gmGeneration, diagnostics),
+    },
+  }
+}
+
+function withSceneCheckGenerationDiagnostics(
+  output: GameMasterSceneCheckOutcomeOutput,
+  diagnostics: GameMasterGenerationDiagnostics
+): GameMasterSceneCheckOutcomeOutput {
+  return {
+    ...output,
+    metadata: {
+      ...output.metadata,
+      gmGeneration: mergeGenerationDiagnostics(output.metadata.gmGeneration, diagnostics),
     },
   }
 }
@@ -1578,6 +1772,18 @@ export class GameMasterBeatGenerationError extends Error {
   ) {
     super(message)
     this.name = 'GameMasterBeatGenerationError'
+    this.cause = options?.cause
+  }
+}
+
+export class GameMasterSceneCheckOutcomeGenerationError extends Error {
+  constructor(
+    message: string,
+    readonly diagnostics: GameMasterGenerationDiagnostics,
+    options?: { cause?: unknown }
+  ) {
+    super(message)
+    this.name = 'GameMasterSceneCheckOutcomeGenerationError'
     this.cause = options?.cause
   }
 }
@@ -1748,16 +1954,6 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
             repairResponseFlags: responseFlags(repairText),
           }
 
-          if ([
-            'empty_response',
-            'missing_json_object',
-            'invalid_json',
-            'missing_required_field',
-            'progression_contract',
-          ].includes(failedDiagnostics.repairErrorCategory ?? '')) {
-            return buildFallbackGameMasterBeat(input, gameMasterAgentId, failedDiagnostics)
-          }
-
           throw new GameMasterBeatGenerationError(
             `Game-master beat repair failed (initial: ${failedDiagnostics.initialErrorCategory}, repair: ${failedDiagnostics.repairErrorCategory})`,
             failedDiagnostics,
@@ -1812,11 +2008,107 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
         conversationId: session.sessionId,
       })
 
-      return normalizeGameMasterSceneCheckOutcomeResponse(collected.text, input, {
-        gameMasterAgentId,
-      })
-    } catch {
-      return buildFallbackGameMasterSceneCheckOutcome(input, gameMasterAgentId)
+      try {
+        return withSceneCheckGenerationDiagnostics(normalizeGameMasterSceneCheckOutcomeResponse(collected.text, input, {
+          gameMasterAgentId,
+        }), {
+          status: 'accepted',
+          repairAttempted: false,
+          repaired: false,
+          initialResponseLength: collected.text.length,
+          initialResponseFlags: responseFlags(collected.text),
+        })
+      } catch (initialError) {
+        const diagnostics = diagnosticsForInitialFailure(collected.text, initialError)
+        let repairText = ''
+
+        try {
+          const repairSession = await this.messaging.createSession({
+            agentId: gameMasterAgentId,
+            userId: input.room.officialUserId,
+            metadata: {
+              source: 'wagdie-location-room-game-master-scene-check-outcome-repair',
+              roomId: input.room.id,
+              locationId: input.room.locationId,
+              tickId: input.tick.id,
+              channelId: input.room.channelId,
+              officialRoomId: input.room.officialRoomId,
+              officialWorldId: input.room.officialWorldId,
+              selectedSpeakerTokenId: input.speaker.tokenId,
+              sceneCheckId: input.sceneCheckId,
+              repairAttempted: true,
+              initialErrorCategory: diagnostics.initialErrorCategory,
+            },
+          })
+
+          try {
+            const repaired = await sendAndCollectOfficialMessage(this.messaging, {
+              sessionId: repairSession.sessionId,
+              content: buildGameMasterSceneCheckOutcomeRepairPrompt(input, diagnostics),
+              metadata: {
+                source: 'wagdie-location-room-game-master-scene-check-outcome-repair',
+                roomId: input.room.id,
+                locationId: input.room.locationId,
+                tickId: input.tick.id,
+                channelId: input.room.channelId,
+                selectedSpeakerTokenId: input.speaker.tokenId,
+                sceneCheckId: input.sceneCheckId,
+                repairAttempted: true,
+                initialErrorCategory: diagnostics.initialErrorCategory,
+              },
+            }, {
+              conversationId: repairSession.sessionId,
+            })
+            repairText = repaired.text
+          } finally {
+            await this.messaging.deleteSession(repairSession.sessionId).catch(() => null)
+          }
+        } catch (repairTransportError) {
+          const failedDiagnostics: GameMasterGenerationDiagnostics = {
+            ...diagnostics,
+            status: 'repair_failed',
+            repairAttempted: true,
+            repaired: false,
+            repairErrorCategory: 'repair_transport_error',
+            repairResponseLength: repairText.length,
+            repairResponseFlags: responseFlags(repairText),
+          }
+          throw new GameMasterSceneCheckOutcomeGenerationError(
+            `Game-master scene-check outcome repair failed (initial: ${failedDiagnostics.initialErrorCategory}, repair: ${failedDiagnostics.repairErrorCategory})`,
+            failedDiagnostics,
+            { cause: repairTransportError }
+          )
+        }
+
+        try {
+          return withSceneCheckGenerationDiagnostics(normalizeGameMasterSceneCheckOutcomeResponse(repairText, input, {
+            gameMasterAgentId,
+          }), {
+            ...diagnostics,
+            status: 'repaired',
+            repairAttempted: true,
+            repaired: true,
+            repairResponseLength: repairText.length,
+            repairResponseFlags: responseFlags(repairText),
+          })
+        } catch (repairError) {
+          const failedDiagnostics: GameMasterGenerationDiagnostics = {
+            ...diagnostics,
+            status: 'repair_failed',
+            repairAttempted: true,
+            repaired: false,
+            repairErrorCategory: categorizeBeatResponseError(repairError),
+            repairResponseLength: repairText.length,
+            repairResponseFlags: responseFlags(repairText),
+          }
+
+          throw new GameMasterSceneCheckOutcomeGenerationError(
+            `Game-master scene-check outcome repair failed (initial: ${failedDiagnostics.initialErrorCategory}, repair: ${failedDiagnostics.repairErrorCategory})`,
+            failedDiagnostics,
+            { cause: repairError }
+          )
+        }
+      }
     } finally {
       if (session) {
         await this.messaging.deleteSession(session.sessionId).catch(() => null)

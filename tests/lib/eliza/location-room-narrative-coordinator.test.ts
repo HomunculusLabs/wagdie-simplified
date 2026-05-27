@@ -25,6 +25,7 @@ jest.mock('@/lib/eliza/gameMasterAgent/service', () => ({
 import { DefaultLocationRoomNarrativeCoordinator } from '@/lib/eliza/locationRooms/narrativeCoordinator'
 import {
   GameMasterBeatGenerationError,
+  GameMasterSceneCheckOutcomeGenerationError,
   type GameMasterBeatGenerator,
   type GameMasterGenerationDiagnostics,
 } from '@/lib/eliza/locationRooms/gameMasterGenerator'
@@ -2001,7 +2002,7 @@ describe('location room narrative coordinator', () => {
     }))
   })
 
-  it('falls back to substantive failure outcome with adventure and spatial memory when outcome generation fails', async () => {
+  it('fails scene-check outcome generation loudly without appending a static GM outcome', async () => {
     const request = normalizeSceneCheckRequest({
       id: 'cellar-stair',
       actionIntent: 'search',
@@ -2009,7 +2010,6 @@ describe('location room narrative coordinator', () => {
     })
     if (!request.ok) throw new Error(request.error)
 
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
     const repository = makeRepository()
     usePriorGameMasterMessage(repository)
     repository.appendMessage.mockImplementation(async (input) => message({
@@ -2022,19 +2022,16 @@ describe('location room narrative coordinator', () => {
       metadata: input.metadata ?? {},
     }))
     const narrativeRepository = makeNarrativeRepository()
-    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
-      ...narrativeState(),
-      metadata: {
-        adventure: {
-          spatialContext: {
-            currentArea: 'Crow\'s Den taproom threshold',
-            landmarks: ['ash-marked bar'],
-            routes: ['cellar stair behind the bar'],
-            unresolvedSpatialQuestions: [],
-          },
-        },
-      },
-    })
+    const diagnostics: GameMasterGenerationDiagnostics = {
+      status: 'repair_failed',
+      repairAttempted: true,
+      repaired: false,
+      initialErrorCategory: 'invalid_json',
+      repairErrorCategory: 'progression_contract',
+      initialResponseLength: 10,
+      repairResponseLength: 20,
+    }
+    const outcomeError = new GameMasterSceneCheckOutcomeGenerationError('scene-check repair failed with raw model text hidden', diagnostics)
     const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
       generateBeat: jest.fn(async () => ({
         gameMasterAgentId: 'gm-1',
@@ -2055,7 +2052,7 @@ describe('location room narrative coordinator', () => {
         metadata: { sceneCheck: { request: request.value, proposal: null, proposalError: null } },
       })),
       generateSceneCheckOutcome: jest.fn(async () => {
-        throw new Error('model unavailable')
+        throw outcomeError
       }),
     }
     const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
@@ -2077,40 +2074,281 @@ describe('location room narrative coordinator', () => {
       () => 0
     )
 
-    try {
-      await coordinator.processTurn({
-        room: room(),
-        tick: tick(),
-        speaker: participants[0],
-        participants,
-        recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
-      })
-    } finally {
-      warnSpy.mockRestore()
-    }
+    await expect(coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })).rejects.toThrow('scene-check repair failed')
 
-    const outcomeAppend = repository.appendMessage.mock.calls[2][0]
-    expect(outcomeAppend.metadata?.messageKind).toBe('gm_outcome')
-    expect(outcomeAppend.content.length).toBeGreaterThanOrEqual(180)
-    expect(outcomeAppend.content).toMatch(/blocked|harder route|next choice|agency|recover|retreat|risk/i)
-    expect(outcomeAppend.content).not.toMatch(/hp|hit points|reward|death|wallet|private chain/i)
+    expect(repository.appendMessage.mock.calls.map(([input]) => input.metadata?.messageKind)).toEqual([
+      'character_action',
+      'roll_card',
+    ])
+    expect(repository.appendMessage.mock.calls.some(([input]) => input.metadata?.messageKind === 'gm_outcome')).toBe(false)
     expect(gameMasterGenerator.generateSceneCheckOutcome).toHaveBeenCalled()
-    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+    expect(narrativeRepository.markBeatFailed).toHaveBeenCalledWith('beat-1', outcomeError, {
       metadata: expect.objectContaining({
-        adventure: expect.objectContaining({
-          consequenceLedger: [expect.objectContaining({
-            status: 'complication',
-            tier: 'critical_failure',
-            summary: expect.stringMatching(/setback|danger|route harder/i),
-          })],
-          spatialContext: expect.objectContaining({
-            currentArea: 'Crow\'s Den taproom threshold',
-            routes: expect.arrayContaining([expect.stringMatching(/blocked|harder route/i)]),
-            unresolvedSpatialQuestions: expect.arrayContaining([expect.stringMatching(/alternate route|safer approach/i)]),
+        gmGeneration: diagnostics,
+        sceneCheck: expect.objectContaining({
+          resolution: expect.any(Object),
+          publicRolls: expect.any(Object),
+          messageIds: expect.objectContaining({
+            characterAction: 'msg-1',
+            rollCard: 'msg-2',
           }),
         }),
       }),
+    })
+    expect(narrativeRepository.updateState).not.toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      stateSummary: expect.any(String),
     }))
+  })
+
+  it('retries only the missing scene-check GM outcome using stored action and roll facts', async () => {
+    const request = normalizeSceneCheckRequest({
+      id: 'ash-marks',
+      actionIntent: 'search',
+      rollChoice: { source: 'fixed', checkType: 'perception' },
+    })
+    if (!request.ok) throw new Error(request.error)
+
+    const adjudication = {
+      decision: 'run' as const,
+      source: 'game_master' as const,
+      adjudicationSource: 'game_master' as const,
+      requestSource: 'game_master' as const,
+      reason: 'gm_request' as const,
+      actorTokenId: 1,
+      actorName: 'Ash',
+      actionIntent: request.value.actionIntent,
+      gameplayActionType: request.value.gameplayActionType,
+      rollChoice: request.value.rollChoice,
+      contextualChecks: request.value.contextualChecks,
+      difficulty: request.value.difficulty,
+      request: request.value,
+      proposal: null,
+    }
+    const sceneCheckId = 'scene_check:beat-1:ash-marks'
+    const resolution = resolveSceneCheck({ adjudication, rng: () => 0 })
+    const publicRolls = projectPublicSceneCheckRolls(resolution, { sceneCheckId })
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: 'msg-outcome',
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository(beat({
+      status: 'failed',
+      gameMasterAgentId: 'gm-1',
+      publicNarration: null,
+      speakerInstruction: 'Use the stored scene check.',
+      stateAfter: {
+        stateSummary: 'The ash marks invite a search.',
+        currentObjective: 'Search the ash marks.',
+        openThreads: ['What do the marks hide?'],
+      },
+      metadata: {
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        adventurePatch: { currentStakes: 'Search the ash marks.' },
+        sceneCheckRequest: request.value,
+        sceneCheck: {
+          id: sceneCheckId,
+          request: request.value,
+          proposal: null,
+          proposalError: null,
+          adjudication,
+          resolution,
+          publicRolls,
+          messageIds: {
+            characterAction: 'msg-action-existing',
+            rollCard: 'msg-roll-existing',
+          },
+          characterAction: {
+            content: 'I search the ash marks for a hidden sign.',
+            officialAgentId: 'agent-1',
+            authorName: 'Ash',
+          },
+          gmOutcome: null,
+        },
+      },
+    }))
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(),
+      generateSceneCheckOutcome: jest.fn(async (input) => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: `The stored roll outcome answers ${input.resolution.roll.tier}.`,
+        stateAfter: {
+          stateSummary: 'The stored roll has an outcome.',
+          currentObjective: 'Choose whether to follow the sign.',
+          openThreads: ['What follows the sign?'],
+        },
+        adventurePatch: { currentStakes: 'Follow what the stored roll revealed.' },
+        metadata: { gmGeneration: { status: 'accepted', repairAttempted: false, repaired: false } },
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(),
+    }
+    const rng = jest.fn(() => 0.99)
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1'),
+      rng
+    )
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick({ attempts: 2 }),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      messageId: 'msg-outcome',
+      messageIds: ['msg-action-existing', 'msg-roll-existing', 'msg-outcome'],
+      sceneCheckId,
+    }))
+    expect(gameMasterGenerator.generateBeat).not.toHaveBeenCalled()
+    expect(turnGenerator.generateTurn).not.toHaveBeenCalled()
+    expect(rng).not.toHaveBeenCalled()
+    expect(repository.appendMessage).toHaveBeenCalledTimes(1)
+    expect(repository.appendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      dedupeKey: 'scene_check:beat-1:gm_outcome',
+      metadata: expect.objectContaining({ messageKind: 'gm_outcome' }),
+    }))
+    expect(gameMasterGenerator.generateSceneCheckOutcome).toHaveBeenCalledWith(expect.objectContaining({
+      characterAction: 'I search the ash marks for a hidden sign.',
+      resolution,
+      publicRolls,
+    }))
+  })
+
+  it('does not duplicate a stored scene-check GM outcome message on bookkeeping retry', async () => {
+    const request = normalizeSceneCheckRequest({
+      id: 'ash-marks',
+      actionIntent: 'search',
+      rollChoice: { source: 'fixed', checkType: 'perception' },
+    })
+    if (!request.ok) throw new Error(request.error)
+
+    const adjudication = {
+      decision: 'run' as const,
+      source: 'game_master' as const,
+      adjudicationSource: 'game_master' as const,
+      requestSource: 'game_master' as const,
+      reason: 'gm_request' as const,
+      actorTokenId: 1,
+      actorName: 'Ash',
+      actionIntent: request.value.actionIntent,
+      gameplayActionType: request.value.gameplayActionType,
+      rollChoice: request.value.rollChoice,
+      contextualChecks: request.value.contextualChecks,
+      difficulty: request.value.difficulty,
+      request: request.value,
+      proposal: null,
+    }
+    const sceneCheckId = 'scene_check:beat-1:ash-marks'
+    const resolution = resolveSceneCheck({ adjudication, rng: () => 0 })
+    const publicRolls = projectPublicSceneCheckRolls(resolution, { sceneCheckId })
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    const narrativeRepository = makeNarrativeRepository(beat({
+      status: 'failed',
+      gameMasterAgentId: 'gm-1',
+      publicNarration: null,
+      speakerInstruction: 'Use the stored scene check.',
+      stateAfter: {
+        stateSummary: 'The ash marks invite a search.',
+        currentObjective: 'Search the ash marks.',
+        openThreads: ['What do the marks hide?'],
+      },
+      metadata: {
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        adventurePatch: { currentStakes: 'Search the ash marks.' },
+        sceneCheckRequest: request.value,
+        sceneCheck: {
+          id: sceneCheckId,
+          request: request.value,
+          proposal: null,
+          proposalError: null,
+          adjudication,
+          resolution,
+          publicRolls,
+          messageIds: {
+            characterAction: 'msg-action-existing',
+            rollCard: 'msg-roll-existing',
+            gmOutcome: 'msg-outcome-existing',
+          },
+          characterAction: {
+            content: 'I search the ash marks for a hidden sign.',
+            officialAgentId: 'agent-1',
+            authorName: 'Ash',
+          },
+          gmOutcome: {
+            gameMasterAgentId: 'gm-1',
+            publicNarration: 'The stored outcome already reached the room.',
+            stateAfter: {
+              stateSummary: 'The stored outcome has resolved.',
+              currentObjective: 'Choose whether to follow the sign.',
+              openThreads: ['What follows the sign?'],
+            },
+            metadata: { adventurePatch: { currentStakes: 'Follow the stored sign.' } },
+          },
+        },
+      },
+    }))
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(),
+      generateSceneCheckOutcome: jest.fn(),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(
+      repository,
+      narrativeRepository,
+      gameMasterGenerator,
+      turnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick({ attempts: 2 }),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      messageId: 'msg-outcome-existing',
+      messageIds: ['msg-action-existing', 'msg-roll-existing', 'msg-outcome-existing'],
+      sceneCheckId,
+    }))
+    expect(repository.appendMessage).not.toHaveBeenCalled()
+    expect(gameMasterGenerator.generateBeat).not.toHaveBeenCalled()
+    expect(gameMasterGenerator.generateSceneCheckOutcome).not.toHaveBeenCalled()
+    expect(turnGenerator.generateTurn).not.toHaveBeenCalled()
+    expect(narrativeRepository.markBeatCompleted).toHaveBeenCalledWith('beat-1')
   })
 
   it('executes scene checks as character action, roll card, then GM outcome with durable roll metadata', async () => {

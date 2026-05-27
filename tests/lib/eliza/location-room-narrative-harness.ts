@@ -8,6 +8,7 @@
 
 import { elizaConfig } from '@/lib/eliza/config'
 import { DefaultLocationRoomNarrativeCoordinator, type GameMasterAgentResolver } from '@/lib/eliza/locationRooms/narrativeCoordinator'
+import { normalizeSceneCheckEscalation } from '@/lib/eliza/locationRooms/encounterEscalation'
 import { normalizeSceneCheckRequest } from '@/lib/eliza/locationRooms/sceneChecks/rules'
 import type { SceneCheckActionIntent } from '@/lib/eliza/locationRooms/sceneChecks/types'
 import type {
@@ -428,14 +429,17 @@ class InMemoryLocationRoomRepository {
   private readonly room: LocationRoom
   private readonly location: LocationRoomLocationDetails
 
-  constructor(private readonly scenario: NarrativeHarnessScenario) {
+  constructor(
+    private readonly scenario: NarrativeHarnessScenario,
+    locationMetadata: Record<string, unknown> = {}
+  ) {
     this.room = roomFor(scenario)
     this.location = {
       id: scenario.locationId,
       name: scenario.locationName,
       chainLocationId: null,
       active: true,
-      metadata: {},
+      metadata: locationMetadata,
       createdAt: BASE_TIME,
       updatedAt: BASE_TIME,
     }
@@ -874,11 +878,23 @@ class ScriptedGameMasterBeatGenerator implements GameMasterBeatGenerator {
     const outcomeVerbs = ['splinters', 'answers', 'tightens', 'reveals', 'punishes', 'unlocks', 'bargains', 'twists', 'echoes', 'brands']
     const outcomeLead = `${this.scenario.locationName} ${outcomeVerbs[this.outcomeTurn % outcomeVerbs.length]} ${input.speaker.name}'s ${input.resolution.actionIntent} test with ${tier}`
 
+    const publicNarration = failure
+      ? `${outcomeLead}. ${input.characterAction} collapses into consequence: ${consequence} A witness, door, or omen now turns openly hostile, leaving the party with fewer safe options and a visible price to pay.`
+      : `${outcomeLead}. ${input.characterAction} changes the scene. ${consequence} The party can act on this immediately: exploit the opening, protect the exposed character, or follow the clue before it cools.`
+    const escalation = normalizeSceneCheckEscalation({
+      narrativeState: input.narrativeState,
+      rawEscalation: failure
+        ? { decision: 'danger', dangerKind: 'monster_pressure' }
+        : { decision: 'none', dangerKind: 'unknown', reason: 'scripted_success_no_escalation' },
+      recentOutcomeSummary: publicNarration,
+      fallbackSummary: publicNarration,
+      rollTier: tier,
+      selectedTokenId: input.resolution.actorTokenId,
+    })
+
     return {
       gameMasterAgentId: input.gameMasterAgentId,
-      publicNarration: failure
-        ? `${outcomeLead}. ${input.characterAction} collapses into consequence: ${consequence} A witness, door, or omen now turns openly hostile, leaving the party with fewer safe options and a visible price to pay.`
-        : `${outcomeLead}. ${input.characterAction} changes the scene. ${consequence} The party can act on this immediately: exploit the opening, protect the exposed character, or follow the clue before it cools.`,
+      publicNarration,
       stateAfter: {
         stateSummary: `${this.scenario.premise} Latest roll (${tier}) created this consequence: ${consequence}`,
         currentObjective: failure ? `Recover from the complication: ${this.scenario.stakes}` : this.scenario.objective,
@@ -901,7 +917,12 @@ class ScriptedGameMasterBeatGenerator implements GameMasterBeatGenerator {
           unresolvedSpatialQuestions: [`Who controls the next exit after ${tier}?`],
         },
       },
-      metadata: { adventurePatch: { currentStakes: this.scenario.stakes } },
+      escalation: escalation.escalation,
+      ttrpgMetadataPatch: escalation.ttrpgMetadataPatch,
+      metadata: {
+        adventurePatch: { currentStakes: this.scenario.stakes },
+        sceneCheckEscalation: escalation.escalation,
+      },
     }
   }
 
@@ -1172,8 +1193,9 @@ export async function runNarrativeEscalationValidationProbe(): Promise<Narrative
     gmNarrationEvery: 1,
     rollProfile: 'fail-heavy',
   }
-  const repository = new InMemoryLocationRoomRepository(scenario)
-  const narrativeRepository = new InMemoryNarrativeRepository(scenario, { adventureCatalog: escalationAdventureCatalog() })
+  const locationMetadata = { adventureCatalog: escalationAdventureCatalog() }
+  const repository = new InMemoryLocationRoomRepository(scenario, locationMetadata)
+  const narrativeRepository = new InMemoryNarrativeRepository(scenario, locationMetadata)
   const membership = new StaticMembershipRepository(scenario)
   const turnGenerator = new ScriptedTurnGenerator(scenario)
   const resolver: GameMasterAgentResolver = { resolveRuntimeGameMasterAgentId: async () => 'gm-harness' }

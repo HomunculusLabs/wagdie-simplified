@@ -541,11 +541,16 @@ describe('LocationRoomAdminDiagnosticsService', () => {
       status: 'repair_failed',
       repairAttempted: true,
       repaired: false,
+      fallbackUsed: false,
+      recoveries: [],
       initialErrorCategory: 'invalid_json',
       repairErrorCategory: 'progression_contract',
       initialResponseLength: 144,
       repairResponseLength: 88,
       safeError: 'Narrative beat failed. Check server logs for details.',
+      recentRepairFailedCount: 1,
+      recentLegacyFallbackCount: 0,
+      latestFailureCategory: 'progression_contract',
     })
     expect(result.triggerReadiness).toMatchObject({
       ttrpgPhase: 'threat',
@@ -559,6 +564,87 @@ describe('LocationRoomAdminDiagnosticsService', () => {
     expect(JSON.stringify(result)).not.toContain('raw malformed JSON response')
     expect(JSON.stringify(result)).not.toContain('do not expose')
     expect(result.recommendedNextAction).toBe('inspect_gm_repair_failure')
+  })
+
+  it('summarizes recent GM generation health counters without raw model text', async () => {
+    mutableNarrative.enabled = true
+    const narrativeRepository = makeNarrativeRepository({
+      listRecentBeatsByRoomId: jest.fn(async () => [
+        narrativeBeat({
+          id: 'beat-latest-recovered',
+          metadata: {
+            gmGeneration: {
+              status: 'accepted',
+              repairAttempted: false,
+              repaired: false,
+              recoveries: ['adventure_patch_defaulted_from_model_prose'],
+              rawPrompt: 'do not expose prompt',
+            },
+          },
+        }),
+        narrativeBeat({
+          id: 'beat-repaired',
+          metadata: {
+            gmGeneration: {
+              status: 'repaired',
+              repairAttempted: true,
+              repaired: true,
+              initialErrorCategory: 'invalid_json',
+            },
+          },
+        }),
+        narrativeBeat({
+          id: 'beat-failed',
+          status: 'failed',
+          lastError: 'raw model text must not leak',
+          metadata: {
+            gmGeneration: {
+              status: 'repair_failed',
+              repairAttempted: true,
+              repaired: false,
+              initialErrorCategory: 'missing_json_object',
+              repairErrorCategory: 'validation_error',
+              transportStage: 'repair_collect_stream',
+            },
+          },
+        }),
+        narrativeBeat({
+          id: 'beat-legacy-fallback',
+          metadata: {
+            sceneCheck: {
+              gmOutcome: {
+                metadata: {
+                  fallbackUsed: true,
+                  gmGeneration: {
+                    status: 'accepted',
+                    repairAttempted: false,
+                    repaired: false,
+                    fallbackUsed: true,
+                  },
+                },
+              },
+            },
+          },
+        }),
+      ]),
+    })
+
+    const result = await makeService({ narrativeRepository }).inspectLocation('11')
+
+    expect(result.gmGeneration).toMatchObject({
+      status: 'accepted',
+      recoveries: ['adventure_patch_defaulted_from_model_prose'],
+      recentAcceptedCount: 2,
+      recentRepairedCount: 1,
+      recentRepairFailedCount: 1,
+      recentRecoveredCount: 1,
+      recentLegacyFallbackCount: 2,
+      latestFailureCategory: 'validation_error',
+      latestTransportStage: 'repair_collect_stream',
+      latestRecoveries: ['adventure_patch_defaulted_from_model_prose'],
+    })
+    expect(JSON.stringify(result)).not.toContain('do not expose prompt')
+    expect(JSON.stringify(result)).not.toContain('raw model text')
   })
 
   it('reports catalog counts, seed metadata, and auto-promotion eligibility', async () => {

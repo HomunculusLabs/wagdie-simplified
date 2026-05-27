@@ -49,6 +49,72 @@ function summarizeBeatState(beat: LocationRoomNarrativeBeat) {
   }
 }
 
+function safeObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+const SAFE_GM_GENERATION_ERROR_CATEGORIES = new Set([
+  'empty_response',
+  'missing_json_object',
+  'invalid_json',
+  'speaker_constraint',
+  'token_constraint',
+  'progression_contract',
+  'missing_required_field',
+  'validation_error',
+  'repair_transport_error',
+])
+
+const SAFE_GM_GENERATION_TRANSPORT_STAGES = new Set([
+  'start_agent',
+  'create_session',
+  'send_message',
+  'collect_stream',
+  'create_repair_session',
+  'repair_send_message',
+  'repair_collect_stream',
+])
+
+const SAFE_GM_GENERATION_RECOVERIES = new Set([
+  'adventure_patch_defaulted_from_model_prose',
+  'scene_check_request_dropped_invalid_optional',
+  'scene_check_adventure_patch_defaulted_from_model_prose',
+  'scene_check_escalation_normalized',
+])
+
+function safeKnownValue(value: unknown, allowed: Set<string>): string | null {
+  return typeof value === 'string' && allowed.has(value) ? value : null
+}
+
+function safeRecoveryList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return Array.from(new Set(value
+    .map((item) => safeKnownValue(item, SAFE_GM_GENERATION_RECOVERIES))
+    .filter((item): item is string => Boolean(item))))
+    .slice(0, 8)
+}
+
+function summarizeBeatGeneration(beat: LocationRoomNarrativeBeat) {
+  const sceneCheck = safeObject(beat.metadata.sceneCheck)
+  const gmOutcome = safeObject(sceneCheck?.gmOutcome)
+  const gmOutcomeMetadata = safeObject(gmOutcome?.metadata)
+  const gmGeneration = safeObject(gmOutcomeMetadata?.gmGeneration) ?? safeObject(beat.metadata.gmGeneration)
+  const status = gmGeneration?.status === 'accepted' || gmGeneration?.status === 'repaired' || gmGeneration?.status === 'repair_failed'
+    ? gmGeneration.status
+    : 'not_available'
+
+  return {
+    status,
+    repairAttempted: gmGeneration?.repairAttempted === true,
+    repaired: gmGeneration?.repaired === true,
+    fallbackUsed: gmGeneration?.fallbackUsed === true || beat.metadata.fallbackUsed === true || gmOutcomeMetadata?.fallbackUsed === true,
+    recoveries: safeRecoveryList(gmGeneration?.recoveries),
+    initialErrorCategory: safeKnownValue(gmGeneration?.initialErrorCategory, SAFE_GM_GENERATION_ERROR_CATEGORIES),
+    repairErrorCategory: safeKnownValue(gmGeneration?.repairErrorCategory, SAFE_GM_GENERATION_ERROR_CATEGORIES),
+    transportStage: safeKnownValue(gmGeneration?.transportStage, SAFE_GM_GENERATION_TRANSPORT_STAGES),
+  }
+}
+
 export async function GET(request: NextRequest, context: RouteContext) {
   const auth = await requireAdmin()
   if (isAuthError(auth)) return withNoStoreAuthError(auth)
@@ -109,6 +175,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
         selectedTokenId: beat.selectedTokenId,
         publicNarration: beat.publicNarration,
         publicNarrationPresent: Boolean(beat.publicNarration?.trim()),
+        gmGeneration: summarizeBeatGeneration(beat),
         ...summarizeBeatState(beat),
         lastError: beat.lastError ? SAFE_NARRATIVE_ERROR_MESSAGE : null,
         createdAt: beat.createdAt,
