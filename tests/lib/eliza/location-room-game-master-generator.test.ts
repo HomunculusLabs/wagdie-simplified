@@ -1154,14 +1154,15 @@ describe('game-master beat generator helpers', () => {
     }))
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
     const repairPrompt = messaging.sendSessionMessage.mock.calls[1][0].content
+    expect(repairPrompt).toContain('Repair kind: json_only')
     expect(repairPrompt).toContain('Return only JSON with this contract')
     expect(repairPrompt).toContain('selectedSpeakerTokenId must be 1')
-    expect(repairPrompt).toContain('Non-aftermath beats must include a concrete currentObjective')
-    expect(repairPrompt).toContain('"publicNarration": "required public narration for observers"')
+    expect(repairPrompt).toContain('publicNarration is required, concrete, public-safe, and non-empty')
+    expect(repairPrompt).toContain('Non-aftermath beats require currentObjective')
     expect(repairPrompt).toContain('"adventurePatch"')
-    expect(repairPrompt).toContain('narrated story pressure')
-    expect(repairPrompt).toContain('activeDecision is rare')
-    expect(repairPrompt).toContain('publicNarration is required and must be non-empty')
+    expect(repairPrompt).not.toContain('Recent public transcript')
+    expect(repairPrompt).not.toContain('Quiet private adventure memory')
+    expect(repairPrompt).not.toContain('activeDecision is rare')
     expect(repairPrompt).not.toContain('not json')
   })
 
@@ -1231,7 +1232,16 @@ describe('game-master beat generator helpers', () => {
       speaker: participants[0],
       recentMessages: [message()],
       narrativeState: narrativeState(),
-    })).rejects.toThrow('stream down')
+    })).rejects.toMatchObject({
+      name: 'GameMasterBeatGenerationError',
+      diagnostics: expect.objectContaining({
+        status: 'repair_failed',
+        repairAttempted: false,
+        repaired: false,
+        initialErrorCategory: 'transport_error',
+        transportStage: 'collect_stream',
+      }),
+    })
 
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(1)
   })
@@ -1739,6 +1749,12 @@ describe('game-master beat generator helpers', () => {
       initialErrorCategory: 'validation_error',
     }))
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
+    const repairPrompt = messaging.sendSessionMessage.mock.calls[1][0].content
+    expect(repairPrompt).toContain('Repair kind: generic')
+    expect(repairPrompt).toContain('Return only a JSON object with this exact scene-check outcome contract')
+    expect(repairPrompt).toContain('Backend-computed roll facts')
+    expect(repairPrompt).not.toContain('Escalation catalog candidates')
+    expect(repairPrompt).not.toContain('Recent public transcript')
   })
 
   it('throws instead of returning static fallback when scene-check outcome repair fails', async () => {

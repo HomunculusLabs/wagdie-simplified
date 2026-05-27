@@ -17,7 +17,6 @@ import {
   hasDuplicateRecentOutcomeOpening,
 } from './sceneChecks/recentPatterns'
 import {
-  SCENE_CHECK_ACTION_INTENTS,
   type NormalizedSceneCheckRequest,
   type SceneCheckResolution,
 } from './sceneChecks/types'
@@ -656,7 +655,7 @@ function extractJsonObject(raw: string): ParsedBeat {
   return extractGameMasterJsonObject(raw) as ParsedBeat
 }
 
-function buildFallbackGameMasterBeat(
+export function buildFallbackGameMasterBeat(
   input: GenerateGameMasterBeatInput,
   gameMasterAgentId: string,
   diagnostics: GameMasterGenerationDiagnostics
@@ -1675,52 +1674,180 @@ function diagnosticsForInitialFailure(raw: string, error: unknown): GameMasterGe
   }
 }
 
+type GameMasterRepairPromptKind =
+  | 'json_only'
+  | 'missing_required'
+  | 'progression'
+  | 'speaker_or_token'
+  | 'generic'
+
+function gameMasterRepairPromptKind(category: string | undefined): GameMasterRepairPromptKind {
+  if (category === 'empty_response' || category === 'missing_json_object' || category === 'invalid_json') return 'json_only'
+  if (category === 'missing_required_field') return 'missing_required'
+  if (category === 'progression_contract') return 'progression'
+  if (category === 'speaker_constraint' || category === 'token_constraint') return 'speaker_or_token'
+  return 'generic'
+}
+
+function formatRepairEligibleTokenIds(participants: LocationRoomParticipant[]): string {
+  return participants.map((participant) => `#${participant.tokenId}`).join(', ')
+}
+
+function compactBeatRepairInstruction(kind: GameMasterRepairPromptKind, input: GenerateGameMasterBeatInput): string[] {
+  const publicRequired = input.progressionContext?.requirePublicNarration === true
+  const openingRequired = input.progressionContext?.requireOpeningPublicNarration === true
+  const escalationRequired = input.progressionContext?.requireEscalationBeyondOpening === true
+  return [
+    kind === 'json_only'
+      ? 'The prior response was not parseable JSON. Return a single valid JSON object only.'
+      : kind === 'missing_required'
+        ? 'The prior JSON missed required fields. Include every key from the compact schema below.'
+        : kind === 'progression'
+          ? 'The prior JSON failed progression rules. Satisfy the required narration/objective/thread/pressure rules below.'
+          : kind === 'speaker_or_token'
+            ? `The prior JSON used an invalid speaker/token. selectedSpeakerTokenId must be ${input.speaker.tokenId}; token lists may only use: ${formatRepairEligibleTokenIds(input.participants)}.`
+            : 'Return one corrected compact JSON object only.',
+    '- JSON only; no markdown, commentary, or prose outside the object.',
+    `- selectedSpeakerTokenId must be ${input.speaker.tokenId}.`,
+    publicRequired
+      ? '- publicNarration is required, concrete, public-safe, and non-empty.'
+      : '- publicNarration may be null unless a visible room transition is needed.',
+    openingRequired
+      ? '- Opening publicNarration must be 3-5 sentences with sensory detail, 2-3 interactable hooks, stakes, and an unresolved prompt.'
+      : '- Keep publicNarration concise and anchored to a concrete object, route, or threat.',
+    escalationRequired
+      ? '- Do not leave repeated activity in flat story/none/0 state; use exploration/threat, foreshadow, or threatLevel >= 1 without forcing combat.'
+      : '- Prefer narrative pressure over combat unless the current fiction clearly requires structured combat.',
+    '- Non-aftermath beats require currentObjective, at least one openThreads entry, and story pressure in publicNarration, speakerInstruction, or adventurePatch.',
+    '- Safest repair keeps requestedGameplayAction null, encounterSeed null, and sceneCheckRequest null.',
+    '- Only use requestedGameplayAction "start_combat" with ttrpgPhase "threat", combatReadiness "ready", threatLevel >= 3, and a valid encounterSeed.',
+  ]
+}
+
+function compactBeatRepairSchema(input: GenerateGameMasterBeatInput): string {
+  const publicNarrationValue = input.progressionContext?.requirePublicNarration
+    ? 'required concrete public GM narration'
+    : null
+  const speakerName = truncatePromptValue(input.speaker.name, 80)
+  return JSON.stringify({
+    publicNarration: publicNarrationValue,
+    speakerInstruction: `Private direction for ${speakerName} in their own voice`,
+    stateSummary: 'Updated continuity summary',
+    currentObjective: 'Current objective or null',
+    openThreads: ['Unresolved thread'],
+    ttrpgPhase: 'story | exploration | threat | aftermath',
+    combatReadiness: 'none | foreshadow | ready',
+    threatLevel: 0,
+    requestedGameplayAction: null,
+    encounterSeed: null,
+    sceneCheckRequest: null,
+    adventurePatch: { currentStakes: 'What changed or now matters' },
+    featuredTokenIds: [input.speaker.tokenId],
+    selectedSpeakerTokenId: input.speaker.tokenId,
+  })
+}
+
 function buildGameMasterBeatRepairPrompt(
   input: GenerateGameMasterBeatInput,
   diagnostics: GameMasterGenerationDiagnostics
 ): string {
+  const category = diagnostics.initialErrorCategory ?? 'validation_error'
+  const kind = gameMasterRepairPromptKind(category)
+  const ttrpg = normalizeNarrativeTtrpgMetadata(input.narrativeState.metadata)
   return clampGameMasterPrompt([
-    'Your previous game-master beat response failed the required JSON contract.',
-    `Failure category: ${diagnostics.initialErrorCategory ?? 'validation_error'}`,
+    'Repair the failed WAGDIE game-master beat with one compact JSON object.',
+    `Failure category: ${category}`,
     `Previous response length: ${diagnostics.initialResponseLength ?? 0}`,
+    `Repair kind: ${kind}`,
     '',
-    'Repair by producing one fresh valid response. Do not explain the repair.',
-    `Selected speaker remains: ${input.speaker.name} (#${input.speaker.tokenId})`,
+    'Minimal context:',
+    `Room id: ${input.room.id}`,
+    `Location id: ${input.room.locationId}`,
+    `Tick id: ${input.tick.id}`,
+    `Selected speaker: ${truncatePromptValue(input.speaker.name, 80)} (#${input.speaker.tokenId})`,
+    `Eligible token ids: ${formatRepairEligibleTokenIds(input.participants)}`,
+    `State summary: ${truncatePromptValue(input.narrativeState.stateSummary || 'No established continuity yet.', 260)}`,
+    `Current objective: ${truncatePromptValue(input.narrativeState.currentObjective || 'None.', 180)}`,
+    `Open threads: ${truncatePromptValue(input.narrativeState.openThreads.join(' | ') || 'None.', 260)}`,
+    `TTRPG: phase ${ttrpg.ttrpgPhase}; readiness ${ttrpg.combatReadiness}; threat ${ttrpg.threatLevel ?? 'none'}.`,
     '',
-    'Eligible current participants:',
-    formatParticipants(input.participants),
+    'Repair rules:',
+    ...compactBeatRepairInstruction(kind, input),
     '',
-    ...buildNarrativeStateLines(input),
-    '',
-    ...buildProgressionContextLines(input.progressionContext),
-    '',
-    ...buildGameMasterBeatContractLines(input),
+    GM_PROMPT_CONTRACT_MARKER,
+    compactBeatRepairSchema(input),
   ].join('\n'))
+}
+
+function compactSceneCheckRepairInstruction(kind: GameMasterRepairPromptKind, input: GenerateGameMasterSceneCheckOutcomeInput): string[] {
+  const tier = input.resolution.roll.tier
+  return [
+    kind === 'json_only'
+      ? 'The prior response was not parseable JSON. Return a single valid JSON object only.'
+      : kind === 'missing_required'
+        ? 'The prior JSON missed required outcome fields. Include every key from the compact schema below.'
+        : kind === 'progression'
+          ? 'The prior JSON failed consequence/progression rules. Make the consequence visible and preserve next choice.'
+          : 'Return one corrected compact JSON object only.',
+    '- JSON only; no markdown, commentary, or prose outside the object.',
+    '- Use only the backend roll facts provided here; do not invent dice, DC, HP, rewards, death, wallets, or finality.',
+    '- Never output requestedGameplayAction or lastCombatTriggerBeatId in scene-check outcome repair.',
+    tier === 'partial_success' || tier === 'failure' || tier === 'critical_failure'
+      ? '- For this tier, publicNarration must be substantive, name a visible consequence/cost, and leave a changed next choice.'
+      : '- For this tier, publicNarration must still be concrete and anchored to the resolved action.',
+    '- combat_ready means danger readiness only; it does not start combat.',
+  ]
+}
+
+function compactSceneCheckRepairSchema(input: GenerateGameMasterSceneCheckOutcomeInput): string {
+  return JSON.stringify({
+    publicNarration: 'Public GM consequence of the resolved check',
+    stateSummary: 'Updated continuity summary',
+    currentObjective: 'Updated objective',
+    openThreads: ['Unresolved thread'],
+    adventurePatch: {
+      currentStakes: 'Changed situation',
+      consequence: {
+        summary: 'Durable consequence',
+        status: 'open | resolved | advantage | complication',
+        tier: input.resolution.roll.tier,
+      },
+    },
+    escalation: {
+      decision: 'none | danger | combat_ready',
+      dangerKind: 'unknown',
+      reason: 'Brief reason',
+      threatLevel: 0,
+      encounterSeed: null,
+      catalogEntryIds: [],
+    },
+  })
 }
 
 function buildGameMasterSceneCheckOutcomeRepairPrompt(
   input: GenerateGameMasterSceneCheckOutcomeInput,
   diagnostics: GameMasterGenerationDiagnostics
 ): string {
+  const category = diagnostics.initialErrorCategory ?? 'validation_error'
+  const kind = gameMasterRepairPromptKind(category)
   return clampGameMasterSceneCheckOutcomePrompt([
-    'Your previous game-master scene-check outcome response failed the required JSON contract.',
-    `Failure category: ${diagnostics.initialErrorCategory ?? 'validation_error'}`,
+    'Repair the failed WAGDIE game-master scene-check outcome with one compact JSON object.',
+    `Failure category: ${category}`,
     `Previous response length: ${diagnostics.initialResponseLength ?? 0}`,
-    '',
-    'Repair by producing one fresh valid response. Do not explain the repair.',
+    `Repair kind: ${kind}`,
     '',
     'Backend-computed roll facts:',
     ...formatSceneCheckRollFacts(input),
     '',
-    ...formatSceneCheckEscalationCatalogCandidates(input.narrativeState),
+    `Current state: ${truncatePromptValue(input.narrativeState.stateSummary || 'The room scene continues.', 260)}`,
+    `Current objective: ${truncatePromptValue(input.narrativeState.currentObjective || 'None.', 180)}`,
+    `Open threads: ${truncatePromptValue(input.narrativeState.openThreads.join(' | ') || 'None.', 260)}`,
     '',
-    ...formatSpatialContext(normalizeAdventureMemory(input.narrativeState.metadata).spatialContext),
+    'Repair rules:',
+    ...compactSceneCheckRepairInstruction(kind, input),
     '',
-    ...buildRecentSceneCheckPatternLines(input.recentMessages),
-    '',
-    ...buildNarrativeStateLines(input),
-    '',
-    ...buildGameMasterSceneCheckOutcomeContractLines(),
+    GM_SCENE_CHECK_OUTCOME_CONTRACT_MARKER,
+    compactSceneCheckRepairSchema(input),
   ].join('\n'))
 }
 
@@ -1845,20 +1972,36 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
     })
 
     try {
-      const collected = await sendAndCollectOfficialMessage(this.messaging, {
-        sessionId: session.sessionId,
-        content: buildGameMasterBeatPrompt(input),
-        metadata: {
-          source: 'wagdie-location-room-game-master',
-          roomId: input.room.id,
-          locationId: input.room.locationId,
-          tickId: input.tick.id,
-          channelId: input.room.channelId,
-          selectedSpeakerTokenId: input.speaker.tokenId,
-        },
-      }, {
-        conversationId: session.sessionId,
-      })
+      let collected: Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>
+      try {
+        collected = await sendAndCollectOfficialMessage(this.messaging, {
+          sessionId: session.sessionId,
+          content: buildGameMasterBeatPrompt(input),
+          metadata: {
+            source: 'wagdie-location-room-game-master',
+            roomId: input.room.id,
+            locationId: input.room.locationId,
+            tickId: input.tick.id,
+            channelId: input.room.channelId,
+            selectedSpeakerTokenId: input.speaker.tokenId,
+          },
+        }, {
+          conversationId: session.sessionId,
+        })
+      } catch (transportError) {
+        const diagnostics: GameMasterGenerationDiagnostics = {
+          status: 'repair_failed',
+          repairAttempted: false,
+          repaired: false,
+          initialErrorCategory: 'transport_error',
+          transportStage: 'collect_stream',
+        }
+        throw new GameMasterBeatGenerationError(
+          'Game-master beat generation failed during Official ElizaOS transport',
+          diagnostics,
+          { cause: transportError }
+        )
+      }
 
       try {
         return withGenerationDiagnostics(normalizeGameMasterBeatResponse(collected.text, input, {
@@ -1921,6 +2064,7 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
             repairAttempted: true,
             repaired: false,
             repairErrorCategory: 'repair_transport_error',
+            transportStage: 'repair_collect_stream',
             repairResponseLength: repairText.length,
             repairResponseFlags: responseFlags(repairText),
           }
@@ -1992,21 +2136,37 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
         },
       })
 
-      const collected = await sendAndCollectOfficialMessage(this.messaging, {
-        sessionId: session.sessionId,
-        content: buildGameMasterSceneCheckOutcomePrompt(input),
-        metadata: {
-          source: 'wagdie-location-room-game-master-scene-check-outcome',
-          roomId: input.room.id,
-          locationId: input.room.locationId,
-          tickId: input.tick.id,
-          channelId: input.room.channelId,
-          selectedSpeakerTokenId: input.speaker.tokenId,
-          sceneCheckId: input.sceneCheckId,
-        },
-      }, {
-        conversationId: session.sessionId,
-      })
+      let collected: Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>
+      try {
+        collected = await sendAndCollectOfficialMessage(this.messaging, {
+          sessionId: session.sessionId,
+          content: buildGameMasterSceneCheckOutcomePrompt(input),
+          metadata: {
+            source: 'wagdie-location-room-game-master-scene-check-outcome',
+            roomId: input.room.id,
+            locationId: input.room.locationId,
+            tickId: input.tick.id,
+            channelId: input.room.channelId,
+            selectedSpeakerTokenId: input.speaker.tokenId,
+            sceneCheckId: input.sceneCheckId,
+          },
+        }, {
+          conversationId: session.sessionId,
+        })
+      } catch (transportError) {
+        const diagnostics: GameMasterGenerationDiagnostics = {
+          status: 'repair_failed',
+          repairAttempted: false,
+          repaired: false,
+          initialErrorCategory: 'transport_error',
+          transportStage: 'collect_stream',
+        }
+        throw new GameMasterSceneCheckOutcomeGenerationError(
+          'Game-master scene-check outcome generation failed during Official ElizaOS transport',
+          diagnostics,
+          { cause: transportError }
+        )
+      }
 
       try {
         return withSceneCheckGenerationDiagnostics(normalizeGameMasterSceneCheckOutcomeResponse(collected.text, input, {
@@ -2070,6 +2230,7 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
             repairAttempted: true,
             repaired: false,
             repairErrorCategory: 'repair_transport_error',
+            transportStage: 'repair_collect_stream',
             repairResponseLength: repairText.length,
             repairResponseFlags: responseFlags(repairText),
           }

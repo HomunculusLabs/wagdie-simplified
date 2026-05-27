@@ -204,9 +204,10 @@ export async function collectOfficialStreamedResponseText(
         callbacks.onChunk?.(chunk)
       },
       onComplete: async (message, completedConversationId) => {
+        const selectedText = streamedText.trim() ? streamedText : message.content
         collected = {
           message,
-          text: normalizeOfficialResponseText(message.content || streamedText),
+          text: normalizeOfficialResponseText(selectedText),
         }
         await callbacks.onComplete?.(message, completedConversationId)
       },

@@ -366,6 +366,7 @@ const SAFE_GM_GENERATION_ERROR_CATEGORIES = new Set([
   'progression_contract',
   'missing_required_field',
   'validation_error',
+  'transport_error',
   'repair_transport_error',
 ])
 

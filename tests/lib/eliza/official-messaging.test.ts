@@ -17,11 +17,15 @@ jest.mock('@/lib/eliza/official/stream', () => ({
   streamOfficialElizaSse: jest.fn(),
 }))
 
+import { WagdieElizaError } from '@/lib/eliza/gateway/errors'
 import { OfficialElizaMessagingClient } from '@/lib/eliza/official/messaging'
+import { streamOfficialElizaSse } from '@/lib/eliza/official/stream'
 import {
   OFFICIAL_ELIZA_MESSAGE_MAX_BYTES,
   getOfficialElizaUtf8ByteLength,
 } from '@/lib/eliza/official/text'
+
+const mockedStreamOfficialElizaSse = streamOfficialElizaSse as jest.MockedFunction<typeof streamOfficialElizaSse>
 
 function hasLoneSurrogate(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
@@ -39,11 +43,59 @@ function hasLoneSurrogate(value: string): boolean {
 
 describe('OfficialElizaMessagingClient', () => {
   beforeEach(() => {
+    mockedStreamOfficialElizaSse.mockReset()
     global.fetch = jest.fn(async () => new Response('', { status: 200 })) as jest.Mock
   })
 
   afterEach(() => {
     jest.restoreAllMocks()
+  })
+
+  it('prefers streamed chunks over final complete content when collecting responses', async () => {
+    mockedStreamOfficialElizaSse.mockImplementationOnce(async (_response, callbacks, conversationId) => {
+      callbacks.onChunk?.('{"publicNarration":"Ash moves."}')
+      await callbacks.onComplete?.({
+        id: 'message-1',
+        role: 'assistant',
+        content: 'Here is your answer',
+        createdAt: new Date().toISOString(),
+      }, conversationId)
+    })
+    const client = new OfficialElizaMessagingClient({ baseUrl: 'https://eliza.example', apiKey: 'key' })
+
+    const collected = await client.collectStreamedResponseText(new Response('', { status: 200 }), {
+      conversationId: 'session-1',
+    })
+
+    expect(collected.text).toBe('{"publicNarration":"Ash moves."}')
+  })
+
+  it('retries retryable stream errors from session message collection', async () => {
+    mockedStreamOfficialElizaSse
+      .mockRejectedValueOnce(new WagdieElizaError('upstream unavailable', {
+        code: 'API_ERROR',
+        statusCode: 503,
+        isRetryable: true,
+      }))
+      .mockImplementationOnce(async (_response, callbacks, conversationId) => {
+        await callbacks.onComplete?.({
+          id: 'message-2',
+          role: 'assistant',
+          content: '{"publicNarration":"Ash moves."}',
+          createdAt: new Date().toISOString(),
+        }, conversationId)
+      })
+    const client = new OfficialElizaMessagingClient({ baseUrl: 'https://eliza.example', apiKey: 'key' })
+
+    const collected = await client.sendAndCollectSessionMessage({
+      sessionId: 'session-1',
+      content: 'prompt',
+    }, {
+      retryDelayMs: 0,
+    })
+
+    expect(collected.text).toBe('{"publicNarration":"Ash moves."}')
+    expect(global.fetch).toHaveBeenCalledTimes(2)
   })
 
   it('sanitizes malformed and over-budget content before sending session messages', async () => {

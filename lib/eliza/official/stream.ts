@@ -24,7 +24,7 @@ function parseSseEvents(buffer: string): { events: OfficialSseEvent[]; rest: str
     }
 
     event.data = event.data.trim()
-    if (event.data) {
+    if (event.data || event.event === 'error' || event.event === 'done' || event.event === 'complete') {
       events.push(event)
     }
   }
@@ -49,9 +49,27 @@ function readTextField(value: unknown, keys: string[]): string | undefined {
   return undefined
 }
 
-function mapCompleteMessage(data: unknown, fallbackText: string, conversationId: string): ChatMessage {
+function readNumberField(value: unknown, keys: string[]): number | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
+
+  const record = value as Record<string, unknown>
+
+  for (const key of keys) {
+    const candidate = record[key]
+    const numeric = typeof candidate === 'number' ? candidate : typeof candidate === 'string' ? Number(candidate) : NaN
+    if (Number.isInteger(numeric)) {
+      return numeric
+    }
+  }
+
+  return undefined
+}
+
+function mapCompleteMessage(data: unknown, fallbackText: string): ChatMessage {
   const record = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
-  const content = readTextField(record, ['text', 'content', 'message']) ?? fallbackText
+  const content = fallbackText.trim() ? fallbackText : readTextField(record, ['text', 'content', 'message']) ?? fallbackText
 
   return {
     id: readTextField(record, ['messageId', 'id']) ?? `official-${Date.now()}`,
@@ -93,9 +111,13 @@ export async function streamOfficialElizaSse(
   let buffer = ''
   let fullText = ''
 
-  while (true) {
+  let reading = true
+  while (reading) {
     const { done, value } = await reader.read()
-    if (done) break
+    if (done) {
+      reading = false
+      break
+    }
 
     buffer += decoder.decode(value, { stream: true })
     const parsed = parseSseEvents(buffer)
@@ -120,7 +142,7 @@ export async function streamOfficialElizaSse(
           callbacks.onChunk?.(chunk)
         }
       } else if (type === 'done' || type === 'complete') {
-        const message = mapCompleteMessage(data, fullText, conversationId)
+        const message = mapCompleteMessage(data, fullText)
         if (!fullText && message.content) {
           fullText = message.content
           callbacks.onChunk?.(message.content)
@@ -129,9 +151,27 @@ export async function streamOfficialElizaSse(
         return
       } else if (type === 'error') {
         const message = readTextField(data, ['message', 'error']) ?? 'Official ElizaOS stream failed'
-        const error = new WagdieElizaError(message, { code: 'API_ERROR', statusCode: 502 })
-        await callbacks.onError?.(error)
-        return
+        const statusCode = readNumberField(data, ['statusCode', 'status', 'upstreamStatus']) ?? 502
+        const code = statusCode === 401 || statusCode === 403
+          ? 'AUTH_ERROR'
+          : statusCode === 429
+            ? 'RATE_LIMIT'
+            : 'API_ERROR'
+        const error = new WagdieElizaError(message, {
+          code,
+          statusCode,
+          isRetryable: isRetryableGatewayStatus(statusCode),
+          details: {
+            eventType: 'error',
+            upstreamStatus: statusCode,
+          },
+        })
+        try {
+          await callbacks.onError?.(error)
+        } catch (callbackError) {
+          console.warn('[Official ElizaOS] stream error callback failed', callbackError)
+        }
+        throw error
       }
     }
   }
