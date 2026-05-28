@@ -30,6 +30,7 @@ interface AIPersonaTabProps {
   characterBackstory?: string
   characterId?: string
   assistantPortalId?: string
+  showPersonaAssistant?: boolean
 }
 
 type TabId = 'identity' | 'behavior' | 'examples' | 'advanced'
@@ -47,6 +48,7 @@ function AIPersonaTabComponent({
   characterName,
   characterId,
   assistantPortalId,
+  showPersonaAssistant = isOwner,
 }: AIPersonaTabProps) {
   const { isConnected } = useAccount()
   const {
@@ -95,7 +97,7 @@ function AIPersonaTabComponent({
   }, [assistantPortalId])
 
   useEffect(() => {
-    if (!assistantPortalId || !isOwner) return
+    if (!assistantPortalId || !isOwner || !showPersonaAssistant) return
 
     window.dispatchEvent(new CustomEvent(PERSONA_ASSISTANT_DOCK_TARGET_EVENT, {
       detail: {
@@ -108,7 +110,7 @@ function AIPersonaTabComponent({
     return () => {
       window.dispatchEvent(new CustomEvent(PERSONA_ASSISTANT_DOCK_TARGET_EVENT, { detail: null }))
     }
-  }, [assistantPortalId, characterId, characterName, isOwner, tokenId])
+  }, [assistantPortalId, characterId, characterName, isOwner, showPersonaAssistant, tokenId])
 
   // Save handler
   const handleSave = useCallback(async () => {
@@ -214,7 +216,7 @@ function AIPersonaTabComponent({
     hasChanges: editor.hasUnsavedChanges,
   }))
 
-  const assistantPanel = isOwner ? (
+  const assistantPanel = isOwner && showPersonaAssistant ? (
     <PersonaAssistantPanel
       tokenId={tokenId}
       isOwner={isOwner}

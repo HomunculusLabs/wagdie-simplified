@@ -330,6 +330,15 @@ describe('AIPersonaTab Integration', () => {
       expect(assistantProps).not.toHaveProperty('handleSave')
     })
 
+    it('should not render the assistant when persona assistant access is disabled, even if editing is allowed', () => {
+      render(<AIPersonaTab tokenId="123" isOwner={true} showPersonaAssistant={false} />)
+
+      expect(screen.getByTestId('ai-persona-editor-region')).toBeInTheDocument()
+      expect(screen.queryByTestId('ai-persona-assistant-region')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('persona-assistant-panel')).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Save AI Persona/i })).toBeInTheDocument()
+    })
+
     it('should render the editor region without an assistant region for non-owners', () => {
       render(<AIPersonaTab tokenId="123" isOwner={false} />)
 

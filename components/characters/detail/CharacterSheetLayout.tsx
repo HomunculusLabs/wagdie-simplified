@@ -50,6 +50,7 @@ interface CharacterSheetLayoutProps {
   onChat: () => void
   showChatAction: boolean
   chatCharacterId?: string
+  showPersonaAssistant?: boolean
 }
 
 const sheetTabs: TabItem[] = [
@@ -79,6 +80,7 @@ export function CharacterSheetLayout({
   onChat,
   showChatAction,
   chatCharacterId,
+  showPersonaAssistant = isOwner,
 }: CharacterSheetLayoutProps) {
   const ChatIcon = () => (
     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -258,6 +260,7 @@ export function CharacterSheetLayout({
                     characterBackstory={editor.state.story}
                     characterId={chatCharacterId}
                     assistantPortalId={PERSONA_ASSISTANT_DOCK_PORTAL_ID}
+                    showPersonaAssistant={showPersonaAssistant}
                   />
                 </div>
               )}

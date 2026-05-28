@@ -23,6 +23,12 @@ function appendAssistantContent() {
 }
 
 describe('PersonaAssistantDockSlot', () => {
+  beforeAll(() => {
+    if (!window.PointerEvent) {
+      window.PointerEvent = MouseEvent as typeof PointerEvent
+    }
+  })
+
   beforeEach(() => {
     jest.clearAllMocks()
     mockUseChatDock.mockReturnValue({ isOpen: false, target: null, openChat: mockOpenChat })
@@ -51,7 +57,7 @@ describe('PersonaAssistantDockSlot', () => {
     expect(drawerPanel).toHaveClass('absolute')
     expect(drawerPanel).toHaveClass('right-0')
     expect(drawerPanel).toHaveClass('h-full')
-    expect(drawerPanel).toHaveClass('md:w-[500px]')
+    expect(drawerPanel).toHaveStyle({ width: '500px' })
     expect(drawerPanel).toHaveClass('bg-soul-950')
     expect(drawerPanel).toHaveClass('border-l')
     expect(drawerPanel).toHaveClass('shadow-2xl')
@@ -79,7 +85,7 @@ describe('PersonaAssistantDockSlot', () => {
     })
 
     expect(screen.getByLabelText('Persona assistant dock')).toHaveAttribute('data-collapsed', 'true')
-    expect(screen.getByTestId('persona-assistant-drawer-panel')).toHaveClass('md:w-14')
+    expect(screen.getByTestId('persona-assistant-drawer-panel')).toHaveStyle({ width: '56px' })
     expect(document.getElementById(PERSONA_ASSISTANT_DOCK_PORTAL_ID)).toBeInTheDocument()
 
     const expandButton = screen.getByRole('button', { name: /Expand persona assistant sidebar/i })
@@ -88,7 +94,37 @@ describe('PersonaAssistantDockSlot', () => {
     })
 
     expect(screen.getByLabelText('Persona assistant dock')).toHaveAttribute('data-collapsed', 'false')
-    expect(screen.getByTestId('persona-assistant-drawer-panel')).toHaveClass('md:w-[500px]')
+    expect(screen.getByTestId('persona-assistant-drawer-panel')).toHaveStyle({ width: '500px' })
+  })
+
+  it('resizes the drawer horizontally on desktop pointer drag', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 })
+
+    render(<PersonaAssistantDockSlot />)
+    appendAssistantContent()
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Persona assistant dock')).toHaveAttribute('data-visible', 'true')
+    })
+
+    act(() => {
+      screen.getByTestId('persona-assistant-resize-handle').dispatchEvent(
+        new PointerEvent('pointerdown', { bubbles: true, clientX: 700 })
+      )
+    })
+
+    act(() => {
+      window.dispatchEvent(new PointerEvent('pointermove', { clientX: 600 }))
+    })
+
+    expect(screen.getByLabelText('Persona assistant dock')).toHaveAttribute('data-width', '600')
+    expect(screen.getByTestId('persona-assistant-drawer-panel')).toHaveStyle({ width: '600px' })
+
+    act(() => {
+      window.dispatchEvent(new PointerEvent('pointerup'))
+    })
+
+    expect(screen.getByLabelText('Persona assistant dock')).toHaveAttribute('data-resizing', 'false')
   })
 
   it('opens normal character chat from the assistant sidebar header', async () => {

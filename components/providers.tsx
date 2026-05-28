@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { WagmiProvider } from 'wagmi'
 import { RainbowKitProvider, darkTheme } from '@rainbow-me/rainbowkit'
@@ -20,12 +20,17 @@ import {
 function ChatDockContentWrapper({ children }: { children: React.ReactNode }) {
   const { isOpen, target } = useChatDock()
   const [isPersonaAssistantDockVisible, setIsPersonaAssistantDockVisible] = useState(false)
+  const [personaAssistantDockWidth, setPersonaAssistantDockWidth] = useState(500)
   const shouldPushContent = (isOpen && !!target) || isPersonaAssistantDockVisible
+  const contentOffset = isPersonaAssistantDockVisible ? personaAssistantDockWidth : 500
 
   useEffect(() => {
     const handlePersonaAssistantDockVisibility = (event: Event) => {
-      const { visible } = (event as CustomEvent<{ visible?: boolean }>).detail ?? {}
+      const { visible, width } = (event as CustomEvent<{ visible?: boolean; width?: number }>).detail ?? {}
       setIsPersonaAssistantDockVisible(Boolean(visible))
+      if (typeof width === 'number') {
+        setPersonaAssistantDockWidth(width)
+      }
     }
 
     window.addEventListener(PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT, handlePersonaAssistantDockVisibility)
@@ -37,7 +42,8 @@ function ChatDockContentWrapper({ children }: { children: React.ReactNode }) {
 
   return (
     <div
-      className={`transition-[margin] duration-300 ${shouldPushContent ? 'md:mr-[500px]' : ''}`}
+      className={`transition-[margin] duration-300 ${shouldPushContent ? 'md:mr-[var(--chat-dock-offset)]' : ''}`}
+      style={{ '--chat-dock-offset': `${contentOffset}px` } as CSSProperties}
     >
       {children}
     </div>

@@ -17,7 +17,7 @@ import { useCharacterEditGuards } from '@/hooks/useCharacterEditGuards'
 import { useAICharacter } from '@/hooks/useAICharacter'
 import { Card, CardTitle, CardContent, CardDescription, Button, Spinner } from '@/components/ui'
 import { isAdmin } from '@/lib/auth/admin'
-import { canEditCharacterForAddress } from '@/lib/domain/character/ownership'
+import { canEditCharacterForAddress, isCharacterHeldByAddress } from '@/lib/domain/character/ownership'
 import { useChatDock } from '@/contexts/ChatDockContext'
 
 const showLoreNav = process.env.NEXT_PUBLIC_SHOW_LORE_NAV === 'true'
@@ -47,6 +47,7 @@ export default function CharacterDetailPage() {
   const editor = useCharacterEditor({ character, isLoading })
   const userIsAdmin = isAdmin(address)
   const isOwner = canEditCharacterForAddress(character, address, userIsAdmin)
+  const userHoldsCharacter = isCharacterHeldByAddress(character, address)
 
   const name = character?.name || character?.metadata?.name || `Character #${tokenId}`
   const { imageDisclosure, displayedImageUrl, handleImageError } = useCharacterImageDisplay({
@@ -166,6 +167,7 @@ export default function CharacterDetailPage() {
           onChat={() => openChat({ tokenId: String(tokenId), characterName: name, characterId: aiCharacter?.id })}
           showChatAction={Boolean(aiCharacter?.id)}
           chatCharacterId={aiCharacter?.id}
+          showPersonaAssistant={userHoldsCharacter}
         />
       </div>
 

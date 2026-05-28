@@ -2,11 +2,12 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { CharacterSheetLayout } from '@/components/characters/detail/CharacterSheetLayout'
 import { PERSONA_ASSISTANT_DOCK_PORTAL_ID } from '@/components/chat'
 
-const mockAIPersonaTab = jest.fn(({ assistantPortalId, characterId }: { assistantPortalId?: string; characterId?: string }) => (
+const mockAIPersonaTab = jest.fn(({ assistantPortalId, characterId, showPersonaAssistant }: { assistantPortalId?: string; characterId?: string; showPersonaAssistant?: boolean }) => (
   <div
     data-testid="ai-persona-tab"
     data-assistant-portal-id={assistantPortalId}
     data-character-id={characterId}
+    data-show-persona-assistant={showPersonaAssistant ? 'true' : 'false'}
   />
 ))
 
@@ -159,6 +160,7 @@ describe('CharacterSheetLayout', () => {
     expect(mockAIPersonaTab).toHaveBeenCalledWith(expect.objectContaining({
       assistantPortalId: PERSONA_ASSISTANT_DOCK_PORTAL_ID,
       characterId: 'eliza-character-123',
+      showPersonaAssistant: true,
     }))
   })
 })
