@@ -34,7 +34,7 @@ export type OfficialSendSessionMessageInput = {
   content: string
   metadata?: OfficialMetadata
   signal?: AbortSignal
-  transport?: 'sse'
+  transport?: 'http' | 'sse'
 }
 
 export type OfficialCollectedResponse = {
@@ -118,7 +118,7 @@ export class OfficialElizaMessagingClient {
       },
       body: JSON.stringify({
         content,
-        transport: input.transport ?? 'sse',
+        transport: input.transport ?? 'http',
         metadata: input.metadata,
       }),
       signal: input.signal,
@@ -152,6 +152,10 @@ export class OfficialElizaMessagingClient {
       const response = await this.sendSessionMessage(input)
 
       try {
+        if ((input.transport ?? 'http') === 'http') {
+          return await collectOfficialHttpResponse(response)
+        }
+
         return await this.collectStreamedResponseText(response, {
           callbacks: options.callbacks,
           conversationId: options.conversationId ?? input.sessionId,
@@ -180,6 +184,73 @@ export class OfficialElizaMessagingClient {
 
   private authHeaders(): Record<string, string> {
     return this.apiKey ? { 'X-API-KEY': this.apiKey } : {}
+  }
+}
+
+function readNestedText(value: unknown, paths: string[][]): string | undefined {
+  for (const path of paths) {
+    let current: unknown = value
+    for (const key of path) {
+      if (!current || typeof current !== 'object') {
+        current = undefined
+        break
+      }
+      current = (current as Record<string, unknown>)[key]
+    }
+    if (typeof current === 'string' && current.trim()) {
+      return current
+    }
+  }
+
+  return undefined
+}
+
+export async function collectOfficialHttpResponse(response: Response): Promise<OfficialCollectedResponse> {
+  if (!response.ok) {
+    const body = await response.text().catch(() => '')
+    const upstreamBody = body.slice(0, 500)
+
+    console.warn('[Official ElizaOS] HTTP request failed', {
+      status: response.status,
+      contentType: response.headers.get('content-type'),
+      hasBody: Boolean(response.body),
+      upstreamBody,
+    })
+
+    throw new WagdieElizaError('Official ElizaOS HTTP request failed', {
+      code: response.status === 401 || response.status === 403 ? 'AUTH_ERROR' : 'API_ERROR',
+      statusCode: response.status,
+      isRetryable: isRetryableGatewayStatus(response.status),
+      details: {
+        upstreamStatus: response.status,
+        upstreamBody,
+      },
+    })
+  }
+
+  const body = await response.json().catch(() => null)
+  const text = readNestedText(body, [
+    ['agentResponse', 'text'],
+    ['agentResponse', 'content'],
+    ['agentResponse', 'message'],
+    ['data', 'agentResponse', 'text'],
+    ['data', 'agentResponse', 'content'],
+    ['text'],
+    ['content'],
+    ['message'],
+  ]) ?? ''
+
+  return {
+    message: {
+      id: readNestedText(body, [
+        ['agentResponse', 'id'],
+        ['data', 'agentResponse', 'id'],
+      ]) ?? `official-${Date.now()}`,
+      role: 'assistant',
+      content: text,
+      createdAt: new Date().toISOString(),
+    },
+    text: normalizeOfficialResponseText(text),
   }
 }
 
