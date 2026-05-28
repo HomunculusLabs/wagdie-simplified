@@ -84,6 +84,30 @@ describe('PersonaAssistantPanel', () => {
     expect(saveAICharacter).not.toHaveBeenCalled()
   })
 
+  it('keeps pending proposals above the composer in sidebar presentation so Apply is immediately visible', () => {
+    ;(usePersonaAssistant as jest.Mock).mockReturnValue({
+      ...baseAssistant,
+      pendingProposal: proposal,
+    })
+
+    render(
+      <PersonaAssistantPanel
+        tokenId="123"
+        isOwner={true}
+        isConnected={true}
+        presentation="sidebar"
+        getAssistantSnapshot={() => ({})}
+        applyAssistantDraft={jest.fn()}
+      />
+    )
+
+    const proposalRegion = screen.getByTestId('persona-assistant-pending-proposal')
+    const composer = screen.getByLabelText(/Persona assistant message/i)
+
+    expect(proposalRegion.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Apply to editor/i })).toBeInTheDocument()
+  })
+
   it('renders sidebar presentation through the panel and proposal review card', () => {
     ;(usePersonaAssistant as jest.Mock).mockReturnValue({
       ...baseAssistant,

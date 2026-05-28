@@ -143,7 +143,12 @@ export function usePersonaAssistant({
       setWarnings(data.warnings)
 
       if (mode === 'generate') {
-        setPendingProposal(data.proposal || null)
+        const nextProposal = data.proposal || null
+        setPendingProposal(nextProposal)
+        if (!nextProposal) {
+          setError('The assistant responded, but did not return an editable draft. Try Generate draft again or add a more specific instruction.')
+          setErrorCode('ASSISTANT_EMPTY_PROPOSAL')
+        }
       }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return

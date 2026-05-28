@@ -74,6 +74,27 @@ describe('usePersonaAssistant', () => {
     expect(saveAICharacter).not.toHaveBeenCalled()
   })
 
+  it('surfaces an explicit error when generate returns no editable proposal', async () => {
+    const getAssistantSnapshot = jest.fn(() => ({ system: 'Existing system' }))
+
+    ;(global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+      assistantMessage,
+      warnings: [],
+    }))
+
+    const { result } = renderHook(() => usePersonaAssistant({ tokenId: '123', getAssistantSnapshot }))
+
+    await act(async () => {
+      await result.current.generateDraft()
+    })
+
+    await waitFor(() => {
+      expect(result.current.pendingProposal).toBeNull()
+      expect(result.current.errorCode).toBe('ASSISTANT_EMPTY_PROPOSAL')
+    })
+    expect(result.current.error).toMatch(/did not return an editable draft/i)
+  })
+
   it('clears pending proposals without issuing persistence requests', async () => {
     const getAssistantSnapshot = jest.fn(() => ({}))
     ;(global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({

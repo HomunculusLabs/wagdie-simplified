@@ -1,6 +1,6 @@
 'use client'
 
-import { memo, useCallback, useState, type FormEvent } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Alert, Button } from '@/components/ui'
 import { usePersonaAssistant } from '@/hooks/usePersonaAssistant'
 import type { PersonaAssistantEditableDraft } from '@/types/eliza'
@@ -29,12 +29,19 @@ function PersonaAssistantPanelComponent({
   const [isOpen, setIsOpen] = useState(true)
   const [composerValue, setComposerValue] = useState('')
   const [hasAppliedProposal, setHasAppliedProposal] = useState(false)
+  const proposalRef = useRef<HTMLDivElement | null>(null)
 
   const assistant = usePersonaAssistant({ tokenId, getAssistantSnapshot })
 
   const isUnavailable = assistant.errorCode === 'ASSISTANT_UNAVAILABLE'
   const isInteractionDisabled = disabled || !isOwner || !isConnected || isUnavailable || assistant.isLoading
   const trimmedComposerValue = composerValue.trim()
+
+  useEffect(() => {
+    if (!assistant.pendingProposal) return
+
+    proposalRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+  }, [assistant.pendingProposal])
 
   const handleSubmit = useCallback((event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -165,6 +172,21 @@ function PersonaAssistantPanelComponent({
             </div>
           )}
 
+          {assistant.pendingProposal && (
+            <div ref={proposalRef} data-testid="persona-assistant-pending-proposal">
+              <ProposalReviewCard
+                proposal={assistant.pendingProposal}
+                warnings={assistant.warnings}
+                isGenerating={assistant.isGenerating}
+                disabled={isInteractionDisabled}
+                presentation={presentation}
+                onApply={handleApplyProposal}
+                onRegenerate={handleGenerate}
+                onDiscard={handleDiscardProposal}
+              />
+            </div>
+          )}
+
           <AssistantTranscript messages={assistant.messages} isLoading={assistant.isLoading} />
 
           <form onSubmit={handleSubmit} className="space-y-3">
@@ -214,18 +236,6 @@ function PersonaAssistantPanelComponent({
             </div>
           </form>
 
-          {assistant.pendingProposal && (
-            <ProposalReviewCard
-              proposal={assistant.pendingProposal}
-              warnings={assistant.warnings}
-              isGenerating={assistant.isGenerating}
-              disabled={isInteractionDisabled}
-              presentation={presentation}
-              onApply={handleApplyProposal}
-              onRegenerate={handleGenerate}
-              onDiscard={handleDiscardProposal}
-            />
-          )}
         </div>
       )}
     </div>
