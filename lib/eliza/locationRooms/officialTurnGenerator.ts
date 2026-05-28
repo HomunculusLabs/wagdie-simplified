@@ -4,6 +4,7 @@ import { elizaConfig } from '@/lib/eliza/config'
 import {
   createOfficialElizaMessagingClient,
   normalizeOfficialResponseText,
+  sendAndCollectOfficialEphemeralSessionMessage,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
 import {
@@ -297,26 +298,6 @@ export function normalizeOfficialLocationRoomTurnResponse(
   }
 }
 
-async function sendAndCollectOfficialMessage(
-  messaging: OfficialElizaMessagingClient,
-  input: Parameters<OfficialElizaMessagingClient['sendSessionMessage']>[0],
-  options: Parameters<OfficialElizaMessagingClient['collectStreamedResponseText']>[1] = {}
-): Promise<Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>> {
-  const maybeRetryingMessaging = messaging as OfficialElizaMessagingClient & {
-    sendAndCollectSessionMessage?: (
-      input: Parameters<OfficialElizaMessagingClient['sendSessionMessage']>[0],
-      options?: Parameters<OfficialElizaMessagingClient['collectStreamedResponseText']>[1]
-    ) => Promise<Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>>
-  }
-
-  if (typeof maybeRetryingMessaging.sendAndCollectSessionMessage === 'function') {
-    return maybeRetryingMessaging.sendAndCollectSessionMessage(input, options)
-  }
-
-  const response = await messaging.sendSessionMessage(input)
-  return messaging.collectStreamedResponseText(response, options)
-}
-
 export interface OfficialLocationRoomTurnGenerator {
   generateTurn(input: GenerateOfficialLocationRoomTurnInput): Promise<GenerateOfficialLocationRoomTurnResult>
 }
@@ -343,24 +324,25 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
     })
 
     await this.messaging.startAgent(record.id)
-    const session = await this.messaging.createSession({
-      agentId: record.id,
-      userId: input.room.officialUserId,
-      metadata: {
-        source: 'wagdie-location-room',
-        roomId: input.room.id,
-        locationId: input.room.locationId,
-        officialRoomId: input.room.officialRoomId,
-        officialWorldId: input.room.officialWorldId,
-        speakerTokenId: input.speaker.tokenId,
-        officialAgentId: record.id,
-      },
-    })
+    const sessionMetadata = {
+      source: 'wagdie-location-room',
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      officialRoomId: input.room.officialRoomId,
+      officialWorldId: input.room.officialWorldId,
+      speakerTokenId: input.speaker.tokenId,
+      officialAgentId: record.id,
+    }
 
-    try {
-      const collected = await sendAndCollectOfficialMessage(this.messaging, {
-        sessionId: session.sessionId,
+    const collected = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+      session: {
+        agentId: record.id,
+        userId: input.room.officialUserId,
+        metadata: sessionMetadata,
+      },
+      message: {
         content: buildOfficialLocationRoomPrompt(input),
+        transport: 'http',
         metadata: {
           source: 'wagdie-location-room',
           roomId: input.room.id,
@@ -368,9 +350,9 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
           speakerTokenId: input.speaker.tokenId,
           officialAgentId: record.id,
         },
-      }, {
-        conversationId: session.sessionId,
-      })
+      },
+      logContext: sessionMetadata,
+    })
       const normalized = normalizeOfficialLocationRoomTurnResponse(collected.text, {
         narrativeContext: Boolean(input.narrativeContext),
         activeDecision: input.narrativeContext?.activeDecision ?? null,
@@ -385,9 +367,6 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
         officialAgentId: record.id,
         ...normalized,
       }
-    } finally {
-      await this.messaging.deleteSession(session.sessionId).catch(() => null)
-    }
   }
 }
 

@@ -1,6 +1,7 @@
 import { elizaConfig } from '@/lib/eliza/config'
 import {
   createOfficialElizaMessagingClient,
+  sendAndCollectOfficialEphemeralSessionMessage,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
 import { extractGameMasterJsonObject } from '../gameMasterGenerator'
@@ -277,7 +278,6 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
 
   async generateAction(input: GenerateGameplayActionInput): Promise<GenerateGameplayActionResult> {
     let officialAgentId: string | null = null
-    let sessionId: string | null = null
 
     try {
       const [{ createOfficialServerClient }, { resolveCharacterByTokenId }] = await Promise.all([
@@ -296,34 +296,33 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
       officialAgentId = record.id
 
       await this.messaging.startAgent(record.id)
-      const session = await this.messaging.createSession({
-        agentId: record.id,
-        userId: input.room.officialUserId,
-        metadata: {
-          source: 'wagdie-location-room-gameplay-action',
-          roomId: input.room.id,
-          locationId: input.room.locationId,
-          tickId: input.tick.id,
-          speakerTokenId: input.speaker.tokenId,
-          officialAgentId: record.id,
+      const sessionMetadata = {
+        source: 'wagdie-location-room-gameplay-action',
+        roomId: input.room.id,
+        locationId: input.room.locationId,
+        tickId: input.tick.id,
+        speakerTokenId: input.speaker.tokenId,
+        officialAgentId: record.id,
+      }
+      const collected = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+        session: {
+          agentId: record.id,
+          userId: input.room.officialUserId,
+          metadata: sessionMetadata,
         },
-      })
-      sessionId = session.sessionId
-
-      const response = await this.messaging.sendSessionMessage({
-        sessionId: session.sessionId,
-        content: buildGameplayActionPrompt(input),
-        metadata: {
-          source: 'wagdie-location-room-gameplay-action',
-          roomId: input.room.id,
-          locationId: input.room.locationId,
-          tickId: input.tick.id,
-          speakerTokenId: input.speaker.tokenId,
-          officialAgentId: record.id,
+        message: {
+          content: buildGameplayActionPrompt(input),
+          transport: 'http',
+          metadata: {
+            source: 'wagdie-location-room-gameplay-action',
+            roomId: input.room.id,
+            locationId: input.room.locationId,
+            tickId: input.tick.id,
+            speakerTokenId: input.speaker.tokenId,
+            officialAgentId: record.id,
+          },
         },
-      })
-      const collected = await this.messaging.collectStreamedResponseText(response, {
-        conversationId: session.sessionId,
+        logContext: sessionMetadata,
       })
       const normalized = normalizeGameplayActionResponse(collected.text, input.validation)
 
@@ -345,10 +344,6 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
         officialAgentId,
         action: buildFallbackActionFromOfficialError(input, error),
         rawResponseLength: 0,
-      }
-    } finally {
-      if (sessionId) {
-        await this.messaging.deleteSession(sessionId).catch(() => null)
       }
     }
   }

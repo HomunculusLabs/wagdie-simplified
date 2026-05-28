@@ -1,6 +1,11 @@
 import { ElizaClient } from '@elizaos/api-client'
 import type { ChatMessage, StreamCallbacks } from '@/lib/eliza/gateway/types'
-import { WagdieElizaError, isWagdieElizaError } from '@/lib/eliza/gateway/errors'
+import {
+  WagdieElizaError,
+  getGatewayErrorCode,
+  isRetryableGatewayStatus,
+  isWagdieElizaError,
+} from '@/lib/eliza/gateway/errors'
 import { streamOfficialElizaSse } from './stream'
 import { clampOfficialElizaText } from './text'
 
@@ -42,8 +47,30 @@ export type OfficialCollectedResponse = {
   text: string
 }
 
+export type OfficialEphemeralSessionMessageInput = {
+  session: OfficialCreateSessionInput
+  message: Omit<OfficialSendSessionMessageInput, 'sessionId'>
+  collect?: {
+    callbacks?: StreamCallbacks
+    maxAttempts?: number
+    retryDelayMs?: number
+  }
+  sessionNotFoundRecovery?: {
+    enabled?: boolean
+    delayMs?: number
+  }
+  logContext?: OfficialMetadata
+}
+
+export type OfficialEphemeralMessagingClient = Pick<OfficialElizaMessagingClient,
+  'createSession' | 'deleteSession'
+> & Partial<Pick<OfficialElizaMessagingClient,
+  'sendAndCollectSessionMessage' | 'sendSessionMessage' | 'collectStreamedResponseText'
+>>
+
 const DEFAULT_STREAM_MESSAGE_ATTEMPTS = 3
 const DEFAULT_STREAM_RETRY_DELAY_MS = 1000
+const DEFAULT_SESSION_NOT_FOUND_RECOVERY_DELAY_MS = 250
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -51,6 +78,70 @@ function sleep(ms: number): Promise<void> {
 
 function isRetryableOfficialStreamError(error: unknown): boolean {
   return isWagdieElizaError(error) && error.isRetryable
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function recordKeys(value: unknown): string[] {
+  return isRecord(value) ? Object.keys(value) : []
+}
+
+function normalizeOfficialSessionResponse(
+  raw: unknown,
+  input: OfficialCreateSessionInput
+): OfficialSession {
+  const rawRecord = isRecord(raw) ? raw : null
+  const dataRecord = rawRecord && isRecord(rawRecord.data) ? rawRecord.data : null
+  const topSessionId = readNonEmptyString(rawRecord?.sessionId)
+  const topId = readNonEmptyString(rawRecord?.id)
+  const dataSessionId = readNonEmptyString(dataRecord?.sessionId)
+  const dataId = readNonEmptyString(dataRecord?.id)
+  const sessionId = topSessionId ?? dataSessionId ?? topId ?? dataId
+
+  if (!sessionId) {
+    throw new WagdieElizaError('Official ElizaOS session creation returned no session id', {
+      code: 'API_ERROR',
+      statusCode: 502,
+      details: {
+        agentId: input.agentId,
+        userId: input.userId,
+        responseKeys: recordKeys(raw),
+        dataKeys: recordKeys(rawRecord?.data),
+        hasTopLevelSessionId: typeof rawRecord?.sessionId === 'string',
+        hasTopLevelId: typeof rawRecord?.id === 'string',
+        hasDataSessionId: typeof dataRecord?.sessionId === 'string',
+        hasDataId: typeof dataRecord?.id === 'string',
+      },
+    })
+  }
+
+  const source = dataRecord && (dataSessionId || dataId) ? dataRecord : (rawRecord ?? {})
+
+  return {
+    ...source,
+    sessionId,
+    agentId: readNonEmptyString(source.agentId) ?? input.agentId,
+    userId: readNonEmptyString(source.userId) ?? input.userId,
+    metadata: isRecord(source.metadata) ? source.metadata as OfficialMetadata : input.metadata,
+  }
+}
+
+function isOfficialSessionNotFoundError(error: unknown): boolean {
+  if (!isWagdieElizaError(error) || error.statusCode !== 404) {
+    return false
+  }
+
+  const upstreamBody = typeof error.details?.upstreamBody === 'string'
+    ? error.details.upstreamBody
+    : ''
+
+  return upstreamBody.includes('SESSION_NOT_FOUND') || /session\s+not\s+found/i.test(upstreamBody)
 }
 
 export function normalizeOfficialResponseText(text: string): string {
@@ -96,11 +187,13 @@ export class OfficialElizaMessagingClient {
   }
 
   async createSession(input: OfficialCreateSessionInput): Promise<OfficialSession> {
-    return (await this.client.sessions.createSession({
+    const raw = await this.client.sessions.createSession({
       agentId: input.agentId,
       userId: input.userId,
       metadata: input.metadata,
-    })) as unknown as OfficialSession
+    })
+
+    return normalizeOfficialSessionResponse(raw, input)
   }
 
   async deleteSession(sessionId: string): Promise<void> {
@@ -218,7 +311,7 @@ export async function collectOfficialHttpResponse(response: Response): Promise<O
     })
 
     throw new WagdieElizaError('Official ElizaOS HTTP request failed', {
-      code: response.status === 401 || response.status === 403 ? 'AUTH_ERROR' : 'API_ERROR',
+      code: getGatewayErrorCode(response.status),
       statusCode: response.status,
       isRetryable: isRetryableGatewayStatus(response.status),
       details: {
@@ -252,6 +345,92 @@ export async function collectOfficialHttpResponse(response: Response): Promise<O
     },
     text: normalizeOfficialResponseText(text),
   }
+}
+
+export async function sendAndCollectOfficialEphemeralSessionMessage(
+  messaging: OfficialEphemeralMessagingClient,
+  input: OfficialEphemeralSessionMessageInput
+): Promise<OfficialCollectedResponse> {
+  const recoveryEnabled = input.sessionNotFoundRecovery?.enabled ?? true
+  const recoveryDelayMs = Math.max(
+    0,
+    input.sessionNotFoundRecovery?.delayMs ?? DEFAULT_SESSION_NOT_FOUND_RECOVERY_DELAY_MS
+  )
+  const createdSessionIds: string[] = []
+  const deletedSessionIds = new Set<string>()
+
+  const deleteBestEffort = async (sessionId: string): Promise<void> => {
+    if (deletedSessionIds.has(sessionId)) {
+      return
+    }
+
+    deletedSessionIds.add(sessionId)
+    await messaging.deleteSession(sessionId).catch(() => null)
+  }
+
+  try {
+    let session = await messaging.createSession(input.session)
+    createdSessionIds.push(session.sessionId)
+
+    for (let attempt = 1; attempt <= (recoveryEnabled ? 2 : 1); attempt += 1) {
+      try {
+        const messageInput = {
+          sessionId: session.sessionId,
+          ...input.message,
+        }
+
+        if (typeof messaging.sendAndCollectSessionMessage === 'function') {
+          return await messaging.sendAndCollectSessionMessage(messageInput, {
+            callbacks: input.collect?.callbacks,
+            conversationId: session.sessionId,
+            maxAttempts: input.collect?.maxAttempts,
+            retryDelayMs: input.collect?.retryDelayMs,
+          })
+        }
+
+        if (
+          typeof messaging.sendSessionMessage === 'function' &&
+          typeof messaging.collectStreamedResponseText === 'function'
+        ) {
+          const response = await messaging.sendSessionMessage(messageInput)
+          return await messaging.collectStreamedResponseText(response, {
+            callbacks: input.collect?.callbacks,
+            conversationId: session.sessionId,
+          })
+        }
+
+        throw new Error('Official ElizaOS messaging client cannot send session messages')
+      } catch (error) {
+        if (attempt !== 1 || !recoveryEnabled || !isOfficialSessionNotFoundError(error)) {
+          throw error
+        }
+
+        console.warn('[Official ElizaOS] recovering missing ephemeral session', {
+          agentId: input.session.agentId,
+          userId: input.session.userId,
+          source: input.logContext?.source ?? input.session.metadata?.source,
+          roomId: input.logContext?.roomId ?? input.session.metadata?.roomId,
+          locationId: input.logContext?.locationId ?? input.session.metadata?.locationId,
+          tickId: input.logContext?.tickId ?? input.session.metadata?.tickId,
+          attempt,
+        })
+
+        await deleteBestEffort(session.sessionId)
+        if (recoveryDelayMs > 0) {
+          await sleep(recoveryDelayMs)
+        }
+
+        session = await messaging.createSession(input.session)
+        createdSessionIds.push(session.sessionId)
+      }
+    }
+  } finally {
+    for (const sessionId of createdSessionIds) {
+      await deleteBestEffort(sessionId)
+    }
+  }
+
+  throw new Error('Official ElizaOS ephemeral session message failed')
 }
 
 export async function collectOfficialStreamedResponseText(

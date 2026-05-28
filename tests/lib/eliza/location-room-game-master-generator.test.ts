@@ -4,6 +4,21 @@
 
 jest.mock('@/lib/eliza/official/messaging', () => ({
   normalizeOfficialResponseText: (text: string) => text.trim(),
+  sendAndCollectOfficialEphemeralSessionMessage: jest.fn(async (messaging: any, input: any) => {
+    const session = await messaging.createSession(input.session)
+    try {
+      const response = await messaging.sendSessionMessage({
+        sessionId: session.sessionId,
+        ...input.message,
+      })
+      return await messaging.collectStreamedResponseText(response, {
+        conversationId: session.sessionId,
+        callbacks: input.collect?.callbacks,
+      })
+    } finally {
+      await messaging.deleteSession(session.sessionId).catch(() => null)
+    }
+  }),
   createOfficialElizaMessagingClient: jest.fn(() => ({
     startAgent: jest.fn(),
     createSession: jest.fn(),
@@ -1087,6 +1102,7 @@ describe('game-master beat generator helpers', () => {
     }))
     expect(messaging.sendSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'session-1',
+      transport: 'http',
       metadata: expect.objectContaining({
         roomId: 'room-1',
         locationId: 'loc-1',
@@ -1153,6 +1169,8 @@ describe('game-master beat generator helpers', () => {
       repairResponseFlags: expect.objectContaining({ hasJsonObject: true }),
     }))
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
+    expect(messaging.sendSessionMessage.mock.calls[0][0]).toEqual(expect.objectContaining({ transport: 'http' }))
+    expect(messaging.sendSessionMessage.mock.calls[1][0]).toEqual(expect.objectContaining({ transport: 'http' }))
     const repairPrompt = messaging.sendSessionMessage.mock.calls[1][0].content
     expect(repairPrompt).toContain('Repair kind: json_only')
     expect(repairPrompt).toContain('Return only JSON with this contract')
@@ -1749,6 +1767,8 @@ describe('game-master beat generator helpers', () => {
       initialErrorCategory: 'validation_error',
     }))
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
+    expect(messaging.sendSessionMessage.mock.calls[0][0]).toEqual(expect.objectContaining({ transport: 'http' }))
+    expect(messaging.sendSessionMessage.mock.calls[1][0]).toEqual(expect.objectContaining({ transport: 'http' }))
     const repairPrompt = messaging.sendSessionMessage.mock.calls[1][0].content
     expect(repairPrompt).toContain('Repair kind: generic')
     expect(repairPrompt).toContain('Return only a JSON object with this exact scene-check outcome contract')

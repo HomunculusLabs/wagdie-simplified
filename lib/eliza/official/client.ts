@@ -382,6 +382,7 @@ export class OfficialWagdieElizaClient implements WagdieElizaClient {
               wagdieConversationId: link!.id,
             },
             signal: input.signal,
+            transport: 'sse',
           })
 
         let response = await sendToOfficialSession(link.officialSessionId)

@@ -2,6 +2,7 @@ import { elizaConfig } from '@/lib/eliza/config'
 import {
   createOfficialElizaMessagingClient,
   normalizeOfficialResponseText,
+  sendAndCollectOfficialEphemeralSessionMessage,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
 import {
@@ -620,34 +621,31 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
     const gameMasterAgentId = input.gameMasterAgentId.trim()
     if (!gameMasterAgentId) throw new Error('Gameplay encounter proposal requires a game-master agent id')
 
-    let sessionId: string | null = null
-
     try {
       await this.messaging.startAgent(gameMasterAgentId)
-      const session = await this.messaging.createSession({
-        agentId: gameMasterAgentId,
-        userId: input.room.officialUserId,
-        metadata: {
-          source: 'wagdie-location-room-gameplay-gm-encounter',
-          roomId: input.room.id,
-          locationId: input.room.locationId,
-          tickId: input.tick.id,
+      const sessionMetadata = {
+        source: 'wagdie-location-room-gameplay-gm-encounter',
+        roomId: input.room.id,
+        locationId: input.room.locationId,
+        tickId: input.tick.id,
+      }
+      const collected = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+        session: {
+          agentId: gameMasterAgentId,
+          userId: input.room.officialUserId,
+          metadata: sessionMetadata,
         },
-      })
-      sessionId = session.sessionId
-
-      const response = await this.messaging.sendSessionMessage({
-        sessionId: session.sessionId,
-        content: buildGameplayEncounterProposalPrompt(input),
-        metadata: {
-          source: 'wagdie-location-room-gameplay-gm-encounter',
-          roomId: input.room.id,
-          locationId: input.room.locationId,
-          tickId: input.tick.id,
+        message: {
+          content: buildGameplayEncounterProposalPrompt(input),
+          transport: 'http',
+          metadata: {
+            source: 'wagdie-location-room-gameplay-gm-encounter',
+            roomId: input.room.id,
+            locationId: input.room.locationId,
+            tickId: input.tick.id,
+          },
         },
-      })
-      const collected = await this.messaging.collectStreamedResponseText(response, {
-        conversationId: session.sessionId,
+        logContext: sessionMetadata,
       })
       return normalizeGameplayEncounterProposalResponse(collected.text, { gameMasterAgentId })
     } catch (error) {
@@ -658,10 +656,6 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
         error: error instanceof Error ? error.message : String(error),
       })
       return buildFallbackEncounterProposal(input, gameMasterAgentId)
-    } finally {
-      if (sessionId) {
-        await this.messaging.deleteSession(sessionId).catch(() => null)
-      }
     }
   }
 
@@ -669,38 +663,35 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
     const gameMasterAgentId = input.gameMasterAgentId.trim()
     if (!gameMasterAgentId) throw new Error('Gameplay outcome narration requires a game-master agent id')
 
-    let sessionId: string | null = null
-
     try {
       await this.messaging.startAgent(gameMasterAgentId)
-      const session = await this.messaging.createSession({
-        agentId: gameMasterAgentId,
-        userId: input.room.officialUserId,
-        metadata: {
-          source: 'wagdie-location-room-gameplay-gm-outcome',
-          roomId: input.room.id,
-          locationId: input.room.locationId,
-          tickId: input.tick.id,
-          encounterId: input.encounterBefore.id,
-          turnId: input.turn.id,
+      const sessionMetadata = {
+        source: 'wagdie-location-room-gameplay-gm-outcome',
+        roomId: input.room.id,
+        locationId: input.room.locationId,
+        tickId: input.tick.id,
+        encounterId: input.encounterBefore.id,
+        turnId: input.turn.id,
+      }
+      const collected = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+        session: {
+          agentId: gameMasterAgentId,
+          userId: input.room.officialUserId,
+          metadata: sessionMetadata,
         },
-      })
-      sessionId = session.sessionId
-
-      const response = await this.messaging.sendSessionMessage({
-        sessionId: session.sessionId,
-        content: buildGameplayOutcomeNarrationPrompt(input),
-        metadata: {
-          source: 'wagdie-location-room-gameplay-gm-outcome',
-          roomId: input.room.id,
-          locationId: input.room.locationId,
-          tickId: input.tick.id,
-          encounterId: input.encounterBefore.id,
-          turnId: input.turn.id,
+        message: {
+          content: buildGameplayOutcomeNarrationPrompt(input),
+          transport: 'http',
+          metadata: {
+            source: 'wagdie-location-room-gameplay-gm-outcome',
+            roomId: input.room.id,
+            locationId: input.room.locationId,
+            tickId: input.tick.id,
+            encounterId: input.encounterBefore.id,
+            turnId: input.turn.id,
+          },
         },
-      })
-      const collected = await this.messaging.collectStreamedResponseText(response, {
-        conversationId: session.sessionId,
+        logContext: sessionMetadata,
       })
       return normalizeGameplayOutcomeNarrationResponse(collected.text, {
         gameMasterAgentId,
@@ -716,10 +707,6 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
         error: error instanceof Error ? error.message : String(error),
       })
       return buildFallbackOutcomeNarration(input, gameMasterAgentId)
-    } finally {
-      if (sessionId) {
-        await this.messaging.deleteSession(sessionId).catch(() => null)
-      }
     }
   }
 }

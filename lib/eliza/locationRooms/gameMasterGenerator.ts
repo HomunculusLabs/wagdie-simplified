@@ -3,6 +3,7 @@ import { normalizeLocationAdventureCatalog } from '@/lib/domain/location/metadat
 import {
   createOfficialElizaMessagingClient,
   normalizeOfficialResponseText,
+  sendAndCollectOfficialEphemeralSessionMessage,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
 import {
@@ -1920,26 +1921,6 @@ export interface GameMasterBeatGenerator {
   generateSceneCheckOutcome?(input: GenerateGameMasterSceneCheckOutcomeInput): Promise<GameMasterSceneCheckOutcomeOutput>
 }
 
-async function sendAndCollectOfficialMessage(
-  messaging: OfficialElizaMessagingClient,
-  input: Parameters<OfficialElizaMessagingClient['sendSessionMessage']>[0],
-  options: Parameters<OfficialElizaMessagingClient['collectStreamedResponseText']>[1] = {}
-): Promise<Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>> {
-  const maybeRetryingMessaging = messaging as OfficialElizaMessagingClient & {
-    sendAndCollectSessionMessage?: (
-      input: Parameters<OfficialElizaMessagingClient['sendSessionMessage']>[0],
-      options?: Parameters<OfficialElizaMessagingClient['collectStreamedResponseText']>[1]
-    ) => Promise<Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>>
-  }
-
-  if (typeof maybeRetryingMessaging.sendAndCollectSessionMessage === 'function') {
-    return maybeRetryingMessaging.sendAndCollectSessionMessage(input, options)
-  }
-
-  const response = await messaging.sendSessionMessage(input)
-  return messaging.collectStreamedResponseText(response, options)
-}
-
 export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator {
   constructor(
     private readonly messaging: OfficialElizaMessagingClient = createOfficialElizaMessagingClient({
@@ -1956,27 +1937,28 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
     }
 
     await this.messaging.startAgent(gameMasterAgentId)
-    const session = await this.messaging.createSession({
-      agentId: gameMasterAgentId,
-      userId: input.room.officialUserId,
-      metadata: {
-        source: 'wagdie-location-room-game-master',
-        roomId: input.room.id,
-        locationId: input.room.locationId,
-        tickId: input.tick.id,
-        channelId: input.room.channelId,
-        officialRoomId: input.room.officialRoomId,
-        officialWorldId: input.room.officialWorldId,
-        selectedSpeakerTokenId: input.speaker.tokenId,
-      },
-    })
+    const sessionMetadata = {
+      source: 'wagdie-location-room-game-master',
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      tickId: input.tick.id,
+      channelId: input.room.channelId,
+      officialRoomId: input.room.officialRoomId,
+      officialWorldId: input.room.officialWorldId,
+      selectedSpeakerTokenId: input.speaker.tokenId,
+    }
 
+    let collected: Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>
     try {
-      let collected: Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>
-      try {
-        collected = await sendAndCollectOfficialMessage(this.messaging, {
-          sessionId: session.sessionId,
+      collected = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+        session: {
+          agentId: gameMasterAgentId,
+          userId: input.room.officialUserId,
+          metadata: sessionMetadata,
+        },
+        message: {
           content: buildGameMasterBeatPrompt(input),
+          transport: 'http',
           metadata: {
             source: 'wagdie-location-room-game-master',
             roomId: input.room.id,
@@ -1985,23 +1967,23 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
             channelId: input.room.channelId,
             selectedSpeakerTokenId: input.speaker.tokenId,
           },
-        }, {
-          conversationId: session.sessionId,
-        })
-      } catch (transportError) {
-        const diagnostics: GameMasterGenerationDiagnostics = {
-          status: 'repair_failed',
-          repairAttempted: false,
-          repaired: false,
-          initialErrorCategory: 'transport_error',
-          transportStage: 'collect_stream',
-        }
-        throw new GameMasterBeatGenerationError(
-          'Game-master beat generation failed during Official ElizaOS transport',
-          diagnostics,
-          { cause: transportError }
-        )
+        },
+        logContext: sessionMetadata,
+      })
+    } catch (transportError) {
+      const diagnostics: GameMasterGenerationDiagnostics = {
+        status: 'repair_failed',
+        repairAttempted: false,
+        repaired: false,
+        initialErrorCategory: 'transport_error',
+        transportStage: 'collect_stream',
       }
+      throw new GameMasterBeatGenerationError(
+        'Game-master beat generation failed during Official ElizaOS transport',
+        diagnostics,
+        { cause: transportError }
+      )
+    }
 
       try {
         return withGenerationDiagnostics(normalizeGameMasterBeatResponse(collected.text, input, {
@@ -2019,27 +2001,27 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
         let repairText = ''
 
         try {
-          const repairSession = await this.messaging.createSession({
-            agentId: gameMasterAgentId,
-            userId: input.room.officialUserId,
-            metadata: {
-              source: 'wagdie-location-room-game-master-repair',
-              roomId: input.room.id,
-              locationId: input.room.locationId,
-              tickId: input.tick.id,
-              channelId: input.room.channelId,
-              officialRoomId: input.room.officialRoomId,
-              officialWorldId: input.room.officialWorldId,
-              selectedSpeakerTokenId: input.speaker.tokenId,
-              repairAttempted: true,
-              initialErrorCategory: diagnostics.initialErrorCategory,
+          const repairSessionMetadata = {
+            source: 'wagdie-location-room-game-master-repair',
+            roomId: input.room.id,
+            locationId: input.room.locationId,
+            tickId: input.tick.id,
+            channelId: input.room.channelId,
+            officialRoomId: input.room.officialRoomId,
+            officialWorldId: input.room.officialWorldId,
+            selectedSpeakerTokenId: input.speaker.tokenId,
+            repairAttempted: true,
+            initialErrorCategory: diagnostics.initialErrorCategory,
+          }
+          const repaired = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+            session: {
+              agentId: gameMasterAgentId,
+              userId: input.room.officialUserId,
+              metadata: repairSessionMetadata,
             },
-          })
-
-          try {
-            const repaired = await sendAndCollectOfficialMessage(this.messaging, {
-              sessionId: repairSession.sessionId,
+            message: {
               content: buildGameMasterBeatRepairPrompt(input, diagnostics),
+              transport: 'http',
               metadata: {
                 source: 'wagdie-location-room-game-master-repair',
                 roomId: input.room.id,
@@ -2050,13 +2032,10 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
                 repairAttempted: true,
                 initialErrorCategory: diagnostics.initialErrorCategory,
               },
-            }, {
-              conversationId: repairSession.sessionId,
-            })
-            repairText = repaired.text
-          } finally {
-            await this.messaging.deleteSession(repairSession.sessionId).catch(() => null)
-          }
+            },
+            logContext: repairSessionMetadata,
+          })
+          repairText = repaired.text
         } catch (repairTransportError) {
           const failedDiagnostics: GameMasterGenerationDiagnostics = {
             ...diagnostics,
@@ -2105,9 +2084,6 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
           )
         }
       }
-    } finally {
-      await this.messaging.deleteSession(session.sessionId).catch(() => null)
-    }
   }
 
   async generateSceneCheckOutcome(input: GenerateGameMasterSceneCheckOutcomeInput): Promise<GameMasterSceneCheckOutcomeOutput> {
@@ -2117,30 +2093,29 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
     }
 
     await this.messaging.startAgent(gameMasterAgentId)
-    let session: { sessionId: string } | null = null
+    const sessionMetadata = {
+      source: 'wagdie-location-room-game-master-scene-check-outcome',
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      tickId: input.tick.id,
+      channelId: input.room.channelId,
+      officialRoomId: input.room.officialRoomId,
+      officialWorldId: input.room.officialWorldId,
+      selectedSpeakerTokenId: input.speaker.tokenId,
+      sceneCheckId: input.sceneCheckId,
+    }
 
+    let collected: Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>
     try {
-      session = await this.messaging.createSession({
-        agentId: gameMasterAgentId,
-        userId: input.room.officialUserId,
-        metadata: {
-          source: 'wagdie-location-room-game-master-scene-check-outcome',
-          roomId: input.room.id,
-          locationId: input.room.locationId,
-          tickId: input.tick.id,
-          channelId: input.room.channelId,
-          officialRoomId: input.room.officialRoomId,
-          officialWorldId: input.room.officialWorldId,
-          selectedSpeakerTokenId: input.speaker.tokenId,
-          sceneCheckId: input.sceneCheckId,
+      collected = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+        session: {
+          agentId: gameMasterAgentId,
+          userId: input.room.officialUserId,
+          metadata: sessionMetadata,
         },
-      })
-
-      let collected: Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>
-      try {
-        collected = await sendAndCollectOfficialMessage(this.messaging, {
-          sessionId: session.sessionId,
+        message: {
           content: buildGameMasterSceneCheckOutcomePrompt(input),
+          transport: 'http',
           metadata: {
             source: 'wagdie-location-room-game-master-scene-check-outcome',
             roomId: input.room.id,
@@ -2150,23 +2125,23 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
             selectedSpeakerTokenId: input.speaker.tokenId,
             sceneCheckId: input.sceneCheckId,
           },
-        }, {
-          conversationId: session.sessionId,
-        })
-      } catch (transportError) {
-        const diagnostics: GameMasterGenerationDiagnostics = {
-          status: 'repair_failed',
-          repairAttempted: false,
-          repaired: false,
-          initialErrorCategory: 'transport_error',
-          transportStage: 'collect_stream',
-        }
-        throw new GameMasterSceneCheckOutcomeGenerationError(
-          'Game-master scene-check outcome generation failed during Official ElizaOS transport',
-          diagnostics,
-          { cause: transportError }
-        )
+        },
+        logContext: sessionMetadata,
+      })
+    } catch (transportError) {
+      const diagnostics: GameMasterGenerationDiagnostics = {
+        status: 'repair_failed',
+        repairAttempted: false,
+        repaired: false,
+        initialErrorCategory: 'transport_error',
+        transportStage: 'collect_stream',
       }
+      throw new GameMasterSceneCheckOutcomeGenerationError(
+        'Game-master scene-check outcome generation failed during Official ElizaOS transport',
+        diagnostics,
+        { cause: transportError }
+      )
+    }
 
       try {
         return withSceneCheckGenerationDiagnostics(normalizeGameMasterSceneCheckOutcomeResponse(collected.text, input, {
@@ -2183,28 +2158,28 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
         let repairText = ''
 
         try {
-          const repairSession = await this.messaging.createSession({
-            agentId: gameMasterAgentId,
-            userId: input.room.officialUserId,
-            metadata: {
-              source: 'wagdie-location-room-game-master-scene-check-outcome-repair',
-              roomId: input.room.id,
-              locationId: input.room.locationId,
-              tickId: input.tick.id,
-              channelId: input.room.channelId,
-              officialRoomId: input.room.officialRoomId,
-              officialWorldId: input.room.officialWorldId,
-              selectedSpeakerTokenId: input.speaker.tokenId,
-              sceneCheckId: input.sceneCheckId,
-              repairAttempted: true,
-              initialErrorCategory: diagnostics.initialErrorCategory,
+          const repairSessionMetadata = {
+            source: 'wagdie-location-room-game-master-scene-check-outcome-repair',
+            roomId: input.room.id,
+            locationId: input.room.locationId,
+            tickId: input.tick.id,
+            channelId: input.room.channelId,
+            officialRoomId: input.room.officialRoomId,
+            officialWorldId: input.room.officialWorldId,
+            selectedSpeakerTokenId: input.speaker.tokenId,
+            sceneCheckId: input.sceneCheckId,
+            repairAttempted: true,
+            initialErrorCategory: diagnostics.initialErrorCategory,
+          }
+          const repaired = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+            session: {
+              agentId: gameMasterAgentId,
+              userId: input.room.officialUserId,
+              metadata: repairSessionMetadata,
             },
-          })
-
-          try {
-            const repaired = await sendAndCollectOfficialMessage(this.messaging, {
-              sessionId: repairSession.sessionId,
+            message: {
               content: buildGameMasterSceneCheckOutcomeRepairPrompt(input, diagnostics),
+              transport: 'http',
               metadata: {
                 source: 'wagdie-location-room-game-master-scene-check-outcome-repair',
                 roomId: input.room.id,
@@ -2216,13 +2191,10 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
                 repairAttempted: true,
                 initialErrorCategory: diagnostics.initialErrorCategory,
               },
-            }, {
-              conversationId: repairSession.sessionId,
-            })
-            repairText = repaired.text
-          } finally {
-            await this.messaging.deleteSession(repairSession.sessionId).catch(() => null)
-          }
+            },
+            logContext: repairSessionMetadata,
+          })
+          repairText = repaired.text
         } catch (repairTransportError) {
           const failedDiagnostics: GameMasterGenerationDiagnostics = {
             ...diagnostics,
@@ -2270,11 +2242,6 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
           )
         }
       }
-    } finally {
-      if (session) {
-        await this.messaging.deleteSession(session.sessionId).catch(() => null)
-      }
-    }
   }
 }
 
