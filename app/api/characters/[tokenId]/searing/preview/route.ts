@@ -5,8 +5,9 @@ import { resolveSearingLayersForCharacter, validateSearingLayerResolution } from
 import { CHARACTERS_TABLE } from '@/lib/db/tables'
 import { searingMapMaterializationRepository } from '@/lib/repositories/searing-map-materialization-repository'
 import { searingImageComposer } from '@/lib/services/searing-image-composer'
+import { characterLocalAssets } from '@/lib/services/assets/character-local-assets'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import type { CharacterMetadata } from '@/types/character'
+import type { CharacterMetadata, InfectionStatus } from '@/types/character'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -14,6 +15,9 @@ export const dynamic = 'force-dynamic'
 type PreviewCharacter = {
   token_id: number
   metadata: CharacterMetadata | null
+  image_url?: string | null
+  infection_status?: InfectionStatus | null
+  infected?: boolean | null
 }
 
 export async function GET(
@@ -41,7 +45,7 @@ export async function GET(
     const [characterResult, concord] = await Promise.all([
       admin
         .from(CHARACTERS_TABLE as never)
-        .select('token_id, metadata')
+        .select('token_id, metadata, image_url, infection_status, infected')
         .eq('token_id', tokenId)
         .maybeSingle(),
       searingMapMaterializationRepository.findByConcordTokenId(concordId),
@@ -61,7 +65,14 @@ export async function GET(
       return jsonNoStoreError(`No searing map found for concord ${concordId}`, 404)
     }
 
-    const resolution = resolveSearingLayersForCharacter(character.metadata, concord)
+    const hydratedCharacter = await characterLocalAssets.hydrateCharacter({
+      ...character,
+      image_url: character.image_url ?? undefined,
+      infection_status: character.infection_status ?? undefined,
+      infected: character.infected ?? undefined,
+    })
+
+    const resolution = resolveSearingLayersForCharacter(hydratedCharacter.metadata, concord)
     validateSearingLayerResolution(resolution)
     const composed = await searingImageComposer.compose(resolution.layers)
 

@@ -436,7 +436,7 @@ export class SearingMaterializationService {
         throw new Error(`No concord searing map found for concord ${event.concord_id}`)
       }
 
-      const resolution = resolveSearingLayersForCharacter(character.metadata, concord)
+      const resolution = resolveSearingLayersForCharacter(character.searing_metadata ?? character.metadata, concord)
       validateSearingLayerResolution(resolution)
 
       const composed = await this.composer.compose(resolution.layers)

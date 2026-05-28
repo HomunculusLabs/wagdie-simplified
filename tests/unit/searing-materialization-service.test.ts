@@ -122,6 +122,87 @@ describe('SearingMaterializationService', () => {
     expect(changedPixelCount(await rawRgba(original), await rawRgba(uploadedImage as Buffer))).toBeGreaterThan(1000)
   })
 
+  it('resolves materialization layers from hydrated searing metadata when available', async () => {
+    const transactionHash = `0x${'c'.repeat(64)}`
+    const event: SearingEventMaterializationRow = {
+      id: 'event-current-traits',
+      token_id: 7,
+      concord_id: 3,
+      event_type: 'sear',
+      transaction_hash: transactionHash,
+      block_number: 123,
+      log_index: 1,
+      actor_address: null,
+      event_timestamp: null,
+      metadata: {},
+      created_at: new Date(0).toISOString(),
+      materialization_status: 'pending',
+      materialization_attempts: 0,
+      materialization_error: null,
+      materialized_at: null,
+      seared_image_url: null,
+      materialization_metadata: {},
+    }
+    const concord: ConcordSearingMap = {
+      tokenId: '3',
+      concordTokenId: 3,
+      location: 'Armor',
+      new_trait: 'Searing Mark',
+      makesBald: false,
+    }
+    const staleMetadata = {
+      attributes: [{ trait_type: 'Armor', value: 'Original Armor' }],
+    }
+    const currentMetadata = {
+      attributes: [{ trait_type: 'Armor', value: 'Current Armor' }],
+    }
+    const compose = jest.fn(async (layers) => {
+      expect(layers).toEqual(expect.arrayContaining([
+        expect.objectContaining({ trait_type: 'Armor', value: 'Current Armor' }),
+      ]))
+      return { image: Buffer.from('current-traits'), layerUrls: ['/layers/current.png'] }
+    })
+    const markCompleted = jest.fn(async (_id: string, searedImageUrl: string, materializationMetadata: Record<string, unknown>) => ({
+      ...event,
+      materialization_status: 'completed',
+      seared_image_url: searedImageUrl,
+      materialization_metadata: materializationMetadata,
+    }))
+    const service = new SearingMaterializationService(
+      {
+        findById: jest.fn(async () => event),
+        claimForMaterialization: jest.fn(async () => ({ claimed: true as const, event })),
+        findLatestForToken: jest.fn(async () => event),
+        markCompleted,
+        markFailed: jest.fn(),
+        markSkipped: jest.fn(),
+      } as never,
+      {
+        findCharacter: jest.fn(async () => ({ token_id: 7, metadata: staleMetadata, searing_metadata: currentMetadata })),
+        updateSearingReadModel: jest.fn(async () => undefined),
+        markCharacterConcordSeared: jest.fn(async () => undefined),
+      } as never,
+      {
+        findByConcordTokenId: jest.fn(async () => concord),
+      } as never,
+      { compose } as never,
+      {
+        uploadSearedImage: jest.fn(async () => 'https://storage.googleapis.com/seared-wagdie-images/7/current.png'),
+      } as never
+    )
+
+    await expect(service.materializeEvent(event.id)).resolves.toMatchObject({ status: 'completed' })
+    expect(markCompleted).toHaveBeenCalledWith(
+      event.id,
+      'https://storage.googleapis.com/seared-wagdie-images/7/current.png',
+      expect.objectContaining({
+        layers: expect.arrayContaining([
+          expect.objectContaining({ trait_type: 'Armor', value: 'Current Armor' }),
+        ]),
+      })
+    )
+  })
+
   it('does not treat a legacy deterministic completed image URL as completed when repair is not requested', async () => {
     const transactionHash = `0x${'b'.repeat(64)}`
     const completedLegacyEvent: SearingEventMaterializationRow = {

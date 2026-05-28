@@ -1,13 +1,16 @@
 import { CHARACTERS_TABLE } from '../db/tables'
+import type { CharacterRuntimeAssets } from '../domain/character/character-runtime-assets'
 import type { ConcordSearingMap } from '../domain/searing/concord-searing-map'
+import { characterLocalAssets } from '../services/assets/character-local-assets'
 import { getSupabaseAdmin } from '../supabase'
-import type { CharacterMetadata } from '../../types/character'
+import type { Character, CharacterMetadata } from '../../types/character'
 
 type SupabaseAdminClient = NonNullable<ReturnType<typeof getSupabaseAdmin>>
 
 type CharacterMaterializationRow = {
   token_id: number
   metadata: Record<string, unknown> | null
+  searing_metadata?: Record<string, unknown> | null
   image_url?: string | null
   infection_status?: string | null
   infected?: boolean | null
@@ -121,7 +124,10 @@ function buildUpdatedMetadata(
 }
 
 export class CharacterMaterializationRepository {
-  constructor(private readonly getClient: () => SupabaseAdminClient = requireAdminClient) {}
+  constructor(
+    private readonly getClient: () => SupabaseAdminClient = requireAdminClient,
+    private readonly runtimeAssets: CharacterRuntimeAssets = characterLocalAssets
+  ) {}
 
   async findCharacter(tokenId: number): Promise<CharacterMaterializationRow | null> {
     const { data, error } = await fromTable(this.getClient(), CHARACTERS_TABLE)
@@ -133,7 +139,20 @@ export class CharacterMaterializationRepository {
       throw new Error(`Failed to fetch character ${tokenId}: ${error.message}`)
     }
 
-    return data ? (data as CharacterMaterializationRow) : null
+    if (!data) return null
+
+    const character = data as CharacterMaterializationRow
+    const hydrated = await this.runtimeAssets.hydrateCharacter({
+      ...character,
+      image_url: character.image_url ?? undefined,
+      infection_status: character.infection_status ?? undefined,
+      infected: character.infected ?? undefined,
+    } as Character)
+
+    return {
+      ...character,
+      searing_metadata: hydrated.metadata ?? character.metadata,
+    }
   }
 
   async updateSearingReadModel(update: CharacterSearingReadModelUpdate): Promise<void> {
