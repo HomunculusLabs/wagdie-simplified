@@ -1,7 +1,8 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { AIPersonaTab } from '@/components/characters/ai-editor'
-import { PERSONA_ASSISTANT_DOCK_PORTAL_ID } from '@/components/chat'
+import { PERSONA_ASSISTANT_DOCK_PORTAL_ID, PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT } from '@/components/chat'
 import { CharacterActions } from '@/components/characters/detail/CharacterActions'
 import { CharacterArtworkCard } from '@/components/characters/detail/CharacterArtworkCard'
 import { CharacterEquipmentSection } from '@/components/characters/detail/CharacterEquipmentSection'
@@ -82,6 +83,22 @@ export function CharacterSheetLayout({
   chatCharacterId,
   showPersonaAssistant = isOwner,
 }: CharacterSheetLayoutProps) {
+  const [isPersonaAssistantDockVisible, setIsPersonaAssistantDockVisible] = useState(false)
+  const shouldCompactLeftRail = activeTab === 'ai-persona' && isPersonaAssistantDockVisible
+
+  useEffect(() => {
+    const handlePersonaAssistantDockVisibility = (event: Event) => {
+      const { visible } = (event as CustomEvent<{ visible?: boolean }>).detail ?? {}
+      setIsPersonaAssistantDockVisible(Boolean(visible))
+    }
+
+    window.addEventListener(PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT, handlePersonaAssistantDockVisibility)
+
+    return () => {
+      window.removeEventListener(PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT, handlePersonaAssistantDockVisibility)
+    }
+  }, [])
+
   const ChatIcon = () => (
     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -134,10 +151,10 @@ export function CharacterSheetLayout({
     <Card className="relative overflow-hidden border-soul-accent/25 bg-[radial-gradient(circle_at_top_left,rgba(214,177,103,0.08),transparent_34%),linear-gradient(135deg,rgba(22,17,15,0.96),rgba(8,8,8,0.98))] shadow-2xl shadow-black/50">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-soul-accent/60 to-transparent" />
       <CardContent className="p-4 sm:p-6 lg:p-8 xl:p-10">
-        <div className="relative">
-          <div className="pointer-events-none absolute inset-y-0 left-[39%] hidden w-px bg-gradient-to-b from-transparent via-midnight-light/50 to-transparent lg:block" />
-          <div className="grid grid-cols-1 gap-7 lg:grid-cols-12 lg:gap-10">
-            <aside className="space-y-4 lg:col-span-5 xl:col-span-4" aria-label="Character artwork and stats">
+        <div className="relative" data-persona-dock-compact={shouldCompactLeftRail ? 'true' : 'false'}>
+          <div className={`pointer-events-none absolute inset-y-0 hidden w-px bg-gradient-to-b from-transparent via-midnight-light/50 to-transparent ${shouldCompactLeftRail ? 'left-[25%] md:block' : 'left-[39%] lg:block'}`} />
+          <div className={`grid grid-cols-1 gap-7 transition-[gap] duration-300 ${shouldCompactLeftRail ? 'md:grid-cols-12 md:gap-5 lg:gap-6' : 'lg:grid-cols-12 lg:gap-10'}`}>
+            <aside className={`space-y-4 transition-[width] duration-300 ${shouldCompactLeftRail ? 'md:col-span-3' : 'lg:col-span-5 xl:col-span-4'}`} aria-label="Character artwork and stats">
               <div className="space-y-4 lg:sticky lg:top-24">
                 <CharacterArtworkCard
                   name={name}
@@ -148,24 +165,24 @@ export function CharacterSheetLayout({
                   onImageError={onImageError}
                   frame="inline"
                 />
-                <div className="space-y-4 border border-midnight-light/40 bg-black/25 p-4 shadow-inner shadow-black/30">
+                <div className={`border border-midnight-light/40 bg-black/25 shadow-inner shadow-black/30 ${shouldCompactLeftRail ? 'space-y-3 p-3' : 'space-y-4 p-4'}`}>
                   <div className="border-b border-midnight-light/30 pb-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="text-[11px] font-display tracking-widest text-mist lowercase">class</p>
-                        <p className="text-4xl font-display tracking-wider text-bone lowercase">
+                        <p className={`${shouldCompactLeftRail ? 'text-2xl' : 'text-4xl'} font-display tracking-wider text-bone lowercase`}>
                           {characterClass ?? 'pilgrim'}
                         </p>
                       </div>
                       <div className="text-right">
                         <p className="text-[11px] font-display tracking-widest text-mist lowercase">level</p>
-                        <p className="text-3xl font-display text-soul-accent">{level}</p>
+                        <p className={`${shouldCompactLeftRail ? 'text-2xl' : 'text-3xl'} font-display text-soul-accent`}>{level}</p>
                       </div>
                     </div>
                     <p className="mt-2 text-[11px] font-display tracking-widest text-dark lowercase">token #{tokenId}</p>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                  <div className={`grid grid-cols-1 gap-2 ${shouldCompactLeftRail ? '' : 'sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2'}`}>
                     {alignmentTrait && (
                       <div className="border border-soul-accent/40 bg-soul-accent/10 p-3">
                         <p className="text-[11px] font-display tracking-widest text-soul-accent lowercase">alignment</p>
@@ -214,7 +231,7 @@ export function CharacterSheetLayout({
               </div>
             </aside>
 
-            <div className="space-y-7 lg:col-span-7 xl:col-span-8">
+            <div className={`space-y-7 transition-[width] duration-300 ${shouldCompactLeftRail ? 'md:col-span-9' : 'lg:col-span-7 xl:col-span-8'}`}>
               <div className="flex flex-col gap-4 border-b border-midnight-light/40 pb-6 sm:flex-row sm:items-start sm:justify-between">
                 <CharacterIdentityStatsPanel
                   name={name}

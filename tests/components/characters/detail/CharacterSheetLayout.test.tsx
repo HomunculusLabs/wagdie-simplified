@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { CharacterSheetLayout } from '@/components/characters/detail/CharacterSheetLayout'
 import { PERSONA_ASSISTANT_DOCK_PORTAL_ID } from '@/components/chat'
 
@@ -17,6 +17,7 @@ jest.mock('@/components/characters/ai-editor', () => ({
 
 jest.mock('@/components/chat', () => ({
   PERSONA_ASSISTANT_DOCK_PORTAL_ID: 'persona-assistant-dock-portal',
+  PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT: 'persona-assistant-dock-visible-change',
 }))
 
 jest.mock('@/components/characters/detail/CharacterActions', () => ({
@@ -147,6 +148,24 @@ describe('CharacterSheetLayout', () => {
 
     fireEvent.click(chatButton)
     expect(onChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('compacts the artwork and stats rail while the persona assistant dock is visible', async () => {
+    const { container } = render(<CharacterSheetLayout {...baseProps} />)
+
+    expect(container.querySelector('[data-persona-dock-compact="true"]')).not.toBeInTheDocument()
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('persona-assistant-dock-visible-change', {
+        detail: { visible: true, width: 500 },
+      }))
+    })
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-persona-dock-compact="true"]')).toBeInTheDocument()
+    })
+
+    expect(screen.getByLabelText('Character artwork and stats')).toHaveClass('md:col-span-3')
   })
 
   it('passes the global persona assistant dock portal id and linked elizaOS id to the AI persona tab', () => {
