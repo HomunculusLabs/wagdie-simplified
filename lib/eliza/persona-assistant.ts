@@ -107,7 +107,8 @@ function buildSystemPrompt(): string {
     'Never output name, personality, knowledge, systemPrompt, id, externalId, plugins, secrets, modelProvider, clients, runtime config, or migration metadata.',
     'Use canonical system, not systemPrompt. Use exampleMessages, not messageExamples.',
     '',
-    'Generation targets: bio 3-6 entries, lore 3-8 entries, topics 5-12 entries, adjectives 5-10 entries, style.all and style.chat rules, optional style.post, 2-4 exampleMessages, optional postExamples, and one concise system prompt.',
+    'Generation targets: bio 3-6 entries, lore 3-8 entries, topics 5-12 entries, adjectives 5-10 entries, style.all and style.chat rules, optional style.post, 3-5 exampleMessages, optional postExamples, and one concise system prompt.',
+    'In generate mode, exampleMessages are required. Include varied owner-to-character chat examples that establish voice, tone, lore recall, and how the character responds under pressure.',
     `Limits: username ${ELIZA_FIELD_LIMITS.username} chars; backstory ${ELIZA_FIELD_LIMITS.backstory} chars; system ${ELIZA_FIELD_LIMITS.systemPrompt} chars; bio/lore entries ${ELIZA_FIELD_LIMITS.bio}/${ELIZA_FIELD_LIMITS.lore} chars; topic ${ELIZA_FIELD_LIMITS.topic} chars; adjective ${ELIZA_FIELD_LIMITS.adjective} chars; style rule ${ELIZA_FIELD_LIMITS.styleRule} chars; post example ${ELIZA_FIELD_LIMITS.postExample} chars.`,
   ].join('\n')
 }
@@ -129,7 +130,7 @@ function buildUserPrompt(
     safeJson(request.messages.slice(-20)),
     '',
     request.mode === 'generate'
-      ? 'Generate a pending proposal using only allowed fields. Preserve the established character identity and derive tone from character context and owner instructions without changing the character name. Do not add app, project, collection, brand, or universe names unless explicitly requested.'
+      ? 'Generate a pending proposal using only allowed fields. Preserve the established character identity and derive tone from character context and owner instructions without changing the character name. Include 3-5 exampleMessages with concrete userMessage and assistantMessage pairs; these chat examples are required because they anchor character tone. Do not add app, project, collection, brand, or universe names unless explicitly requested.'
       : 'Answer the owner conversationally and ask focused questions or explain what could be generated. Do not include a proposal in chat mode.',
   ].join('\n')
 }
@@ -358,6 +359,19 @@ function pruneModelProposal(value: unknown): { proposal: unknown; warnings: stri
   return { proposal, warnings }
 }
 
+function assertGenerateProposalHasChatExamples(proposal: PersonaAssistantEditableDraft): void {
+  const examples = proposal.exampleMessages || []
+  if (examples.length >= 3) return
+
+  throw new PersonaAssistantInvalidOutputError('Generate mode proposal must include at least 3 exampleMessages', [
+    {
+      path: 'exampleMessages',
+      reason: 'invalid',
+      message: 'Generate mode proposals must include at least 3 chat example pairs to establish character tone',
+    },
+  ])
+}
+
 function parseAssistantEnvelope(
   mode: PersonaAssistantRequest['mode'],
   content: string
@@ -396,6 +410,8 @@ function parseAssistantEnvelope(
     throw new PersonaAssistantInvalidOutputError('Assistant proposal failed policy validation', policyResult.issues)
   }
 
+  assertGenerateProposalHasChatExamples(policyResult.proposal)
+
   return {
     assistantText,
     proposal: policyResult.proposal,
@@ -410,6 +426,7 @@ function buildCorrectivePrompt(error: unknown): string {
     error instanceof Error ? `Error: ${error.message}` : 'Error: invalid assistant output',
     issues.length > 0 ? `Policy issues: ${safeJson(issues)}` : '',
     'Remember: proposal output may contain only the allowed assistant fields and safe settings paths. Use canonical system and exampleMessages.',
+    'For generate mode, include at least 3 exampleMessages with concrete userMessage and assistantMessage pairs that demonstrate the character voice.',
   ].filter(Boolean).join('\n')
 }
 
