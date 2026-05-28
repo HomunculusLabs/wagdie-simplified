@@ -7,6 +7,7 @@
 'use client'
 
 import { useState, useCallback, useRef, memo, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { useAccount } from 'wagmi'
 import toast from 'react-hot-toast'
 import { TabNavigation, type Tab } from './shared'
@@ -19,6 +20,7 @@ import { useAICharacter } from '@/hooks/useAICharacter'
 import { useAIPersonaEditor } from '@/hooks/useAIPersonaEditor'
 import { useKnowledgeUpload } from '@/hooks/useKnowledgeUpload'
 import { Card, CardContent, Button, Spinner } from '@/components/ui'
+import { PERSONA_ASSISTANT_DOCK_TARGET_EVENT } from '@/components/chat'
 import type { ElizaCharacterExport } from '@/types/eliza'
 
 interface AIPersonaTabProps {
@@ -26,6 +28,8 @@ interface AIPersonaTabProps {
   isOwner: boolean
   characterName?: string
   characterBackstory?: string
+  characterId?: string
+  assistantPortalId?: string
 }
 
 type TabId = 'identity' | 'behavior' | 'examples' | 'advanced'
@@ -40,6 +44,9 @@ const TABS: Tab[] = [
 function AIPersonaTabComponent({
   tokenId,
   isOwner,
+  characterName,
+  characterId,
+  assistantPortalId,
 }: AIPersonaTabProps) {
   const { isConnected } = useAccount()
   const {
@@ -65,6 +72,8 @@ function AIPersonaTabComponent({
 
   // Active tab state
   const [activeTab, setActiveTab] = useState<TabId>('identity')
+  const [assistantPortalElement, setAssistantPortalElement] = useState<HTMLElement | null>(null)
+  const [assistantPortalLookupComplete, setAssistantPortalLookupComplete] = useState(false)
 
   // Initialize knowledge documents from AI character
   useEffect(() => {
@@ -72,6 +81,34 @@ function AIPersonaTabComponent({
       knowledge.setDocuments(aiCharacter.knowledge)
     }
   }, [aiCharacter?.knowledge, knowledge])
+
+  useEffect(() => {
+    if (!assistantPortalId) {
+      setAssistantPortalElement(null)
+      setAssistantPortalLookupComplete(false)
+      return
+    }
+
+    setAssistantPortalLookupComplete(false)
+    setAssistantPortalElement(document.getElementById(assistantPortalId))
+    setAssistantPortalLookupComplete(true)
+  }, [assistantPortalId])
+
+  useEffect(() => {
+    if (!assistantPortalId || !isOwner) return
+
+    window.dispatchEvent(new CustomEvent(PERSONA_ASSISTANT_DOCK_TARGET_EVENT, {
+      detail: {
+        tokenId,
+        characterName: characterName || `Character #${tokenId}`,
+        characterId,
+      },
+    }))
+
+    return () => {
+      window.dispatchEvent(new CustomEvent(PERSONA_ASSISTANT_DOCK_TARGET_EVENT, { detail: null }))
+    }
+  }, [assistantPortalId, characterId, characterName, isOwner, tokenId])
 
   // Save handler
   const handleSave = useCallback(async () => {
@@ -176,6 +213,22 @@ function AIPersonaTabComponent({
     ...tab,
     hasChanges: editor.hasUnsavedChanges,
   }))
+
+  const assistantPanel = isOwner ? (
+    <PersonaAssistantPanel
+      tokenId={tokenId}
+      isOwner={isOwner}
+      isConnected={isConnected}
+      disabled={isSaving || isImporting}
+      getAssistantSnapshot={editor.getAssistantSnapshot}
+      applyAssistantDraft={editor.applyAssistantDraft}
+      presentation="sidebar"
+    />
+  ) : null
+
+  const shouldRenderInlineAssistant = Boolean(
+    assistantPanel && (!assistantPortalId || (assistantPortalLookupComplete && !assistantPortalElement))
+  )
 
   if (isLoading) {
     return (
@@ -302,83 +355,100 @@ function AIPersonaTabComponent({
           )}
         </div>
 
-        {/* Owner-facing persona assistant */}
-        {isOwner && (
-          <div className="px-4 pt-4">
-            <PersonaAssistantPanel
-              tokenId={tokenId}
-              isOwner={isOwner}
-              isConnected={isConnected}
-              disabled={isSaving || isImporting}
-              getAssistantSnapshot={editor.getAssistantSnapshot}
-              applyAssistantDraft={editor.applyAssistantDraft}
-            />
-          </div>
-        )}
-
-        {/* Tab navigation */}
-        <div className="px-4">
-          <TabNavigation tabs={tabsWithState} activeTab={activeTab} onTabChange={(id) => setActiveTab(id as TabId)} />
-        </div>
-
-        {/* Tab content */}
-        <div className="px-4 pb-4">
-          {activeTab === 'identity' && (
-            <IdentityTab
-              username={editor.state.username}
-              backstory={editor.state.backstory}
-              bio={editor.state.bio}
-              lore={editor.state.lore}
-              onUsernameChange={editor.setUsername}
-              onBackstoryChange={editor.setBackstory}
-              onBioChange={editor.setBio}
-              onLoreChange={editor.setLore}
-              disabled={isSaving}
-              readOnly={readOnly}
-            />
+        <div
+          data-testid="ai-persona-responsive-body"
+          className="px-4 pt-4 pb-4 space-y-4"
+        >
+          {/* Owner-facing persona assistant */}
+          {shouldRenderInlineAssistant && (
+            <aside
+              aria-label="Persona assistant"
+              data-testid="ai-persona-assistant-region"
+              data-placement="inline"
+            >
+              {assistantPanel}
+            </aside>
           )}
 
-          {activeTab === 'behavior' && (
-            <BehaviorTab
-              topics={editor.state.topics}
-              adjectives={editor.state.adjectives}
-              style={editor.state.style}
-              onTopicsChange={editor.setTopics}
-              onAdjectivesChange={editor.setAdjectives}
-              onStyleChange={editor.setStyle}
-              disabled={isSaving}
-              readOnly={readOnly}
-            />
+          {assistantPanel && assistantPortalElement && createPortal(
+            <aside
+              aria-label="Persona assistant"
+              data-testid="ai-persona-assistant-region"
+              data-placement="dock"
+            >
+              {assistantPanel}
+            </aside>,
+            assistantPortalElement
           )}
 
-          {activeTab === 'examples' && (
-            <ExamplesTab
-              exampleMessages={editor.state.exampleMessages}
-              postExamples={editor.state.postExamples}
-              onExampleMessagesChange={editor.setExampleMessages}
-              onPostExamplesChange={editor.setPostExamples}
-              disabled={isSaving}
-              readOnly={readOnly}
-            />
-          )}
+          <section
+            aria-label="AI persona editor fields"
+            data-testid="ai-persona-editor-region"
+            className="min-w-0 space-y-4"
+          >
+            {/* Tab navigation */}
+            <TabNavigation tabs={tabsWithState} activeTab={activeTab} onTabChange={(id) => setActiveTab(id as TabId)} />
 
-          {activeTab === 'advanced' && (
-            <AdvancedTab
-              systemPrompt={editor.state.systemPrompt}
-              templates={editor.state.templates}
-              settings={editor.state.settings}
-              knowledgeDocuments={knowledge.documents}
-              isUploadingKnowledge={knowledge.isUploading}
-              onSystemPromptChange={editor.setSystemPrompt}
-              onTemplatesChange={editor.setTemplates}
-              onSettingsChange={editor.setSettings}
-              onKnowledgeUpload={handleKnowledgeUpload}
-              onKnowledgeRemove={handleKnowledgeRemove}
-              disabled={isSaving}
-              readOnly={readOnly}
-              knowledgeError={knowledge.error}
-            />
-          )}
+            {/* Tab content */}
+            <div>
+              {activeTab === 'identity' && (
+                <IdentityTab
+                  username={editor.state.username}
+                  backstory={editor.state.backstory}
+                  bio={editor.state.bio}
+                  lore={editor.state.lore}
+                  onUsernameChange={editor.setUsername}
+                  onBackstoryChange={editor.setBackstory}
+                  onBioChange={editor.setBio}
+                  onLoreChange={editor.setLore}
+                  disabled={isSaving}
+                  readOnly={readOnly}
+                />
+              )}
+
+              {activeTab === 'behavior' && (
+                <BehaviorTab
+                  topics={editor.state.topics}
+                  adjectives={editor.state.adjectives}
+                  style={editor.state.style}
+                  onTopicsChange={editor.setTopics}
+                  onAdjectivesChange={editor.setAdjectives}
+                  onStyleChange={editor.setStyle}
+                  disabled={isSaving}
+                  readOnly={readOnly}
+                />
+              )}
+
+              {activeTab === 'examples' && (
+                <ExamplesTab
+                  exampleMessages={editor.state.exampleMessages}
+                  postExamples={editor.state.postExamples}
+                  onExampleMessagesChange={editor.setExampleMessages}
+                  onPostExamplesChange={editor.setPostExamples}
+                  disabled={isSaving}
+                  readOnly={readOnly}
+                />
+              )}
+
+              {activeTab === 'advanced' && (
+                <AdvancedTab
+                  systemPrompt={editor.state.systemPrompt}
+                  templates={editor.state.templates}
+                  settings={editor.state.settings}
+                  knowledgeDocuments={knowledge.documents}
+                  isUploadingKnowledge={knowledge.isUploading}
+                  onSystemPromptChange={editor.setSystemPrompt}
+                  onTemplatesChange={editor.setTemplates}
+                  onSettingsChange={editor.setSettings}
+                  onKnowledgeUpload={handleKnowledgeUpload}
+                  onKnowledgeRemove={handleKnowledgeRemove}
+                  disabled={isSaving}
+                  readOnly={readOnly}
+                  knowledgeError={knowledge.error}
+                />
+              )}
+            </div>
+          </section>
         </div>
 
         {/* Action buttons for owners */}

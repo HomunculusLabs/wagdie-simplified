@@ -15,3 +15,10 @@ export { ConversationItem } from './ConversationItem'
 export { ChatDock } from './ChatDock'
 
 export { ChatToggleButton } from './ChatToggleButton'
+
+export {
+  PersonaAssistantDockSlot,
+  PERSONA_ASSISTANT_DOCK_PORTAL_ID,
+  PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT,
+  PERSONA_ASSISTANT_DOCK_TARGET_EVENT,
+} from './PersonaAssistantDockSlot'

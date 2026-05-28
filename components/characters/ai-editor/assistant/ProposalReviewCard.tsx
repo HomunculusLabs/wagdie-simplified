@@ -2,11 +2,14 @@ import { memo, type ReactNode } from 'react'
 import { Button } from '@/components/ui'
 import type { PersonaAssistantEditableDraft, StyleConfig } from '@/types/eliza'
 
+export type PersonaAssistantPresentation = 'standard' | 'sidebar'
+
 interface ProposalReviewCardProps {
   proposal: PersonaAssistantEditableDraft
   warnings: string[]
   isGenerating?: boolean
   disabled?: boolean
+  presentation?: PersonaAssistantPresentation
   onApply: () => void
   onRegenerate: () => void
   onDiscard: () => void
@@ -81,23 +84,25 @@ function ProposalReviewCardComponent({
   warnings,
   isGenerating = false,
   disabled = false,
+  presentation = 'standard',
   onApply,
   onRegenerate,
   onDiscard,
 }: ProposalReviewCardProps) {
   const hasTemplates = hasOwn(proposal, 'templates') && proposal.templates !== undefined
   const hasSettings = hasOwn(proposal, 'settings') && proposal.settings !== undefined
+  const isSidebar = presentation === 'sidebar'
 
   return (
-    <div className="rounded-xl border border-soul-800/60 bg-soul-950/30 p-4">
-      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+    <div className="rounded-xl border border-soul-800/60 bg-soul-950/30 p-4" data-presentation={presentation}>
+      <div className={`mb-4 flex flex-col gap-2 ${isSidebar ? '' : 'sm:flex-row sm:items-start sm:justify-between'}`}>
         <div>
           <h4 className="font-display text-lg text-neutral-100">Review assistant draft</h4>
           <p className="text-sm text-neutral-400">
             Nothing changes until you apply this proposal to the editor.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className={`flex gap-2 ${isSidebar ? 'flex-col' : 'flex-wrap'}`}>
           <Button variant="primary" size="sm" onClick={onApply} disabled={disabled}>
             Apply to editor
           </Button>
@@ -121,7 +126,7 @@ function ProposalReviewCardComponent({
         </div>
       )}
 
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className={`grid gap-3 ${isSidebar ? 'grid-cols-1' : 'md:grid-cols-2'}`}>
         {'username' in proposal && (
           <ProposalSection title="Username">
             <TextValue value={proposal.username} />

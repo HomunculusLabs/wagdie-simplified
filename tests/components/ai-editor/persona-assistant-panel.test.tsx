@@ -84,6 +84,27 @@ describe('PersonaAssistantPanel', () => {
     expect(saveAICharacter).not.toHaveBeenCalled()
   })
 
+  it('renders sidebar presentation through the panel and proposal review card', () => {
+    ;(usePersonaAssistant as jest.Mock).mockReturnValue({
+      ...baseAssistant,
+      pendingProposal: proposal,
+    })
+
+    render(
+      <PersonaAssistantPanel
+        tokenId="123"
+        isOwner={true}
+        isConnected={true}
+        presentation="sidebar"
+        getAssistantSnapshot={() => ({})}
+        applyAssistantDraft={jest.fn()}
+      />
+    )
+
+    expect(screen.getByText(/Persona Assistant/i).closest('[data-presentation="sidebar"]')).toBeInTheDocument()
+    expect(screen.getByText(/Review assistant draft/i).closest('[data-presentation="sidebar"]')).toBeInTheDocument()
+  })
+
   it('sends generate requests through the hook without applying the editor draft', () => {
     const applyAssistantDraft = jest.fn()
 

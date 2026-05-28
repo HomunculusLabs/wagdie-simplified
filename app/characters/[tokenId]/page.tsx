@@ -164,7 +164,8 @@ export default function CharacterDetailPage() {
           onInfect={() => setIsInfectionModalOpen(true)}
           onCure={() => setIsCureModalOpen(true)}
           onChat={() => openChat({ tokenId: String(tokenId), characterName: name, characterId: aiCharacter?.id })}
-          showChatAction={Boolean(aiCharacter)}
+          showChatAction={Boolean(aiCharacter?.id)}
+          chatCharacterId={aiCharacter?.id}
         />
       </div>
 

@@ -5,13 +5,14 @@ import { Alert, Button } from '@/components/ui'
 import { usePersonaAssistant } from '@/hooks/usePersonaAssistant'
 import type { PersonaAssistantEditableDraft } from '@/types/eliza'
 import { AssistantTranscript } from './AssistantTranscript'
-import { ProposalReviewCard } from './ProposalReviewCard'
+import { ProposalReviewCard, type PersonaAssistantPresentation } from './ProposalReviewCard'
 
 interface PersonaAssistantPanelProps {
   tokenId: string
   isOwner: boolean
   isConnected: boolean
   disabled?: boolean
+  presentation?: PersonaAssistantPresentation
   getAssistantSnapshot: () => PersonaAssistantEditableDraft
   applyAssistantDraft: (draft: PersonaAssistantEditableDraft) => void
 }
@@ -21,6 +22,7 @@ function PersonaAssistantPanelComponent({
   isOwner,
   isConnected,
   disabled = false,
+  presentation = 'standard',
   getAssistantSnapshot,
   applyAssistantDraft,
 }: PersonaAssistantPanelProps) {
@@ -75,29 +77,38 @@ function PersonaAssistantPanelComponent({
     return null
   }
 
-  return (
-    <div className="rounded-xl border border-neutral-800 bg-neutral-950/50">
-      <button
-        type="button"
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-neutral-900/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-soul-500"
-        onClick={() => setIsOpen((current) => !current)}
-        aria-expanded={isOpen}
-      >
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-display uppercase tracking-widest text-neutral-200">
-              Persona Assistant
-            </h3>
-            {assistant.pendingProposal && (
-              <span className="rounded-full border border-soul-700 bg-soul-900/40 px-2 py-0.5 text-[10px] uppercase tracking-widest text-soul-300">
-                Draft ready
-              </span>
-            )}
-          </div>
-          <p className="mt-1 text-sm text-neutral-500">
-            Chat, generate a proposal, apply it to the editor, then use Save AI Persona.
-          </p>
+  const headerContent = (
+    <>
+      <div>
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="text-sm font-display uppercase tracking-widest text-neutral-200">
+            Persona Assistant
+          </h3>
+          {assistant.pendingProposal && (
+            <span className="rounded-full border border-soul-700 bg-soul-900/40 px-2 py-0.5 text-[10px] uppercase tracking-widest text-soul-300">
+              Draft ready
+            </span>
+          )}
         </div>
+        <p className="mt-1 text-sm text-neutral-500">
+          Chat, generate a proposal, apply it to the editor, then use Save AI Persona.
+        </p>
+      </div>
+    </>
+  )
+
+  return (
+    <div className={presentation === 'sidebar' ? 'border-b border-neutral-800 bg-neutral-950/50' : 'rounded-xl border border-neutral-800 bg-neutral-950/50'} data-presentation={presentation}>
+      {presentation === 'sidebar' ? (
+        <div className="sr-only">{headerContent}</div>
+      ) : (
+        <button
+          type="button"
+          className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-neutral-900/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-soul-500"
+          onClick={() => setIsOpen((current) => !current)}
+          aria-expanded={isOpen}
+        >
+          {headerContent}
         <svg
           className={`h-4 w-4 shrink-0 text-neutral-500 transition-transform ${isOpen ? 'rotate-90' : ''}`}
           fill="none"
@@ -107,9 +118,10 @@ function PersonaAssistantPanelComponent({
         >
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
         </svg>
-      </button>
+        </button>
+      )}
 
-      {isOpen && (
+      {(isOpen || presentation === 'sidebar') && (
         <div className="space-y-4 border-t border-neutral-800 px-4 py-4">
           <Alert title="Two-step workflow" className="bg-black/20">
             Generate draft creates a pending proposal only. Apply to editor stages editable local changes. Save AI Persona persists them.
@@ -208,6 +220,7 @@ function PersonaAssistantPanelComponent({
               warnings={assistant.warnings}
               isGenerating={assistant.isGenerating}
               disabled={isInteractionDisabled}
+              presentation={presentation}
               onApply={handleApplyProposal}
               onRegenerate={handleGenerate}
               onDiscard={handleDiscardProposal}

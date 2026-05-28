@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { WagmiProvider } from 'wagmi'
 import { RainbowKitProvider, darkTheme } from '@rainbow-me/rainbowkit'
@@ -10,11 +10,30 @@ import { AuthProvider } from '@/contexts/AuthContext'
 import '@rainbow-me/rainbowkit/styles.css'
 
 import { ChatDockProvider, useChatDock } from '@/contexts/ChatDockContext'
-import { ChatDock, ChatToggleButton } from '@/components/chat'
+import {
+  ChatDock,
+  ChatToggleButton,
+  PersonaAssistantDockSlot,
+  PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT,
+} from '@/components/chat'
 
 function ChatDockContentWrapper({ children }: { children: React.ReactNode }) {
   const { isOpen, target } = useChatDock()
-  const shouldPushContent = isOpen && !!target
+  const [isPersonaAssistantDockVisible, setIsPersonaAssistantDockVisible] = useState(false)
+  const shouldPushContent = (isOpen && !!target) || isPersonaAssistantDockVisible
+
+  useEffect(() => {
+    const handlePersonaAssistantDockVisibility = (event: Event) => {
+      const { visible } = (event as CustomEvent<{ visible?: boolean }>).detail ?? {}
+      setIsPersonaAssistantDockVisible(Boolean(visible))
+    }
+
+    window.addEventListener(PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT, handlePersonaAssistantDockVisibility)
+
+    return () => {
+      window.removeEventListener(PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT, handlePersonaAssistantDockVisibility)
+    }
+  }, [])
 
   return (
     <div
@@ -45,6 +64,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
                 <ChatDockContentWrapper>
                   {children}
                 </ChatDockContentWrapper>
+                <PersonaAssistantDockSlot />
                 <ChatDock />
                 <ChatToggleButton />
               </ChatDockProvider>

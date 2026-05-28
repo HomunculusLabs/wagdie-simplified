@@ -1,6 +1,7 @@
 'use client'
 
 import { AIPersonaTab } from '@/components/characters/ai-editor'
+import { PERSONA_ASSISTANT_DOCK_PORTAL_ID } from '@/components/chat'
 import { CharacterActions } from '@/components/characters/detail/CharacterActions'
 import { CharacterArtworkCard } from '@/components/characters/detail/CharacterArtworkCard'
 import { CharacterEquipmentSection } from '@/components/characters/detail/CharacterEquipmentSection'
@@ -48,6 +49,7 @@ interface CharacterSheetLayoutProps {
   onCure: () => void
   onChat: () => void
   showChatAction: boolean
+  chatCharacterId?: string
 }
 
 const sheetTabs: TabItem[] = [
@@ -76,6 +78,7 @@ export function CharacterSheetLayout({
   onCure,
   onChat,
   showChatAction,
+  chatCharacterId,
 }: CharacterSheetLayoutProps) {
   const ChatIcon = () => (
     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -253,6 +256,8 @@ export function CharacterSheetLayout({
                     isOwner={isOwner}
                     characterName={name}
                     characterBackstory={editor.state.story}
+                    characterId={chatCharacterId}
+                    assistantPortalId={PERSONA_ASSISTANT_DOCK_PORTAL_ID}
                   />
                 </div>
               )}

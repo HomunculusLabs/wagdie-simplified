@@ -163,12 +163,13 @@ jest.mock('@/components/characters/ai-editor/tabs/AdvancedTab', () => ({
 }))
 
 jest.mock('@/components/characters/ai-editor/assistant', () => ({
-  PersonaAssistantPanel: jest.fn(({ tokenId, isOwner, isConnected }) => (
+  PersonaAssistantPanel: jest.fn(({ tokenId, isOwner, isConnected, presentation }) => (
     <div
       data-testid="persona-assistant-panel"
       data-token-id={tokenId}
       data-owner={isOwner ? 'true' : 'false'}
       data-connected={isConnected ? 'true' : 'false'}
+      data-presentation={presentation}
     >
       Persona Assistant
     </div>
@@ -275,20 +276,66 @@ describe('AIPersonaTab Integration', () => {
       expect(screen.getByRole('button', { name: /Save AI Persona/i })).toBeInTheDocument()
     })
 
-    it('should wire the owner assistant panel to editor snapshot and apply callbacks', () => {
+    it('should render owner editor and assistant regions without removing the editor from full-width flow', () => {
+      render(<AIPersonaTab tokenId="123" isOwner={true} />)
+
+      expect(screen.getByTestId('ai-persona-responsive-body')).toBeInTheDocument()
+      expect(screen.getByTestId('ai-persona-editor-region')).toBeInTheDocument()
+      expect(screen.getByTestId('ai-persona-assistant-region')).toBeInTheDocument()
+      expect(screen.getByTestId('ai-persona-assistant-region')).toHaveAttribute('data-placement', 'inline')
+      expect(screen.getByLabelText('AI persona editor fields')).toBeInTheDocument()
+      expect(screen.getByLabelText('Persona assistant')).toBeInTheDocument()
+    })
+
+    it('should portal the owner assistant into a provided dock target without removing the editor', async () => {
+      const portalTarget = document.createElement('div')
+      portalTarget.id = 'persona-assistant-test-portal'
+      document.body.appendChild(portalTarget)
+
+      try {
+        render(<AIPersonaTab tokenId="123" isOwner={true} assistantPortalId="persona-assistant-test-portal" />)
+
+        expect(screen.getByTestId('ai-persona-editor-region')).toBeInTheDocument()
+        await waitFor(() => {
+          const assistantRegion = portalTarget.querySelector('[data-testid="ai-persona-assistant-region"]')
+          expect(assistantRegion).toBeInTheDocument()
+          expect(assistantRegion).toHaveAttribute('data-placement', 'dock')
+        })
+        expect(screen.getByTestId('ai-persona-responsive-body')).not.toContainElement(
+          portalTarget.querySelector('[data-testid="ai-persona-assistant-region"]')
+        )
+      } finally {
+        portalTarget.remove()
+      }
+    })
+
+    it('should wire the owner assistant panel to editor snapshot and apply callbacks without save callbacks', () => {
       const { PersonaAssistantPanel } = jest.requireMock('@/components/characters/ai-editor/assistant')
 
       render(<AIPersonaTab tokenId="123" isOwner={true} />)
 
       expect(screen.getByTestId('persona-assistant-panel')).toBeInTheDocument()
       expect(PersonaAssistantPanel).toHaveBeenCalled()
-      expect((PersonaAssistantPanel as jest.Mock).mock.calls[0][0]).toEqual(expect.objectContaining({
+      const assistantProps = (PersonaAssistantPanel as jest.Mock).mock.calls[0][0]
+      expect(assistantProps).toEqual(expect.objectContaining({
         tokenId: '123',
         isOwner: true,
         isConnected: true,
         getAssistantSnapshot: mockGetAssistantSnapshot,
         applyAssistantDraft: mockApplyAssistantDraft,
+        presentation: 'sidebar',
       }))
+      expect(assistantProps).not.toHaveProperty('saveAICharacter')
+      expect(assistantProps).not.toHaveProperty('onSave')
+      expect(assistantProps).not.toHaveProperty('handleSave')
+    })
+
+    it('should render the editor region without an assistant region for non-owners', () => {
+      render(<AIPersonaTab tokenId="123" isOwner={false} />)
+
+      expect(screen.getByTestId('ai-persona-editor-region')).toBeInTheDocument()
+      expect(screen.queryByTestId('ai-persona-assistant-region')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('persona-assistant-panel')).not.toBeInTheDocument()
     })
 
     it('should not show save button for non-owners', () => {
