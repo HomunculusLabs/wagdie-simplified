@@ -28,6 +28,16 @@ function PersonaAssistantDockSlotComponent() {
   const [assistantTarget, setAssistantTarget] = useState<PersonaAssistantDockTarget | null>(null)
   const [drawerWidth, setDrawerWidth] = useState(DEFAULT_DRAWER_WIDTH)
   const [isResizing, setIsResizing] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mq = window.matchMedia('(max-width: 767px)')
+    const sync = () => setIsMobile(mq.matches)
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
 
   const getClampedDrawerWidth = useCallback((width: number) => {
     const viewportLimit = typeof window === 'undefined'
@@ -38,10 +48,14 @@ function PersonaAssistantDockSlotComponent() {
   }, [])
 
   const currentDrawerWidth = isCollapsed ? COLLAPSED_DRAWER_WIDTH : drawerWidth
-  const drawerStyle = {
-    width: currentDrawerWidth,
-    maxWidth: `calc(100vw - ${MOBILE_EDGE_GUTTER}px)`,
-  }
+  // On mobile the drawer is a full-screen sheet (width handled by classes),
+  // so we skip the inline width that would otherwise pin it to a desktop size.
+  const drawerStyle = isMobile
+    ? undefined
+    : {
+        width: currentDrawerWidth,
+        maxWidth: `calc(100vw - ${MOBILE_EDGE_GUTTER}px)`,
+      }
 
   const isSuppressedByChat = isOpen && !!target
   const isDrawerAvailable = hasAssistantContent && !isSuppressedByChat && !isDismissed
@@ -147,11 +161,21 @@ function PersonaAssistantDockSlotComponent() {
       data-resizing={isResizing ? 'true' : 'false'}
       className="fixed inset-0 z-[50] pointer-events-none"
     >
+      {/* Mobile backdrop — tap to dismiss the full-screen sheet */}
+      <div
+        onClick={() => setIsDismissed(true)}
+        aria-hidden="true"
+        className={`
+          absolute inset-0 bg-black/60 transition-opacity duration-300 md:hidden
+          ${isDrawerVisible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'}
+        `}
+      />
       <div
         data-testid="persona-assistant-drawer-panel"
         className={`
           pointer-events-auto
           absolute top-0 right-0 h-full
+          w-full md:w-auto
           bg-soul-950 border-l border-neutral-800
           flex flex-col shadow-2xl md:rounded-l-2xl
           transform transition-[opacity,transform,width] ease-out
@@ -160,7 +184,7 @@ function PersonaAssistantDockSlotComponent() {
         `}
         style={drawerStyle}
       >
-        {!isCollapsed && isDrawerAvailable && (
+        {!isCollapsed && isDrawerAvailable && !isMobile && (
           <button
             type="button"
             onPointerDown={handleResizePointerDown}
@@ -173,7 +197,7 @@ function PersonaAssistantDockSlotComponent() {
           </button>
         )}
 
-        {isCollapsed && (
+        {isCollapsed && !isMobile && (
           <button
             type="button"
             onClick={() => setIsCollapsed(false)}
@@ -185,7 +209,7 @@ function PersonaAssistantDockSlotComponent() {
           </button>
         )}
 
-        <div className={isCollapsed ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
+        <div className={isCollapsed && !isMobile ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
             <header className="flex items-start justify-between gap-3 border-b border-neutral-800 px-4 py-3">
               <div className="min-w-0">
                 <h2 className="text-sm font-display uppercase tracking-widest text-neutral-200">Persona Assistant</h2>
@@ -204,7 +228,7 @@ function PersonaAssistantDockSlotComponent() {
                 <button
                   type="button"
                   onClick={() => setIsCollapsed(true)}
-                  className="rounded-md border border-neutral-700 p-1 text-neutral-400 hover:border-neutral-500 hover:text-neutral-100"
+                  className="hidden rounded-md border border-neutral-700 p-1 text-neutral-400 hover:border-neutral-500 hover:text-neutral-100 md:block"
                   aria-label="Collapse persona assistant sidebar"
                   title="Collapse persona assistant sidebar"
                 >

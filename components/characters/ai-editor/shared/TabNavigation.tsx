@@ -84,7 +84,7 @@ function TabNavigationComponent({
     <div
       role="tablist"
       aria-label="AI Persona editor sections"
-      className={`flex border-b border-neutral-800 ${className}`}
+      className={`flex overflow-x-auto border-b border-neutral-800 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${className}`}
       onKeyDown={handleKeyDown}
     >
       {tabs.map((tab, index) => {
@@ -105,8 +105,8 @@ function TabNavigationComponent({
             disabled={isDisabled}
             onClick={() => !isDisabled && onTabChange(tab.id)}
             className={`
-              relative flex items-center gap-2 px-4 py-3
-              text-lg font-medium transition-colors
+              relative flex shrink-0 items-center gap-2 px-3 py-2.5 sm:px-4 sm:py-3
+              text-base sm:text-lg font-medium transition-colors
               focus:outline-none focus-visible:ring-2 focus-visible:ring-soul-500 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900
               ${
                 isActive

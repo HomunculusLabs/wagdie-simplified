@@ -137,7 +137,7 @@ function ArrayFieldEditorComponent({
       </div>
 
       {/* Items list */}
-      <div className="space-y-2">
+      <div className={`space-y-2 ${showIndices && inputType === 'textarea' ? 'pl-6' : ''}`}>
         {value.map((item, index) => {
           const isOverLimit = item.length > maxCharsPerItem
 
@@ -150,7 +150,7 @@ function ArrayFieldEditorComponent({
             >
               {/* Index badge */}
               {showIndices && inputType === 'textarea' && (
-                <div className="absolute -left-6 top-2 text-xs text-neutral-600 font-mono">
+                <div className="absolute -left-5 top-2 text-xs text-neutral-600 font-mono">
                   {index + 1}
                 </div>
               )}
