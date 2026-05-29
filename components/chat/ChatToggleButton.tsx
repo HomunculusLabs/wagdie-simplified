@@ -1,8 +1,12 @@
 'use client'
 
-import { memo } from 'react'
+import { memo, type CSSProperties } from 'react'
 import { useChatDock } from '@/contexts/ChatDockContext'
 import { Button } from '@/components/ui'
+import { DOCK_DEFAULT_WIDTH } from './dockShell'
+
+/** Gap between the open dock's edge and the floating toggle button. */
+const TOGGLE_GUTTER = 20
 
 function ChatToggleButtonComponent() {
   const { isOpen, target, toggleChat } = useChatDock()
@@ -11,11 +15,16 @@ function ChatToggleButtonComponent() {
 
   const ariaLabel = isOpen ? 'Close chat drawer' : 'Open chat drawer'
 
-  const positionClassName = isOpen ? 'right-4 md:right-[520px]' : 'right-4'
+  // On mobile the dock is a full-width sheet, so the button stays near the edge (right-4).
+  // On md+, when open, it sits just outside the panel. The offset is derived from the shared
+  // dock width via a CSS var so it can't drift; the md:right-[var(...)] class is static so
+  // Tailwind's JIT compiles it.
+  const style = { '--toggle-open-right': `${DOCK_DEFAULT_WIDTH + TOGGLE_GUTTER}px` } as CSSProperties
 
   return (
     <div
-      className={`fixed top-1/2 -translate-y-1/2 ${positionClassName} z-[70]`}
+      style={style}
+      className={`fixed top-1/2 -translate-y-1/2 right-4 z-[70] transition-[right] duration-300 ease-out ${isOpen ? 'md:right-[var(--toggle-open-right)]' : ''}`}
     >
       <Button
         type="button"

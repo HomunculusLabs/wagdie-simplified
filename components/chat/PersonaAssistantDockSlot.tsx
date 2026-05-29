@@ -3,6 +3,11 @@
 import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useChatDock } from '@/contexts/ChatDockContext'
 import { Button } from '@/components/ui'
+import {
+  DOCK_OVERLAY_CLASS,
+  DOCK_PANEL_SHELL_CLASS,
+  DOCK_Z_INDEX,
+} from './dockShell'
 
 export const PERSONA_ASSISTANT_DOCK_PORTAL_ID = 'persona-assistant-dock-portal'
 export const PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT = 'persona-assistant-dock-visible-change'
@@ -160,7 +165,8 @@ function PersonaAssistantDockSlotComponent() {
       data-dismissed={isDismissed ? 'true' : 'false'}
       data-width={String(currentDrawerWidth)}
       data-resizing={isResizing ? 'true' : 'false'}
-      className="fixed inset-0 z-[50] pointer-events-none"
+      className={DOCK_OVERLAY_CLASS}
+      style={{ zIndex: DOCK_Z_INDEX }}
     >
       {/* Mobile backdrop — tap to dismiss the full-screen sheet */}
       <div
@@ -174,14 +180,11 @@ function PersonaAssistantDockSlotComponent() {
       <div
         data-testid="persona-assistant-drawer-panel"
         className={`
-          pointer-events-auto
-          absolute top-0 right-0 h-full
+          ${DOCK_PANEL_SHELL_CLASS}
           w-full md:w-auto
-          bg-soul-950 border-l border-neutral-800
-          flex flex-col shadow-2xl md:rounded-l-2xl
-          transform transition-[opacity,transform,width] ease-out
+          transform transition-transform ease-out
           ${isResizing ? 'duration-0' : 'duration-300'}
-          ${isDrawerAvailable ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0 pointer-events-none'}
+          ${isDrawerAvailable ? 'translate-x-0' : 'translate-x-full pointer-events-none'}
         `}
         style={drawerStyle}
       >

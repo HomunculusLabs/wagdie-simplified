@@ -16,6 +16,13 @@ import { useCharacterChat } from '@/hooks/useCharacterChat'
 import { useConversations } from '@/hooks/useConversations'
 import { useElizaAuth } from '@/hooks/useElizaAuth'
 import { Button, Spinner } from '@/components/ui'
+import {
+  DOCK_DEFAULT_WIDTH,
+  DOCK_OVERLAY_CLASS,
+  DOCK_PANEL_SHELL_CLASS,
+  DOCK_PANEL_TRANSITION_CLASS,
+  DOCK_Z_INDEX,
+} from './dockShell'
 
 interface ChatSidebarProps {
   tokenId: string
@@ -208,21 +215,19 @@ function ChatSidebarComponent({
   if (!visible && !isOpen) return null
 
   return (
-    <div className="fixed inset-0 z-[60] pointer-events-none">
+    <div className={DOCK_OVERLAY_CLASS} style={{ zIndex: DOCK_Z_INDEX }}>
       {/* Drawer Panel */}
       <div
         ref={panelRef}
         role="dialog"
         aria-labelledby="chat-sidebar-title"
         className={`
-          pointer-events-auto
-          absolute top-0 right-0 h-full
-          w-full md:w-[500px]
-          bg-soul-950 border-l border-neutral-800
-          flex flex-col shadow-2xl md:rounded-l-2xl
-          transform transition-transform duration-300 ease-out
+          ${DOCK_PANEL_SHELL_CLASS}
+          w-full
+          ${DOCK_PANEL_TRANSITION_CLASS}
           ${isOpen ? 'translate-x-0' : 'translate-x-full'}
         `}
+        style={{ maxWidth: `min(100vw, ${DOCK_DEFAULT_WIDTH}px)` }}
       >
         <ChatHeader
           characterName={characterName}
