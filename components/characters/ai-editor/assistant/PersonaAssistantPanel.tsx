@@ -131,7 +131,7 @@ function PersonaAssistantPanelComponent({
       {(isOpen || presentation === 'sidebar') && (
         <div className="space-y-4 border-t border-neutral-800 px-4 py-4">
           <Alert title="Two-step workflow" className="bg-black/20">
-            Generate draft creates a pending proposal only. Apply to editor stages editable local changes. Save AI Persona persists them.
+            Generate a draft, apply it to the editor, then Save AI Persona to persist.
           </Alert>
 
           {!isConnected && (

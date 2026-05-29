@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { useChatDock } from '@/contexts/ChatDockContext'
+import { Button } from '@/components/ui'
 
 export const PERSONA_ASSISTANT_DOCK_PORTAL_ID = 'persona-assistant-dock-portal'
 export const PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT = 'persona-assistant-dock-visible-change'
@@ -210,43 +211,48 @@ function PersonaAssistantDockSlotComponent() {
         )}
 
         <div className={isCollapsed && !isMobile ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
-            <header className="flex items-start justify-between gap-3 border-b border-neutral-800 px-4 py-3">
-              <div className="min-w-0">
-                <h2 className="text-sm font-display uppercase tracking-widest text-neutral-200">Persona Assistant</h2>
-                <p className="mt-1 text-xs text-neutral-500">Draft persona changes, then save them from the editor.</p>
+            <header className="flex items-center justify-between gap-3 p-4 border-b border-neutral-800 bg-black/50">
+              <div className="flex-1 min-w-0">
+                <h2 className="text-xl font-display text-neutral-200 truncate">Persona Assistant</h2>
+                <p className="text-md text-neutral-500">Draft, then save from the editor</p>
               </div>
-              <div className="flex shrink-0 items-center gap-2">
+              <div className="flex items-center gap-2 ml-4">
                 {assistantTarget && (
-                  <button
-                    type="button"
+                  <Button
+                    variant="secondary"
+                    size="icon"
                     onClick={() => openChat(assistantTarget)}
-                    className="rounded-md border border-neutral-700 px-2 py-1 text-xs font-display lowercase text-neutral-300 hover:border-neutral-500 hover:text-neutral-100"
+                    aria-label="Open chat with this character"
+                    title="Chat"
                   >
-                    chat
-                  </button>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                  </Button>
                 )}
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  size="icon"
                   onClick={() => setIsCollapsed(true)}
-                  className="hidden rounded-md border border-neutral-700 p-1 text-neutral-400 hover:border-neutral-500 hover:text-neutral-100 md:block"
+                  className="hidden md:inline-flex"
                   aria-label="Collapse persona assistant sidebar"
-                  title="Collapse persona assistant sidebar"
+                  title="Collapse"
                 >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H8m0 0l5-5m-5 5l5 5" />
                   </svg>
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="icon"
                   onClick={() => setIsDismissed(true)}
-                  className="rounded-md border border-neutral-700 p-1 text-neutral-400 hover:border-neutral-500 hover:text-neutral-100"
                   aria-label="Close persona assistant sidebar"
-                  title="Close persona assistant sidebar"
+                  title="Close"
                 >
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
-                </button>
+                </Button>
               </div>
             </header>
             <div
