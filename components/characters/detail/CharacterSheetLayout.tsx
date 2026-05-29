@@ -119,10 +119,14 @@ export function CharacterSheetLayout({
   const traits = extractNFTTraits(character.metadata)
   const alignmentTrait = traits.find((trait) => trait.type.toLowerCase() === 'alignment')
   const healthTrait = traits.find((trait) => trait.type.toLowerCase() === 'health')
-  const secondaryTraits = traits.filter((trait) => {
+  const NONE_VALUES = new Set(['none', 'na', 'n/a', '0', 'false'])
+  const isNoneTrait = (value: string) => NONE_VALUES.has(value.trim().toLowerCase())
+  const candidateTraits = traits.filter((trait) => {
     const type = trait.type.toLowerCase()
     return trait.category !== 'equipment' && type !== 'alignment' && type !== 'health'
   })
+  const secondaryTraits = candidateTraits.filter((trait) => !isNoneTrait(trait.value))
+  const inactiveTraits = candidateTraits.filter((trait) => isNoneTrait(trait.value))
   const healthLabel = healthTrait?.value ?? character.infection_status ?? null
   const attrs = {
     str: character.str || 0,
@@ -134,6 +138,12 @@ export function CharacterSheetLayout({
   }
   const hasCharacterSheet = attrs.str > 0 || attrs.dex > 0 || attrs.con > 0 || attrs.int > 0 || attrs.wis > 0 || attrs.cha > 0
   const hasAnyStats = (character.str ?? 0) > 0 || (character.dex ?? 0) > 0 || (character.hp ?? 0) > 0 || (character.level ?? 1) > 1
+  // Characters that have never been customized carry the assignDefaultStats() baseline:
+  // all six core stats equal to 10. Render those muted so they don't read as real data.
+  const isDefaultStatline =
+    attrs.str === 10 && attrs.dex === 10 && attrs.con === 10 &&
+    attrs.int === 10 && attrs.wis === 10 && attrs.cha === 10
+  const showPlaceholderStats = isDefaultStatline && !isEditMode
   const handleAssignStats = () => {
     editor.assignDefaultStats()
     onEnterEditMode()
@@ -148,7 +158,7 @@ export function CharacterSheetLayout({
   }
 
   return (
-    <Card className="relative overflow-hidden border-soul-accent/25 bg-[radial-gradient(circle_at_top_left,rgba(214,177,103,0.08),transparent_34%),linear-gradient(135deg,rgba(22,17,15,0.96),rgba(8,8,8,0.98))] shadow-2xl shadow-black/50">
+    <Card className="relative !overflow-visible border-soul-accent/25 bg-[radial-gradient(circle_at_top_left,rgba(214,177,103,0.08),transparent_34%),linear-gradient(135deg,rgba(22,17,15,0.96),rgba(8,8,8,0.98))] shadow-2xl shadow-black/50">
       <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-soul-accent/60 to-transparent" />
       <CardContent className="p-4 sm:p-6 lg:p-8 xl:p-10">
         <div className="relative" data-persona-dock-compact={shouldCompactLeftRail ? 'true' : 'false'}>
@@ -197,16 +207,35 @@ export function CharacterSheetLayout({
                     )}
                   </div>
 
-                  {secondaryTraits.length > 0 && (
+                  {(secondaryTraits.length > 0 || inactiveTraits.length > 0) && (
                     <div className="border-t border-midnight-light/30 pt-3">
                       <p className="mb-2 text-[11px] font-display tracking-widest text-mist lowercase">traits</p>
-                      <div className="flex flex-wrap gap-2">
-                        {secondaryTraits.map((trait) => (
-                          <Badge key={trait.type} variant={trait.category === 'identity' ? 'accent' : 'default'}>
-                            <span className="lowercase">{trait.type}: {trait.value}</span>
-                          </Badge>
-                        ))}
-                      </div>
+                      {secondaryTraits.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {secondaryTraits.map((trait) => (
+                            <Badge key={trait.type} variant={trait.category === 'identity' ? 'accent' : 'default'}>
+                              <span className="lowercase">{trait.type}: {trait.value}</span>
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-[11px] font-display tracking-wide text-dark lowercase">no notable traits</p>
+                      )}
+                      {inactiveTraits.length > 0 && (
+                        <details className="group mt-3">
+                          <summary className="cursor-pointer list-none text-[11px] font-display tracking-widest text-dark lowercase transition-colors hover:text-mist">
+                            <span className="group-open:hidden">+ {inactiveTraits.length} inactive</span>
+                            <span className="hidden group-open:inline">- hide inactive</span>
+                          </summary>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {inactiveTraits.map((trait) => (
+                              <span key={trait.type} className="border border-midnight-light/30 px-2 py-0.5 text-[10px] font-display tracking-wide text-dark/80 lowercase">
+                                {trait.type}
+                              </span>
+                            ))}
+                          </div>
+                        </details>
+                      )}
                     </div>
                   )}
 
@@ -223,6 +252,7 @@ export function CharacterSheetLayout({
                       isOwner={isOwner}
                       isEditMode={isEditMode}
                       onChange={editor.setCoreStats}
+                      placeholder={showPlaceholderStats}
                     />
                   )}
                   {isOwner && !hasAnyStats && !isEditMode && <EmptyStatsPrompt onAssignStats={handleAssignStats} />}

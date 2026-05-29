@@ -337,7 +337,7 @@ function AIPersonaTabComponent({
         )}
 
         {/* Warnings */}
-        <div className="px-4 pt-4 space-y-2">
+        <div className="px-4 pt-4 space-y-2 mx-auto w-full max-w-3xl">
           {/* Unsaved changes warning */}
           {editor.hasUnsavedChanges && isOwner && (
             <div className="p-3 bg-amber-900/20 border border-amber-800/50 rounded-lg">
@@ -386,7 +386,7 @@ function AIPersonaTabComponent({
           <section
             aria-label="AI persona editor fields"
             data-testid="ai-persona-editor-region"
-            className="min-w-0 space-y-4"
+            className="min-w-0 space-y-4 mx-auto w-full max-w-3xl"
           >
             {/* Tab navigation */}
             <TabNavigation tabs={tabsWithState} activeTab={activeTab} onTabChange={(id) => setActiveTab(id as TabId)} />
@@ -455,7 +455,7 @@ function AIPersonaTabComponent({
 
         {/* Action buttons for owners */}
         {isOwner && (
-          <div className="flex justify-end gap-3 px-4 py-4 border-t border-neutral-800">
+          <div className="flex justify-end gap-3 px-4 py-4 border-t border-neutral-800 mx-auto w-full max-w-3xl">
             {editor.hasUnsavedChanges && (
               <Button variant="secondary" onClick={handleDiscard} disabled={isSaving}>
                 Discard Changes

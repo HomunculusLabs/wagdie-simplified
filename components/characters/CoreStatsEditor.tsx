@@ -20,6 +20,8 @@ interface CoreStatsEditorProps {
   isEditMode: boolean
   onChange: (stats: CoreStats) => void
   className?: string
+  /** When true, values are shown muted as un-customized base defaults */
+  placeholder?: boolean
 }
 
 const CORE_STAT_LABELS = [
@@ -41,6 +43,7 @@ export function CoreStatsEditor({
   isEditMode,
   onChange,
   className = '',
+  placeholder = false,
 }: CoreStatsEditorProps) {
   const { min, max } = STAT_CONSTRAINTS.coreStats
 
@@ -55,18 +58,23 @@ export function CoreStatsEditor({
   if (!isEditMode || !isOwner) {
     return (
       <div className={className}>
-        <p className="text-[10px] font-display tracking-widest text-mist mb-3 lowercase">attributes</p>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="mb-3 flex items-baseline justify-between">
+          <p className="text-[10px] font-display tracking-widest text-mist lowercase">attributes</p>
+          {placeholder && (
+            <p className="text-[10px] font-display tracking-widest text-dark lowercase">base · not assigned</p>
+          )}
+        </div>
+        <div className={`grid grid-cols-3 gap-2 ${placeholder ? 'opacity-45' : ''}`}>
           {CORE_STAT_LABELS.map(({ key, label }) => {
             const value = stats[key] ?? 0
             return (
               <div
                 key={key}
-                className="bg-black/40 border border-neutral-800 p-3 text-center"
+                className={`p-3 text-center ${placeholder ? 'border border-dashed border-neutral-800/70 bg-transparent' : 'bg-black/40 border border-neutral-800'}`}
               >
                 <p className="text-[10px] font-display tracking-widest text-mist mb-1 lowercase">{label}</p>
-                <p className="text-xl font-display text-neutral-200 mb-2">{value}</p>
-                <ProgressBar value={value} max={20} showValue={false} variant="souls" />
+                <p className={`text-xl font-display mb-2 ${placeholder ? 'text-neutral-500' : 'text-neutral-200'}`}>{value}</p>
+                <ProgressBar value={placeholder ? 0 : value} max={20} showValue={false} variant="souls" />
               </div>
             )
           })}
