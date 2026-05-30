@@ -283,6 +283,10 @@ export type AdventureCatalogRetrievalContext = {
   selectedTokenId?: number | null
   tags?: string[] | null
   limit?: number
+  spatialContext?: LocationRoomSpatialContext | null
+  discoveries?: string[] | null
+  lastDeclaredAction?: LocationRoomAdventureDeclaredAction | null
+  clocks?: LocationRoomAdventureClock[] | null
 }
 
 function hasStringValue<T extends readonly string[]>(values: T, value: unknown): value is T[number] {
@@ -1072,6 +1076,15 @@ function catalogRetrievalText(context: AdventureCatalogRetrievalContext): string
     ...(context.activeDecision?.options.map((option) => `${option.label} ${option.summary ?? ''}`) ?? []),
     ...(context.openThreads ?? []),
     context.recentOutcomeSummary,
+    context.spatialContext?.currentArea,
+    ...(context.spatialContext?.landmarks ?? []),
+    ...(context.spatialContext?.routes ?? []),
+    ...(context.spatialContext?.unresolvedSpatialQuestions ?? []),
+    ...(context.discoveries ?? []),
+    context.lastDeclaredAction?.summary,
+    context.lastDeclaredAction?.actionIntent,
+    context.lastDeclaredAction?.chosenOptionLabel,
+    ...(context.clocks?.map((clock) => `${clock.label} ${clock.summary}`) ?? []),
     ...(context.tags ?? []),
     context.selectedTokenId != null ? String(context.selectedTokenId) : null,
   ]
@@ -1099,7 +1112,9 @@ export function retrieveAdventureCatalogEntries(
 ): LocationAdventureCatalogEntry[] {
   if (!catalog) return []
   const limit = Math.max(1, Math.min(ADVENTURE_CATALOG_RETRIEVAL_LIMIT, context.limit ?? ADVENTURE_CATALOG_RETRIEVAL_LIMIT))
-  const entries = Object.values(catalog.sections).flat()
+  const entries = Object.values(catalog.sections)
+    .flat()
+    .filter((entry) => (entry.revealConditions ?? []).length === 0)
   const contextText = catalogRetrievalText(context)
   const tagHints = new Set((context.tags ?? []).map((tag) => tag.trim().toLowerCase()).filter(Boolean))
 

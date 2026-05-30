@@ -421,8 +421,10 @@ function genericGameplaySetupReason(value: string): string | null {
   if (normalized === 'lurking threat') return 'default monster archetype'
   if (normalized === 'fallback apparition') return 'fallback monster archetype'
   if (normalized === 'ashen horror' || normalized === 'restless shade') return 'legacy fallback monster name'
+  if (normalized === 'escalating danger' || normalized === 'location encounter' || normalized === 'location catalog encounter' || normalized === 'generic trouble') return 'generic encounter title'
   if (/^a threat (gathers|emerges)\b/.test(normalized)) return 'default public setup or summary'
   if (/^the room (darkens|shifts)\b/.test(normalized)) return 'generic room setup'
+  if (/\b(?:shadowy figure|unknown threat|generic threat|faceless threat|nameless threat|unseen enemy|enemy appears|creatures? attacks?|monsters? attacks?|dark shape|something attacks|something moves just out of sight|threat emerges|danger emerges|hostile presence|the thing in the dark|the room answers with danger)\b/.test(normalized)) return 'generic threat identity'
   return null
 }
 

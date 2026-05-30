@@ -226,6 +226,59 @@ describe('Eliza SDK adapter facade', () => {
     })
   })
 
+  it('round-trips Official AgentCharacter persona fields through the app DTO', () => {
+    const original: AgentCharacter = {
+      name: 'Round Trip',
+      username: 'round-trip',
+      system: 'Keep the oath short.',
+      bio: ['Keeps a brass oath-token under one glove.'],
+      lore: ['Owes the bellkeeper a debt that wakes at dusk.'],
+      topics: ['bell debts', 'crow omens'],
+      adjectives: ['wary', 'flint-voiced'],
+      style: { all: ['No meta talk'], chat: ['Use concrete verbs'] },
+      messageExamples: [
+        [
+          { name: '{{user1}}', content: { text: 'The bell is moving.' } },
+          { name: '{{char}}', content: { text: 'I pin the rope with my dagger before it names us.' } },
+        ],
+      ],
+      postExamples: ['The rope twitches; I cut first.'],
+      templates: { chat: 'Speak from the room.' },
+    }
+
+    const dto = toAICharacterFromRecord('77', {
+      id: 'record-77',
+      externalId: '77',
+      character: original,
+      createdAt: 'created-at',
+      updatedAt: 'updated-at',
+    })
+    const roundTripped = toAgentCharacterFromAICharacter(dto)
+
+    expect(roundTripped).toEqual(expect.objectContaining({
+      name: 'Round Trip',
+      username: 'round-trip',
+      system: 'Keep the oath short.',
+      bio: original.bio,
+      lore: original.lore,
+      topics: original.topics,
+      adjectives: original.adjectives,
+      style: original.style,
+      postExamples: original.postExamples,
+      templates: original.templates,
+    }))
+    expect(roundTripped.messageExamples).toEqual(original.messageExamples)
+  })
+
+  it('preserves an explicit empty templates object on create mapping', () => {
+    const character = toAgentCharacterFromAICharacter({
+      name: 'Template Empty',
+      templates: {},
+    })
+
+    expect(character.templates).toEqual({})
+  })
+
   it('re-exports Eliza export message conversion helpers from the facade', () => {
     const exported = toElizaExportMessageExamples([
       [

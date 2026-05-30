@@ -13,7 +13,21 @@ function narrativeStateWithCatalog(catalog?: NormalizedLocationAdventureCatalog)
   return {
     currentObjective: 'Find the crow threat above the bell market.',
     openThreads: ['The bell rope is moving by itself.'],
-    metadata: catalog ? { adventureCatalog: catalog } : {},
+    metadata: catalog ? {
+      adventureCatalog: catalog,
+      adventure: {
+        currentStakes: 'The bell market exit will seal if the rope keeps moving.',
+        spatialContext: {
+          currentArea: 'bell market rafters',
+          landmarks: ['frayed bell rope', 'cellar stair'],
+          routes: ['market exit'],
+          unresolvedSpatialQuestions: [],
+        },
+        consequenceLedger: [
+          { id: 'consequence-1', source: 'beat-1', summary: 'The market exit is half blocked by fallen planks.', status: 'complication' },
+        ],
+      },
+    } : {},
   }
 }
 
@@ -243,7 +257,9 @@ describe('location room encounter escalation helpers', () => {
       source: 'location_catalog',
       catalogEntryIds: expect.arrayContaining(['30.10.crow-wight']),
       monsterHints: expect.arrayContaining(['Crow Wight: A wight nesting above the market rafters.']),
+      stakes: expect.stringContaining('bell market rafters'),
     })
+    expect(seed?.stakes).toContain('fallen planks')
     expect(seed?.catalogEntryIds).not.toContain('30.99.hidden-crow-king')
   })
 })

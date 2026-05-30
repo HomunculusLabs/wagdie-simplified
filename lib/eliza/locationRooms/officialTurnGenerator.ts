@@ -38,6 +38,8 @@ const CHARACTER_PROMPT_INSTRUCTION_MAX_CHARS = 450
 const CHARACTER_PROMPT_DECISION_MAX_CHARS = 520
 const CHARACTER_PROMPT_CONTRACT_MARKER = 'Return JSON only with this contract:'
 const OFFICIAL_ELIZA_PROMPT_TRUNCATION_NOTICE = '\n\n[Earlier context truncated to fit the Official ElizaOS safety budget.]\n\n'
+const DECLARED_ACTION_FORWARD_PATTERN = /\b(?:choose|chooses|press|presses|push|pushes|move|moves|step|steps|cross|crosses|open|opens|force|forces|draw|draws|raise|raises|block|blocks|shield|shields|follow|follows|track|tracks|search|searches|examine|examines|inspect|inspects|test|tests|ask|asks|question|questions|bargain|bargains|confront|confronts|protect|protects|retreat|retreats|withdraw|withdraws|pry|pries|climb|climbs|descend|descends|enter|enters|listen|listens|watch|watches|mark|marks|take|takes|grab|grabs|cut|cuts|throw|throws|whisper|whispers|crawl|crawls|sneak|sneaks|strike|strikes|shove|shoves|interpret|interprets|read|reads|study|studies|touch|touches|pull|pulls|carry|carries|drag|drags|hide|hides|lead|leads|signal|signals|warn|warns|hold|holds|brace|braces|bar|bars|unlock|unlocks|light|lights|extinguish|extinguishes|burn|burns|break|breaks|tie|ties|untie|unties|offer|offers|trade|trades|circle|circles|approach|approaches|leave|leaves|return|returns|answer|answers|resist|resists|quiet|quiets|bait|baits|investigate|investigates|navigate|navigates|recall|recalls)\b/i
+const PASSIVE_DECLARED_ACTION_PATTERN = /^\s*(?:[^:]{1,40}:\s*)?(?:i\s+|we\s+)?(?:agree|nod|wait|react|hesitate|do nothing|say nothing|stand still|stay still|remain silent|keep watching|keep listening)\s*[.!?]*\s*$/i
 
 function truncatePromptValue(value: string, limit: number): string {
   const normalized = sanitizeOfficialElizaText(value).replace(/\s+/g, ' ').trim()
@@ -124,6 +126,7 @@ function formatActiveDecision(decision: LocationRoomAdventureDecision | null | u
     truncatePromptValue(`${decision.id}: ${decision.prompt}`, CHARACTER_PROMPT_DECISION_MAX_CHARS),
     'Valid chosenOptionId values:',
     truncatePromptValue(options, CHARACTER_PROMPT_DECISION_MAX_CHARS),
+    'Active decisions are GM-authored: choose a listed option only when your declared action commits to it; do not invent, close, or resolve options yourself.',
   ]
 }
 
@@ -151,6 +154,8 @@ function formatNarrativeTurnContract(context: GenerateOfficialLocationRoomTurnIn
     allowsSceneCheck ? '  ,"sceneCheckProposal": null' : '',
     '}',
     '- declaredAction.summary is required and should be narrative intent only; it does not trigger dice by itself.',
+    '- Make declaredAction concrete and action-forward: move, inspect, open, ask, bargain, protect, retreat, test, or otherwise change position/pressure. Do not submit passive agreement/reaction only.',
+    '- publicSpeech may react in character, but declaredAction must state what you do next in the fiction.',
     context.activeDecision
       ? '- chosenOptionId may be one of the listed active decision option ids, or null if you choose a different freeform action.'
       : '- No active decision is available, so chosenOptionId must be null or omitted.',
@@ -198,10 +203,10 @@ export function buildOfficialLocationRoomPrompt(input: GenerateOfficialLocationR
     ...formatNarrativeContext(input),
     '',
     input.narrativeContext
-      ? 'Return the requested JSON object with publicSpeech and declaredAction.'
+      ? 'Return the requested JSON object with publicSpeech and a concrete declaredAction that moves the scene forward.'
       : 'Write exactly one short in-world utterance as your character.',
     input.narrativeContext
-      ? 'Keep publicSpeech under two sentences. Do not include markdown, speaker labels, stage directions, out-of-world explanations, dice results, DCs, HP, rewards, death, or finality.'
+      ? 'Keep publicSpeech under two sentences. Avoid passive agreement-only turns; declare a concrete action unless the GM active decision already captures your commitment. Do not include markdown, speaker labels, stage directions, out-of-world explanations, dice results, DCs, HP, rewards, death, or finality.'
       : 'Keep it under two sentences. Do not use markdown, speaker labels, JSON, stage directions, or out-of-world explanations.',
   ].join('\n'), Boolean(input.narrativeContext))
 }
@@ -250,6 +255,16 @@ function officialTurnDiagnosticsForInitialFailure(raw: string, error: unknown): 
   }
 }
 
+function isActionForwardDeclaredAction(summary: string, chosenOptionLabel: string | null | undefined): boolean {
+  const normalized = normalizeOfficialResponseText(summary).replace(/\s+/g, ' ').trim()
+  if (!normalized) return false
+  if (PASSIVE_DECLARED_ACTION_PATTERN.test(normalized)) return false
+  const optionLabel = chosenOptionLabel
+    ? normalizeOfficialResponseText(chosenOptionLabel).replace(/\s+/g, ' ').trim()
+    : ''
+  return DECLARED_ACTION_FORWARD_PATTERN.test(normalized) || Boolean(optionLabel && DECLARED_ACTION_FORWARD_PATTERN.test(optionLabel))
+}
+
 function buildOfficialLocationRoomTurnRepairPrompt(
   input: GenerateOfficialLocationRoomTurnInput,
   diagnostics: LocationRoomPublicGenerationDiagnostics
@@ -285,6 +300,7 @@ function buildOfficialLocationRoomTurnRepairPrompt(
     '- JSON only; no markdown, commentary, speaker labels, or prose outside the object.',
     '- publicSpeech is required, non-empty, public-safe, and under two sentences.',
     '- declaredAction is required as a JSON object with a non-empty summary of the intended fictional action.',
+    '- declaredAction must be concrete and action-forward, not passive agreement/reaction only.',
     '- Do not synthesize dice, DCs, HP, rewards, death, wallets, or finality.',
     '- If sceneCheckProposal is allowed, set it to null unless the action is clearly roll-worthy and matches the offered checks.',
     '',
@@ -341,6 +357,9 @@ export function normalizeOfficialLocationRoomTurnResponse(
   const declaredAction = normalizeDeclaredAction(parsed.declaredAction ?? parsed.declared_action, { activeDecision })
   if (!declaredAction) {
     throw new Error('Location-room character turn response missing valid declaredAction')
+  }
+  if (!isActionForwardDeclaredAction(declaredAction.summary, declaredAction.chosenOptionLabel)) {
+    throw new Error('Location-room character turn response declaredAction must name a concrete fictional action')
   }
 
   if (!sceneCheckContext) {

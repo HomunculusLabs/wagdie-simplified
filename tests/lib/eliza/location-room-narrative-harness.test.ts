@@ -61,11 +61,13 @@ describe('location room narrative quality harness', () => {
       grade: result.aggregate.quality.grade,
       submetrics: result.aggregate.quality.submetrics,
       metrics: result.aggregate.quality.rawMetrics,
+      attributionMetrics: result.aggregate.attributionMetrics,
       warnings: result.aggregate.warnings,
       scenarioScores: result.scenarioResults.map((scenarioResult) => ({
         id: scenarioResult.scenario.id,
         gmNarrativeQualityScore: scenarioResult.quality.gmNarrativeQualityScore,
         submetrics: scenarioResult.quality.submetrics,
+        attributionMetrics: scenarioResult.attributionMetrics,
         warnings: scenarioResult.warnings,
       })),
     }, null, 2))
@@ -74,6 +76,15 @@ describe('location room narrative quality harness', () => {
     expect(result.aggregate.quality.rawMetrics.publicGameMasterBeatCount).toBeGreaterThanOrEqual(NARRATIVE_HARNESS_SCENARIO_COUNT * 2)
     expect(result.aggregate.quality.rawMetrics.publicGameMasterBeatMaxGap).toBeLessThanOrEqual(10)
     expect(result.aggregate.quality.rawMetrics.spatialContinuitySignalCount).toBeGreaterThanOrEqual(NARRATIVE_HARNESS_SCENARIO_COUNT * 4)
+    expect(result.aggregate.attributionMetrics).toMatchObject({
+      catalogAnchorSignalCount: result.aggregate.quality.rawMetrics.catalogAnchorSignalCount,
+      distinctCharacterVoiceSignalCount: result.aggregate.quality.rawMetrics.distinctCharacterVoiceSignalCount,
+      sceneFrameStrengthCount: result.aggregate.quality.rawMetrics.sceneFrameStrengthCount,
+      actionForwardResponseCount: result.aggregate.quality.rawMetrics.actionForwardResponseCount,
+      combatTranscriptShare: result.aggregate.quality.rawMetrics.combatTranscriptShare,
+      combatTranscriptWindow: result.aggregate.quality.rawMetrics.combatTranscriptWindow,
+      genericThreatIdentityCount: result.aggregate.quality.rawMetrics.genericThreatIdentityCount,
+    })
     expect(result.aggregate.quality.rawMetrics.uniqueCheckTypes).toBeGreaterThanOrEqual(5)
     expect(result.aggregate.quality.rawMetrics.repeatedCheckTypeMaxRun).toBeLessThanOrEqual(2)
     expect(result.aggregate.quality.gmNarrativeQualityScore).toBeGreaterThanOrEqual(85)
@@ -154,6 +165,90 @@ describe('location room narrative quality harness', () => {
       gameplayRunCreates: 1,
     })
     expect(result.autoWithExplicitTrigger.gameplayRunId).toMatch(/^run-/)
+  })
+
+  it('reports raw narrative attribution metrics without adding calibration gates', () => {
+    const metrics = analyzeNarrativeMessages([
+      {
+        id: 'anchor-frame',
+        authorKind: 'game_master',
+        tokenId: null,
+        authorName: 'Game Master',
+        content: 'Crow\'s Den frames a hard choice at the cellar door: press through the rafters, bargain with Mire Voss, or retreat before the Crow Wight breaks cover.',
+        messageKind: 'gm_beat',
+        metadata: {
+          encounterSeed: {
+            catalogEntryIds: ['80.10.rafters-ambush', '30.10.crow-wight'],
+            encounterHints: ['Rafters Ambush: The rafters answer a failed check with hostile wings and a slammed exit.'],
+            monsterHints: ['Crow Wight: A hostile crow-wight nests above the tavern rafters.'],
+          },
+        },
+      },
+      {
+        id: 'voice-action-1',
+        authorKind: 'agent',
+        tokenId: 101,
+        authorName: 'Sir Skanks',
+        content: 'Sir Skanks: I draw my stained blade, bow to the ghost, and shove the table against the cellar door.',
+        metadata: {},
+      },
+      {
+        id: 'voice-action-2',
+        authorKind: 'agent',
+        tokenId: 102,
+        authorName: 'Mire Voss',
+        content: 'Mire Voss: I smell the brine under the floorboards and whisper the harbor oath before prying up the wet plank.',
+        metadata: {},
+      },
+      {
+        id: 'agreement-only',
+        authorKind: 'agent',
+        tokenId: 103,
+        authorName: 'Pip',
+        content: 'Pip: yes.',
+        metadata: {},
+      },
+      {
+        id: 'combat-generic-threat',
+        authorKind: 'game_master',
+        tokenId: null,
+        authorName: 'Game Master',
+        content: 'A shadowy figure appears as an unknown threat emerges from the dark.',
+        messageDomain: 'combat',
+        messageKind: 'gm_setup',
+        ttrpgPhase: 'combat',
+        gameplayMessageKind: 'gm_setup',
+        metadata: {},
+      },
+    ] as any)
+
+    expect(metrics.catalogAnchorSignalCount).toBe(1)
+    expect(metrics.distinctCharacterVoiceSignalCount).toBe(2)
+    expect(metrics.sceneFrameStrengthCount).toBe(1)
+    expect(metrics.actionForwardResponseCount).toBe(2)
+    expect(metrics.combatTranscriptShare).toBe(0.2)
+    expect(metrics.combatTranscriptWindow).toBe(5)
+    expect(metrics.genericThreatIdentityCount).toBe(1)
+
+    const windowedMetrics = analyzeNarrativeMessages([
+      ...Array.from({ length: 40 }, (_, index) => ({
+        id: `old-combat-${index}`,
+        authorKind: 'game_master',
+        tokenId: null,
+        content: 'The old combat exchange resolves under the bell.',
+        metadata: { messageDomain: 'combat', ttrpgPhase: 'combat' },
+      })),
+      ...Array.from({ length: 10 }, (_, index) => characterMessage(`I press through the market route ${index}.`)),
+    ] as any)
+    expect(windowedMetrics.combatTranscriptWindow).toBe(40)
+    expect(windowedMetrics.combatTranscriptShare).toBe(0.75)
+
+    const quality = scoreNarrativeQuality({ messages: [
+      gmBeat('The party must choose a route through the cellar door before the rafters close off the exit.'),
+      characterMessage('I press forward and pry the wet plank loose.'),
+    ] })
+    expect(quality.rawMetrics.sceneFrameStrengthCount).toBe(1)
+    expect(quality.gmNarrativeQualityScore).toEqual(expect.any(Number))
   })
 
   it('flags weak narrative output from public transcript messages', () => {

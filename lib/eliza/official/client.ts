@@ -18,6 +18,7 @@ import { WagdieElizaError } from '@/lib/eliza/gateway/errors'
 import { normalizeOfficialElizaError, unsupportedOfficialFeature } from './errors'
 import {
   createOfficialElizaMessagingClient,
+  isOfficialSessionNotFoundResponse,
   type OfficialElizaMessagingClient,
 } from './messaging'
 import {
@@ -385,17 +386,69 @@ export class OfficialWagdieElizaClient implements WagdieElizaClient {
             transport: 'sse',
           })
 
-        let response = await sendToOfficialSession(link.officialSessionId)
+        const sendWithOneShotSessionRecovery = async (): Promise<Response> => {
+          const freshConversation = !input.conversationId
+          const response = await sendToOfficialSession(link!.officialSessionId)
+          const isMissingSession = await isOfficialSessionNotFoundResponse(response)
 
-        if (response.status === 404 && input.conversationId) {
+          if (!isMissingSession) {
+            if (response.status === 404) {
+              console.warn('[Eliza Official Chat] non-recoverable official session 404', {
+                conversationId: link!.id,
+                officialSessionId: link!.officialSessionId,
+                officialAgentId: input.characterId,
+                tokenId: input.tokenId,
+                freshConversation,
+                upstreamStatus: response.status,
+              })
+            }
+            return response
+          }
+
+          if (input.signal?.aborted) {
+            throw new DOMException('The operation was aborted', 'AbortError')
+          }
+
+          const oldOfficialSessionId = link!.officialSessionId
+          console.warn('[Eliza Official Chat] recovering missing official session', {
+            conversationId: link!.id,
+            oldOfficialSessionId,
+            officialAgentId: input.characterId,
+            tokenId: input.tokenId,
+            freshConversation,
+            upstreamStatus: response.status,
+            recoveryAttempt: 1,
+          })
+
           const replacementSession = await createOfficialSession()
-          link = await this.conversationRepository.rebindSession(
-            link.id,
-            officialUserId,
-            replacementSession.sessionId
-          )
-          response = await sendToOfficialSession(link.officialSessionId)
+
+          try {
+            link = await this.conversationRepository.rebindSession(
+              link!.id,
+              officialUserId,
+              replacementSession.sessionId
+            )
+          } catch (rebindError) {
+            await this.messaging.deleteSession(replacementSession.sessionId).catch(() => null)
+            throw rebindError
+          }
+
+          await this.messaging.deleteSession(oldOfficialSessionId).catch(() => null)
+
+          console.info('[Eliza Official Chat] missing official session recovered', {
+            conversationId: link!.id,
+            oldOfficialSessionId,
+            newOfficialSessionId: link!.officialSessionId,
+            officialAgentId: input.characterId,
+            tokenId: input.tokenId,
+            freshConversation,
+            recoveryAttempt: 1,
+          })
+
+          return sendToOfficialSession(link!.officialSessionId)
         }
+
+        const response = await sendWithOneShotSessionRecovery()
 
         await this.messaging.collectStreamedResponseText(response, {
           conversationId: link.officialSessionId,

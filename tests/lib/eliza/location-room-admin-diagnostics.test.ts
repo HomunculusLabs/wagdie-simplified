@@ -303,6 +303,7 @@ function makeService(overrides: {
   narrativeRepository?: jest.Mocked<LocationRoomNarrativeRepository>
   gameplayRepository?: jest.Mocked<LocationRoomGameplayRepository>
   gameMasterResolver?: { resolveActiveGameMasterAgent: jest.Mock }
+  personaClientFactory?: () => never
 } = {}) {
   return new LocationRoomAdminDiagnosticsService({
     roomRepository: overrides.roomRepository ?? makeRoomRepository(),
@@ -312,6 +313,7 @@ function makeService(overrides: {
     gameMasterResolver: overrides.gameMasterResolver ?? {
       resolveActiveGameMasterAgent: jest.fn(async () => gmResolution()),
     },
+    personaClientFactory: overrides.personaClientFactory,
     now: () => now,
   })
 }
@@ -319,17 +321,19 @@ function makeService(overrides: {
 describe('LocationRoomAdminDiagnosticsService', () => {
   const originalEnabled = elizaConfig.locationRooms.enabled
   const originalOfficialBaseUrl = elizaConfig.official.baseUrl
+  const originalOfficialApiKey = elizaConfig.official.apiKey
   const originalNarrativeEnabled = elizaConfig.locationRooms.narrative.enabled
   const originalGameplayEnabled = elizaConfig.locationRooms.gameplay.enabled
   const originalGameplayAllowlist = [...elizaConfig.locationRooms.gameplay.locationAllowlist]
   const mutableLocationRooms = elizaConfig.locationRooms as { enabled: boolean }
-  const mutableOfficial = elizaConfig.official as { baseUrl: string }
+  const mutableOfficial = elizaConfig.official as { baseUrl: string; apiKey: string }
   const mutableNarrative = elizaConfig.locationRooms.narrative as { enabled: boolean }
   const mutableGameplay = elizaConfig.locationRooms.gameplay as { enabled: boolean; locationAllowlist: string[] }
 
   beforeEach(() => {
     mutableLocationRooms.enabled = true
     mutableOfficial.baseUrl = 'https://elizaos.example'
+    mutableOfficial.apiKey = ''
     mutableNarrative.enabled = false
     mutableGameplay.enabled = false
     mutableGameplay.locationAllowlist = []
@@ -338,6 +342,7 @@ describe('LocationRoomAdminDiagnosticsService', () => {
   afterAll(() => {
     mutableLocationRooms.enabled = originalEnabled
     mutableOfficial.baseUrl = originalOfficialBaseUrl
+    mutableOfficial.apiKey = originalOfficialApiKey
     mutableNarrative.enabled = originalNarrativeEnabled
     mutableGameplay.enabled = originalGameplayEnabled
     mutableGameplay.locationAllowlist = originalGameplayAllowlist
@@ -645,6 +650,76 @@ describe('LocationRoomAdminDiagnosticsService', () => {
     })
     expect(JSON.stringify(result)).not.toContain('do not expose prompt')
     expect(JSON.stringify(result)).not.toContain('raw model text')
+  })
+
+  it('reports warning-only Official persona quality diagnostics when configured', async () => {
+    mutableOfficial.apiKey = 'official-key'
+    const personaClient = {
+      characters: {
+        getRecordByExternalId: jest.fn(async (externalId: string) => {
+          if (externalId === '7') {
+            return {
+              id: 'agent-7',
+              externalId,
+              character: {
+                name: 'Character #7',
+                bio: ['A mysterious character whose story is still being written. Character #7.'],
+              },
+              createdAt: 'created-at',
+              updatedAt: 'updated-at',
+            }
+          }
+
+          return {
+            id: 'agent-8',
+            externalId,
+            character: {
+              name: 'Character #8',
+              bio: ['Cuts tally marks into old bell rope.'],
+              lore: ['Hunts the crow that stole their banner.'],
+              topics: ['bell rope', 'crow debt'],
+              style: { chat: ['Use concrete verbs.'] },
+              messageExamples: [
+                [
+                  { name: '{{user1}}', content: { text: 'The rafters move.' } },
+                  { name: '{{char}}', content: { text: 'I hook the rope and drag the shadow into lanternlight.' } },
+                ],
+                [
+                  { name: '{{user1}}', content: { text: 'Why stay here?' } },
+                  { name: '{{char}}', content: { text: 'The crow owes me a name, and this room still smells of its nest.' } },
+                ],
+              ],
+            },
+            createdAt: 'created-at',
+            updatedAt: 'updated-at',
+          }
+        }),
+      },
+    }
+
+    const result = await makeService({
+      personaClientFactory: () => personaClient as never,
+    }).inspectLocation('11')
+
+    expect(result.recommendedNextAction).toBe('wait_for_cadence')
+    expect(result.personaQuality).toMatchObject({
+      evaluated: true,
+      checkedCount: 2,
+      missingPersistedPersonaCount: 0,
+      defaultNeutralPersonaCount: 1,
+      missingMessageExamplesCount: 1,
+      missingStyleCount: 1,
+      missingLoreCount: 1,
+      missingTopicsCount: 1,
+      safeError: null,
+    })
+    expect(result.personaQuality.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tokenId: 7, code: 'default_neutral_persona' }),
+      expect.objectContaining({ tokenId: 7, code: 'missing_message_examples' }),
+      expect.objectContaining({ tokenId: 7, code: 'missing_style' }),
+      expect.objectContaining({ tokenId: 7, code: 'missing_lore' }),
+      expect.objectContaining({ tokenId: 7, code: 'missing_topics' }),
+    ]))
   })
 
   it('reports catalog counts, seed metadata, and auto-promotion eligibility', async () => {

@@ -289,20 +289,38 @@ function parseSse(text: string): SseEvent[] {
   return events
 }
 
-function parseCompleteConversationId(events: SseEvent[]): string | undefined {
+function parseCompletePayload(events: SseEvent[]): { conversationId?: string; content?: string; leaksOfficialSessionId: boolean } {
   const complete = events.find((event) => event.event === 'complete')
-  if (!complete) return undefined
+  if (!complete) return { leaksOfficialSessionId: false }
   try {
     const parsed = JSON.parse(complete.data) as Record<string, unknown>
-    return typeof parsed.conversationId === 'string' ? parsed.conversationId : undefined
+    return {
+      conversationId: typeof parsed.conversationId === 'string' ? parsed.conversationId : undefined,
+      content: typeof parsed.content === 'string' ? parsed.content : undefined,
+      leaksOfficialSessionId: Object.keys(parsed).some((key) => /official.*session/i.test(key)),
+    }
   } catch {
-    return undefined
+    return { leaksOfficialSessionId: false }
   }
+}
+
+function streamedAssistantText(events: SseEvent[]): string {
+  return events.map((event) => {
+    try {
+      const parsed = JSON.parse(event.data) as Record<string, unknown>
+      if (event.event === 'token' && typeof parsed.token === 'string') return parsed.token
+      if (event.event === 'complete' && typeof parsed.content === 'string') return parsed.content
+    } catch {
+      // Ignore malformed event data; other validation reports unknown shapes.
+    }
+    return ''
+  }).join('')
 }
 
 async function checkChat(config: Config, jar: CookieJar): Promise<{ results: Result[]; conversationId?: string }> {
   if (config.skipChat) return { results: [skip('/api/eliza/chat SSE contract', 'WAGDIE_ROUTE_PARITY_SKIP_CHAT=true')] }
 
+  const results: Result[] = []
   const headers = new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream' })
   const response = await request(config, jar, '/api/eliza/chat', {
     method: 'POST',
@@ -319,22 +337,55 @@ async function checkChat(config: Config, jar: CookieJar): Promise<{ results: Res
 
   const events = parseSse(text)
   const hasToken = events.some((event) => event.event === 'token')
-  const conversationId = parseCompleteConversationId(events)
+  const complete = parseCompletePayload(events)
+  const conversationId = complete.conversationId
   const hasOnlyKnownEvents = events.every((event) => ['token', 'complete', 'error'].includes(event.event))
+  const hasError = events.some((event) => event.event === 'error')
+  const hasAssistantText = Boolean(streamedAssistantText(events).trim())
 
-  if (!hasToken || !conversationId || !hasOnlyKnownEvents) {
+  if (!hasToken || !conversationId || !hasOnlyKnownEvents || hasError || !hasAssistantText || complete.leaksOfficialSessionId) {
     return {
       results: [
         fail(
           '/api/eliza/chat SSE contract',
-          `expected token events, complete.conversationId, and no unknown events; got ${events.map((event) => event.event).join(', ') || 'none'}`,
+          `expected non-empty token/complete content, complete.conversationId, no error/unknown events, and no official session leak; got ${events.map((event) => event.event).join(', ') || 'none'}`,
           response.status
         ),
       ],
     }
   }
 
-  return { results: [pass('/api/eliza/chat SSE token/complete contract', response.status, `conversationId=${conversationId}`)], conversationId }
+  results.push(pass('/api/eliza/chat SSE token/complete contract', response.status, `conversationId=${conversationId}`))
+
+  const secondResponse = await request(config, jar, '/api/eliza/chat', {
+    method: 'POST',
+    headers: new Headers({ 'Content-Type': 'application/json', Accept: 'text/event-stream' }),
+    body: JSON.stringify({
+      tokenId: config.tokenId,
+      conversationId,
+      message: `Route parity smoke ${config.runId}: continue with one short sentence.`,
+    }),
+  })
+  const secondText = await secondResponse.text()
+  if (!secondResponse.ok) {
+    results.push(fail('/api/eliza/chat existing conversation reuse', redact(secondText, config), secondResponse.status))
+    return { results, conversationId }
+  }
+
+  const secondEvents = parseSse(secondText)
+  const secondComplete = parseCompletePayload(secondEvents)
+  const secondHasAssistantText = Boolean(streamedAssistantText(secondEvents).trim())
+  if (secondComplete.conversationId !== conversationId || !secondHasAssistantText || secondEvents.some((event) => event.event === 'error')) {
+    results.push(fail(
+      '/api/eliza/chat existing conversation reuse',
+      `expected same conversationId and non-empty assistant text; got conversationId=${secondComplete.conversationId ?? 'none'} events=${secondEvents.map((event) => event.event).join(', ') || 'none'}`,
+      secondResponse.status
+    ))
+  } else {
+    results.push(pass('/api/eliza/chat existing conversation reuse', secondResponse.status, `conversationId=${conversationId}`))
+  }
+
+  return { results, conversationId }
 }
 
 async function checkConversations(config: Config, jar: CookieJar, conversationId?: string): Promise<Result[]> {

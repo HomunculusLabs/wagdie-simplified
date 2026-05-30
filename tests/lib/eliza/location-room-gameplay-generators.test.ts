@@ -227,7 +227,7 @@ describe('location room gameplay generators', () => {
     expect(prompt).toContain('- Bell Ambush: The rope snaps taut and the rafters answer with movement.')
     expect(prompt).toContain('Monster hints:')
     expect(prompt).toContain('- Bell Horror: A bell-shadow with hooked bronze hands.')
-    expect(prompt).toContain('Prefer seed source, catalog entry ids, encounter hints, and monster hints before inventing generic encounter flavor.')
+    expect(prompt).toContain('Prefer seed source, catalog entry ids, encounter hints, monster hints, spatial anchors, and recent consequences before inventing encounter flavor.')
     expect(prompt).toContain('Use this as story continuity only')
     expect(prompt).toContain('Do not treat seed text as authoritative mechanics')
     expect(prompt).toContain('"publicSetupNarration": "required specific public setup narration"')
@@ -466,11 +466,53 @@ describe('location room gameplay generators', () => {
     }), { gameMasterAgentId: 'gm-1' })).toThrow('generic fallback copy')
 
     expect(() => normalizeGameplayEncounterProposalResponse(JSON.stringify({
+      title: 'Location catalog encounter',
+      summary: 'Bell pressure gathers in the rafters.',
+      publicSetupNarration: 'The bell rope snaps taut in the rafters.',
+      monsterName: 'Rafter Maw',
+      monsterArchetype: 'bell horror',
+    }), { gameMasterAgentId: 'gm-1' })).toThrow('generic fallback copy')
+
+    expect(() => normalizeGameplayEncounterProposalResponse(JSON.stringify({
       title: 'Bell Maw',
       summary: 'A maw unfolds.',
       monsterName: 'Maw',
       monsterArchetype: 'bell horror',
     }), { gameMasterAgentId: 'gm-1' })).toThrow('missing publicSetupNarration')
+  })
+
+  it('requires seeded encounter proposals to carry concrete catalog anchors into title/summary and setup', () => {
+    const seededInput = {
+      gameMasterAgentId: 'gm-1',
+      encounterSeed: {
+        title: 'Rafters Ambush',
+        summary: 'The bell rope snaps taut above the cellar stair.',
+        source: 'location_catalog',
+        catalogEntryIds: ['80.10.rafters-ambush'],
+        encounterHints: ['Rafters Ambush: hostile wings slam the Crow\'s Den exit.'],
+        monsterHints: ['Crow Wight: a hostile crow-wight nests above the tavern rafters.'],
+      },
+      narrativeState,
+    } as never
+
+    expect(() => normalizeGameplayEncounterProposalResponse(JSON.stringify({
+      title: 'Knife at the Door',
+      summary: 'A named attacker closes in.',
+      publicSetupNarration: 'A specific attacker steps forward with a hooked blade.',
+      monsterName: 'Hooked Attacker',
+      monsterArchetype: 'blade haunt',
+    }), seededInput)).toThrow('lacked a concrete location/catalog anchor')
+
+    expect(normalizeGameplayEncounterProposalResponse(JSON.stringify({
+      title: 'Rafters Ambush',
+      summary: 'The Crow Wight drops from the bell rafters.',
+      publicSetupNarration: 'The bell rope snaps taut as the Crow Wight slams the rafters above the exit.',
+      monsterName: 'Crow Wight',
+      monsterArchetype: 'rafter haunt',
+    }), seededInput)).toMatchObject({
+      proposal: { title: 'Rafters Ambush', monsterName: 'Crow Wight' },
+      publicSetupNarration: 'The bell rope snaps taut as the Crow Wight slams the rafters above the exit.',
+    })
   })
 
   it('accepts strict Official GM encounter proposals with diagnostics', async () => {
@@ -747,7 +789,7 @@ describe('location room gameplay generators', () => {
     const input = makeGameplayOutcomeInput()
     expect(validateGameplayOutcomeNarrationQuality({
       gameMasterAgentId: 'gm-1',
-      publicNarration: 'Ash turns the opening into contact; Maw reels back and its line breaks.',
+      publicNarration: 'Ash strikes under the bell rope; Maw reels back and its line breaks.',
       stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
       metadata: { rawResponseLength: 1 },
     }, input)).toEqual({ ok: true })
@@ -780,6 +822,38 @@ describe('location room gameplay generators', () => {
     }, noDamageInput)).toMatchObject({ ok: false })
   })
 
+  it('requires combat outcome narration to name target, location anchor, visible tactic, and changed battlefield state', () => {
+    const input = makeGameplayOutcomeInput()
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash strikes hard; the line breaks.',
+      stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toMatchObject({ ok: false, error: expect.stringContaining('specific combat target') })
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash strikes Maw and its line breaks.',
+      stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toMatchObject({ ok: false, error: expect.stringContaining('location or catalog anchor') })
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash watches Maw beneath the bell rope and the line breaks.',
+      stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toMatchObject({ ok: false, error: expect.stringContaining('visible tactic') })
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash strikes Maw beneath the bell rope.',
+      stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toMatchObject({ ok: false, error: expect.stringContaining('changed battlefield state') })
+  })
+
   it('accepts injury narration when backend retaliation dealt damage', () => {
     const input = makeGameplayOutcomeInput() as any
     input.mechanicalSummary.mechanicalDeltas.actionRoll.tier = 'failure'
@@ -788,7 +862,7 @@ describe('location room gameplay generators', () => {
 
     expect(validateGameplayOutcomeNarrationQuality({
       gameMasterAgentId: 'gm-1',
-      publicNarration: 'Maw counters Ash and wounds them, driving the line back.',
+      publicNarration: 'Maw counters under the bell rope, wounds Ash, and drives the line back.',
       stateAfter: { stateSummary: 'Ash was wounded by Maw.', currentObjective: null, openThreads: [] },
       metadata: { rawResponseLength: 1 },
     }, input)).toEqual({ ok: true })
@@ -797,7 +871,7 @@ describe('location room gameplay generators', () => {
   it('accepts strong Official GM outcome narration without repair', async () => {
     mockedSendAndCollectOfficialEphemeralSessionMessage.mockResolvedValueOnce({
       text: JSON.stringify({
-        publicNarration: 'Ash turns the opening into contact; Maw reels back and its line breaks.',
+        publicNarration: 'Ash strikes under the bell rope; Maw reels back and its line breaks.',
         stateSummary: 'Maw is wounded.',
         openThreads: [],
       }),
@@ -809,7 +883,7 @@ describe('location room gameplay generators', () => {
 
     expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(1)
     expect(result).toMatchObject({
-      publicNarration: 'Ash turns the opening into contact; Maw reels back and its line breaks.',
+      publicNarration: 'Ash strikes under the bell rope; Maw reels back and its line breaks.',
       metadata: {
         generationDiagnostics: {
           status: 'accepted',
@@ -832,7 +906,7 @@ describe('location room gameplay generators', () => {
       })
       .mockResolvedValueOnce({
         text: JSON.stringify({
-          publicNarration: 'Ash cuts into Maw; the horror reels back and loses the line.',
+          publicNarration: 'Ash cuts into Maw beneath the bell rope; the horror reels back and loses the line.',
           stateSummary: 'Maw is wounded.',
           openThreads: [],
         }),
@@ -849,7 +923,7 @@ describe('location room gameplay generators', () => {
     expect(repairRequest.message.content).toContain('Roll card owns structured mechanics')
     expect(repairRequest.message.content).toContain('Selected target monster: Maw')
     expect(result).toMatchObject({
-      publicNarration: 'Ash cuts into Maw; the horror reels back and loses the line.',
+      publicNarration: 'Ash cuts into Maw beneath the bell rope; the horror reels back and loses the line.',
       metadata: {
         generationDiagnostics: {
           status: 'repaired',
@@ -904,7 +978,7 @@ describe('location room gameplay generators', () => {
 
   it('outcome narration accepts continuity updates but ignores attempted mechanical fields', () => {
     const output = normalizeGameplayOutcomeNarrationResponse(JSON.stringify({
-      publicNarration: 'Steel rings; the maw reels from the backend result.',
+      publicNarration: 'Steel rings under the bell rope; the maw reels back from the backend result.',
       stateSummary: 'The maw has been wounded.',
       openThreads: ['The bell still hums'],
       hp: 999,
@@ -917,7 +991,7 @@ describe('location room gameplay generators', () => {
 
     expect(output).toEqual({
       gameMasterAgentId: 'gm-1',
-      publicNarration: 'Steel rings; the maw reels from the backend result.',
+      publicNarration: 'Steel rings under the bell rope; the maw reels back from the backend result.',
       stateAfter: {
         stateSummary: 'The maw has been wounded.',
         currentObjective: null,

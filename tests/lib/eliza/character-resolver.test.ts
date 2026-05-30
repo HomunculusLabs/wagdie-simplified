@@ -50,6 +50,14 @@ describe('resolveCharacterByTokenId', () => {
       'A mysterious character whose story is still being written. Character #123.'
     )
     expect(JSON.stringify(record.character)).not.toContain('world of WAGDIE')
+    expect(record.character.settings).toMatchObject({
+      metadata: {
+        wagdieUser: {
+          personaSource: 'neutral_default',
+          defaultNeutralPersona: true,
+        },
+      },
+    })
     expect(recordLegacyPersonaProfileLink).toHaveBeenCalledWith({
       tokenId: '123',
       legacyCharacterId: 'record-123',

@@ -29,6 +29,46 @@ To avoid stale transcript confusion, every smoke run must inspect only fresh out
 
 Legacy stored fallback messages may remain readable in historical transcripts. Treat them as historical data only; current health should count them as `recentLegacyFallbackCount` when they fall inside the recent diagnostics window, not as successful current output.
 
+## Compelling Narrative Quality Checks
+
+Treat these checks as the release validation loop for Crow's Den/location `11`. They report live quality and readiness without adding runtime behavior.
+
+- Catalog coverage: confirm `adventureCatalog.sectionCounts` meets the approved Crow's Den minimums and that visible `80_encounters` and `30_monsters` counts are nonzero. `60_shops_services` may be empty for Crow's Den if that remains the approved content decision.
+- Persona completeness: review `personaQuality` in diagnostics for missing persisted personas, default neutral personas, missing examples/style/lore/topics, and per-token warnings. These are warnings for prioritization, not current hard blockers.
+- Scene framing: fresh public GM beats should frame a concrete choice, obstacle, cost, reveal, route, or imminent action; reject atmosphere-only beats that do not move play forward.
+- Action-forward turns: fresh public agent messages should declare concrete fictional action or movement, not agreement-only replies.
+- Combat share: record `combatTranscriptShare` and `combatTranscriptWindow` from deterministic/live reports. Compare share only against a calibrated location/encounter baseline; do not create a hard failure for an uncalibrated combat-share value.
+- Generic threat identity: fresh setup/outcome text and encounter titles should not use generic identities such as “shadowy figure,” “unknown threat,” “generic threat,” or “something attacks.”
+- Readiness framing: a location is compelling-ready only after catalog coverage, visible encounter/monster counts, GNQS, no fallback/generic threat warnings, acceptable distinct character voice signal, empty cadence/spatial-continuity warnings, calibrated combat-share expectations, and a short qualitative transcript review all pass. Until thresholds are calibrated, attribution metrics remain reported signals rather than hard gates.
+
+## Validation Commands
+
+Deterministic harness report, including GNQS, raw metrics, attribution metrics, combat share/window, and warnings:
+
+```bash
+bun run narrative:harness:test
+```
+
+Static live transcript scoring, without triggering new ticks:
+
+```bash
+bun run narrative:harness:live -- --location 11 --base-url http://localhost:3000
+```
+
+Static live transcript scoring as a stricter release check for already-calibrated warnings/GNQS:
+
+```bash
+bun run narrative:harness:live -- --location 11 --base-url http://localhost:3000 --fail-on-warnings
+```
+
+Fresh-tick live validation when local auth/config permits manual ticks:
+
+```bash
+NARRATIVE_EVAL_TRIGGER_TICKS=10 NARRATIVE_EVAL_COOKIE='...' bun run narrative:harness:live -- --location 11 --base-url http://localhost:3000 --fail-on-warnings
+```
+
+Use `NARRATIVE_EVAL_BEARER_TOKEN` instead of `NARRATIVE_EVAL_COOKIE` only when that auth path is configured for the target environment.
+
 ## Combat Narration Smoke Checks
 
 When a fresh run reaches combat, verify the combat public transcript and diagnostics satisfy these checks:

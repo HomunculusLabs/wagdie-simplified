@@ -391,6 +391,48 @@ function synthesizeSceneCheckAdventurePatchFromModelProse(input: Pick<GenerateGa
   }, { sourceId: input.sceneCheckId })
 }
 
+function addBeatLastOutcomeIfMissing(
+  adventurePatch: LocationRoomAdventurePatch,
+  input: {
+    publicNarration: string | null
+    speakerInstruction: string
+    currentObjective: string | null
+  }
+): LocationRoomAdventurePatch {
+  if (Object.prototype.hasOwnProperty.call(adventurePatch, 'lastOutcome')) return adventurePatch
+  const summary = trimToLimit(
+    input.publicNarration ?? input.speakerInstruction ?? input.currentObjective,
+    320
+  ) ?? 'The game-master beat changed the active room pressure.'
+  return {
+    ...adventurePatch,
+    lastOutcome: {
+      kind: 'beat',
+      sourceId: 'game-master-model-prose',
+      summary,
+    },
+  }
+}
+
+function addSceneCheckLastOutcomeIfMissing(
+  adventurePatch: LocationRoomAdventurePatch,
+  input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'sceneCheckId' | 'resolution'>,
+  publicNarration: string
+): LocationRoomAdventurePatch {
+  if (Object.prototype.hasOwnProperty.call(adventurePatch, 'lastOutcome')) return adventurePatch
+  const tier = input.resolution.roll.tier
+  const summary = trimToLimit(publicNarration, 320) ?? 'The scene-check outcome changed the next choice.'
+  return {
+    ...adventurePatch,
+    lastOutcome: {
+      kind: 'scene_check',
+      sourceId: input.sceneCheckId,
+      tier,
+      summary,
+    },
+  }
+}
+
 function isFlatOpeningState(input: {
   ttrpgPhase: LocationRoomTtrpgPhase
   combatReadiness: LocationRoomCombatReadiness
@@ -503,6 +545,7 @@ const GENERIC_NARRATIVE_PHRASES = [
 ] as const
 
 const CONCRETE_NARRATIVE_ANCHOR_PATTERN = /\b(?:altar|arch|ash|bar|beam|bell|bell rope|bench|blade|boat|book|bridge|candle|cart|cask|casks|cave|cellar|chain|chamber|chest|corridor|courtyard|crate|crow|crows|dock|door|doorway|feather|feathers|floor|floorboard|floorboards|forest|fountain|gate|glyph|grate|hall|idol|key|landing|lantern|lanterns|ledge|lever|lock|mark|marks|mask|mirror|passage|path|pit|platform|pool|rafter|rafters|river|road|rookery|roof|rope|route|salt|scratch|scratches|seam|shelf|shrine|shutter|shutters|stair|stairs|statue|stream|symbol|table|taproom|threshold|throne|torch|tower|track|tracks|tree|tunnel|wagon|wall|well|window)\b/i
+const SCENE_FRAME_INTERACTION_PATTERN = /\b(?:choose|choice|option|decision|decide|risk|cost|price|obstacle|block|blocked|blocks|reveal|reveals|revealed|clue|route|path|paths|door|exit|threshold|stair|gate|latch|press|bargain|retreat|withdraw|protect|exploit|follow|confront|intercept|open|test|search|inspect|examine|ask|question|force|move|cross|descend|climb|pull|cut|take|grab|listen|watch|approach|answer|answers|before|now|must)\b/i
 
 function weakGenericNarrativePhrase(value: string): string | null {
   const normalized = value.toLowerCase().replace(/\s+/g, ' ')
@@ -523,6 +566,21 @@ function validateConcreteNarrativeText(
   }
   if (options.requireConcreteAnchor && !hasAnchor) {
     throw new Error(`${options.label} must name a concrete visible object, route, or threat anchor`)
+  }
+}
+
+function validateGameMasterBeatSceneFrame(output: {
+  publicNarration?: string | null
+  ttrpgPhase: LocationRoomTtrpgPhase
+  requestedGameplayAction: LocationRoomRequestedGameplayAction | null
+  sceneCheckRequest?: NormalizedSceneCheckRequest | null
+}): void {
+  const publicNarration = output.publicNarration?.trim()
+  if (!publicNarration || output.ttrpgPhase === 'aftermath') return
+  if (output.sceneCheckRequest || output.requestedGameplayAction === 'start_combat') return
+
+  if (!SCENE_FRAME_INTERACTION_PATTERN.test(publicNarration)) {
+    throw new Error('Game-master beat response publicNarration must frame a concrete choice, cost, reveal, route, obstacle, or action instead of passive atmosphere only')
   }
 }
 
@@ -565,6 +623,7 @@ export function validateGameMasterBeatProgressionContract(output: {
       label: 'Game-master beat response publicNarration',
       requireConcreteAnchor: Boolean(output.progressionContext?.requirePublicNarration),
     })
+    validateGameMasterBeatSceneFrame(output)
   }
 
   if (output.ttrpgPhase !== 'aftermath') {
@@ -829,13 +888,22 @@ export function normalizeGameMasterBeatResponse(
     limits.publicNarrationMaxLength
   )
   if (!hasAdventurePatchProgressionSignal(adventurePatch)) {
-    adventurePatch = synthesizeBeatAdventurePatchFromModelProse({
-      publicNarration,
-      speakerInstruction,
-      currentObjective,
-    })
+    const modelSpatialContext = adventurePatch.spatialContext
+    adventurePatch = {
+      ...synthesizeBeatAdventurePatchFromModelProse({
+        publicNarration,
+        speakerInstruction,
+        currentObjective,
+      }),
+      ...(modelSpatialContext ? { spatialContext: modelSpatialContext } : {}),
+    }
     recoveries.push('adventure_patch_defaulted_from_model_prose')
   }
+  adventurePatch = addBeatLastOutcomeIfMissing(adventurePatch, {
+    publicNarration,
+    speakerInstruction,
+    currentObjective,
+  })
   const stateAfter = {
     stateSummary,
     currentObjective,
@@ -1035,8 +1103,7 @@ function buildCombatReadyDecisionLines(ttrpg: ReturnType<typeof normalizeNarrati
 function buildSceneCheckContractLines(): string[] {
   return [
     'Optional non-combat scene checks:',
-    '- sceneCheckRequest: one non-combat roll/null for risky inspect/search/examine/decipher actions; actionIntent options and fixed rollChoice.checkType options are allowed.',
-    '- contextualChecks: use only provided public-safe id/label/checkType/dc/description; backend sanitizes.',
+    '- sceneCheckRequest: one non-combat roll/null for risky inspect/search/examine/decipher; actionIntent options and fixed rollChoice.checkType options allowed; contextualChecks only if provided.',
     '- requestedGameplayAction is combat-only; never combine start_combat with sceneCheckRequest.',
   ]
 }
@@ -1048,37 +1115,35 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
 
   return [
     'Return only JSON with this contract:',
-    `{ "publicNarration": ${publicNarrationContract}, "speakerInstruction": "speaker-only direction", "stateSummary": "updated continuity", "currentObjective": "objective or null", "openThreads": ["thread"], "ttrpgPhase": "story | exploration | threat | aftermath", "combatReadiness": "none | foreshadow | ready", "threatLevel": 0, "requestedGameplayAction": null, "encounterSeed": null, "sceneCheckRequest": null, "adventurePatch": {"currentStakes":"risk","consequence":{"summary":"aftermath","status":"open"},"discoveries":["clue"],"clockUpdates":[{"id":"id","value":1,"max":6}],"spatialContext":{"currentArea":null,"landmarks":[],"routes":[],"unresolvedSpatialQuestions":[]}}, "featuredTokenIds": [123], "selectedSpeakerTokenId": ${input.speaker.tokenId} }`,
+    `{ "publicNarration": ${publicNarrationContract}, "speakerInstruction": "speaker-only direction", "stateSummary": "updated continuity", "currentObjective": "objective or null", "openThreads": ["thread"], "ttrpgPhase": "story | exploration | threat | aftermath", "combatReadiness": "none | foreshadow | ready", "threatLevel": 0, "requestedGameplayAction": null, "encounterSeed": null, "sceneCheckRequest": null, "adventurePatch": {"currentStakes":null,"activeDecision":null,"consequence":null,"discoveries":[],"clockUpdates":[],"spatialContext":{}}, "featuredTokenIds": [123], "selectedSpeakerTokenId": ${input.speaker.tokenId} }`,
     '',
     'Rules:',
     '- JSON only; no markdown/prose outside object.',
     '- speakerInstruction/stateSummary required; use eligible token ids.',
     `- selectedSpeakerTokenId must be ${input.speaker.tokenId}.`,
-    '- Keep public narration public-safe.',
-    '- PublicNarration: concrete object/route/threat; no generic pressure-only copy.',
+    '- PublicNarration public-safe: concrete object/route/threat; Frame public GM beats near a meaningful choice, cost, reveal, route, obstacle, or action; no generic/passive atmosphere-only copy.',
     ...(input.progressionContext?.requireOpeningPublicNarration
       ? [
         '- Opening publicNarration must be a rich table-setting GM beat: 3-5 sentences and roughly 300-650 characters.',
-        '- Opening publicNarration must give players material to act on: sensory location detail, immediate situation, 2-3 interactable hooks, stakes/tension, and an unresolved prompt.',
+        '- Opening publicNarration must give players material to act on: sensory detail, immediate situation, 2-3 interactable hooks, stakes/tension, unresolved prompt, and a choice/cost/reveal/route/obstacle.',
         '- Do not make the opener a two-sentence summary. Do not solve the mystery, start combat, or speak for the selected character.',
-        '- Opening speakerInstruction should give the selected character 2-3 concrete ways to respond in their own voice.',
+        '- Opening speakerInstruction should give the selected character 2-3 concrete ways to act or commit in their own voice.',
       ]
       : []),
     '- Non-aftermath beats must include a concrete currentObjective and at least one unresolved openThreads entry.',
-    '- Non-aftermath beats need narrated story pressure: adventurePatch reflected in prose/character direction, sceneCheckRequest, or combat.',
-    '- adventurePatch is private continuity memory, not public UI copy; activeDecision is rare.',
-    '- Keep publicNarration natural GM prose; do not list hidden memory labels.',
-    '- clockUpdates use absolute values when a private clock changes.',
-    '- Use adventurePatch.spatialContext additively for visible currentArea, landmarks, routes, and spatial questions; keep entries public-safe/bounded.',
+    '- Non-aftermath beats need narrated story pressure: adventurePatch in prose/character direction, sceneCheckRequest, or combat. SpeakerInstruction should push one concrete declared action or commitment, not passive agreement.',
+    '- adventurePatch is private memory, not UI copy; activeDecision rare/GM-owned; create only for visible options; later GM beats resolve/clear/reframe; include lastOutcome.',
+    '- Keep publicNarration natural GM prose, no hidden memory labels; clockUpdates use absolute values.',
+    '- Use adventurePatch.spatialContext additively for visible currentArea/landmarks/routes/questions; keep entries public-safe/bounded.',
     ...(input.progressionContext?.requirePublicNarration
-      ? ['- publicNarration is required and must be non-empty for this beat; if this is cadence-only, re-anchor the visible scene without forcing combat.']
+      ? ['- publicNarration is required and must be non-empty; if cadence-only, cut/reframe and name the changed object, route, or threat around a cost, reveal, or obstacle without forcing combat.']
       : ['- publicNarration should be null for routine post-opener beats; use it only for visible transition/escalation, combat handoff, or explicitly necessary public narration.']),
     ...(input.progressionContext?.requireEscalationBeyondOpening
       ? ['- Do not leave repeated activity in flat story/none/0 state; visibly escalate without forcing start_combat.']
       : []),
-    '- Use catalog entries only as bounded private inspiration; live adventure memory is more authoritative.',
+    '- Use up to 2 catalog anchors naturally for narration/decisions/checks/discoveries/seeds; no ids/sections/tags or database-list prose.',
     '- Most beats keep requestedGameplayAction null; start combat only when the current fiction supports a clear fight.',
-    '- If current combatReadiness is ready from prior fiction or scene-check escalation, choose case-by-case: keep structured danger in narrative, or request start_combat when the fiction now clearly demands combat.',
+    '- If combatReadiness is ready, choose case-by-case: keep structured danger in narrative, or request start_combat when fiction clearly demands combat.',
     '- requestedGameplayAction "start_combat" requires clear fights plus threat/ready/threatLevel >= 3 and encounterSeed.',
     ...buildSceneCheckContractLines(),
   ]
@@ -1087,10 +1152,10 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
 function formatAdventureDecision(decision: ReturnType<typeof normalizeAdventureMemory>['activeDecision']): string {
   if (!decision) return 'None.'
   const options = decision.options
-    .map((option) => `${option.id}: ${option.label}`)
+    .map((option) => `${option.id}=${option.label}`)
     .join(' | ')
-  const selected = decision.selectedOptionId ? ` | selected: ${decision.selectedOptionId}` : ''
-  return truncatePromptValue(`${decision.id}: ${decision.prompt} | options: ${options}${selected}`, 140)
+  const selected = decision.selectedOptionId ? ` | selected=${decision.selectedOptionId}` : ''
+  return truncatePromptValue(`${decision.id}: ${decision.prompt}; options ${options}${selected}`, 110)
 }
 
 function formatSpatialContext(context: LocationRoomSpatialContext): string[] {
@@ -1131,16 +1196,20 @@ function formatAdventureMemoryLines(input: Pick<GenerateGameMasterBeatInput, 'na
     openThreads: input.narrativeState.openThreads,
     recentOutcomeSummary: adventure.lastOutcome?.summary,
     selectedTokenId: input.speaker.tokenId,
+    spatialContext: adventure.spatialContext,
+    discoveries: adventure.discoveries,
+    lastDeclaredAction: adventure.lastDeclaredAction,
+    clocks: adventure.clocks,
+    limit: 2,
   })
 
+  const catalogAnchorText = catalogEntries.length > 0
+    ? catalogEntries.map((entry, index) => `${index + 1}) ${entry.title ? `${entry.title}: ` : ''}${truncatePromptValue(entry.summary, 70)}`).join('; ')
+    : 'None.'
+
   return [
-    'Quiet private adventure memory (continuity guidance, not public panel copy):',
-    `Active decision: ${formatAdventureDecision(adventure.activeDecision)}`,
+    `Adventure memory: active ${formatAdventureDecision(adventure.activeDecision)}; catalog anchors ${catalogAnchorText}`,
     ...formatSpatialContext(adventure.spatialContext),
-    'Relevant catalog inspiration (private; do not recite):',
-    catalogEntries.length > 0
-      ? catalogEntries.slice(0, 3).map((entry) => `- [${entry.section}] ${entry.id}${entry.title ? ` ${entry.title}` : ''}: ${truncatePromptValue(entry.summary, 90)}${entry.tags.length ? ` (tags: ${entry.tags.slice(0, 3).join(', ')})` : ''}`).join('\n')
-      : 'None available.',
     `Arc summary: ${truncatePromptValue(adventure.arcSummary || 'None.', 500)}`,
     `Current stakes: ${truncatePromptValue(adventure.currentStakes || 'None.', 300)}`,
     adventure.consequenceLedger.length > 0
@@ -1174,10 +1243,10 @@ function buildNarrativeStateLines(input: Pick<GenerateGameMasterBeatInput, 'narr
     `Combat readiness: ${ttrpg.combatReadiness}`,
     `Threat level: ${ttrpg.threatLevel ?? 'None.'}`,
     `Requested gameplay action: ${ttrpg.requestedGameplayAction ?? 'None.'}`,
-    `Last encounter seed: ${formatEncounterSeed(ttrpg.lastEncounterSeed)}`,
     `Last scene-check escalation: ${formatSceneCheckEscalation(sceneCheckEscalation.lastSceneCheckEscalation)}`,
-    ...buildCombatReadyDecisionLines(ttrpg),
+    `Last encounter seed: ${formatEncounterSeed(ttrpg.lastEncounterSeed)}`,
     ...formatAdventureMemoryLines(input),
+    ...buildCombatReadyDecisionLines(ttrpg),
   ]
 }
 
@@ -1239,7 +1308,7 @@ function formatSceneCheckEscalationCatalogCandidates(narrativeState: LocationRoo
       ? (narrativeState.metadata.locationMetadata as Record<string, unknown>).adventureCatalog
       : undefined)
   const catalog = normalizeLocationAdventureCatalog(rawCatalog)
-  if (!catalog) return ['Escalation catalog candidates (80_encounters / 30_monsters): None available.']
+  if (!catalog) return ['Escalation candidates (80_encounters / 30_monsters): None available.']
   const encounterEntries = visibleSceneCheckEscalationCatalogEntries(catalog.sections['80_encounters'] ?? []).slice(0, 3)
   const monsterEntries = visibleSceneCheckEscalationCatalogEntries(catalog.sections['30_monsters'] ?? []).slice(0, 3)
   const candidateLines = [
@@ -1247,7 +1316,7 @@ function formatSceneCheckEscalationCatalogCandidates(narrativeState: LocationRoo
     ...monsterEntries.map((entry) => `- [30_monsters] ${entry.id}${entry.title ? ` ${entry.title}` : ''}: ${truncatePromptValue(entry.summary, 120)}`),
   ]
   return [
-    'Escalation catalog candidates (private; prefer for encounterSeed/catalogEntryIds when relevant):',
+    'Escalation candidates (private anchors for encounterSeed/catalogEntryIds):',
     candidateLines.length > 0 ? candidateLines.join('\n') : 'None available.',
   ]
 }
@@ -1265,11 +1334,12 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '- Vary the first sentence/opening from recent GM outcome openings while preserving roll facts; do not reuse an exact opening.',
     '- For partial_success, failure, and critical_failure, publicNarration must be substantive (roughly 180+ characters), show a visible consequence such as cost, complication, blocked route, lost opportunity, harder choice, hostile response, obligation, or a concrete danger, and leave a changed situation or next choice rather than finality.',
     '- publicNarration: concrete object/route/threat; no pressure-only opening.',
-    '- Treat adventurePatch as private durable memory for the resolved roll. activeDecision remains rare and only for a genuine new fork.',
+    '- Treat adventurePatch as private roll memory; activeDecision rare; include lastOutcome for this roll.',
     '- escalation is raw intent; backend will normalize it. Use decision none, danger, or combat_ready case-by-case.',
     '- Scene-check outcomes must never request combat directly: do not output requestedGameplayAction or lastCombatTriggerBeatId.',
     '- combat_ready means readiness, not a direct combat request; a later GM beat may request start_combat, and backend promotion may start combat on a later eligible auto tick.',
     '- Prefer listed 80_encounters and 30_monsters catalog candidates for encounterSeed/catalogEntryIds when the roll creates danger or combat readiness.',
+    '- Catalog candidates are private anchors for discoveries/danger/seeds; ids only in catalogEntryIds, not public prose.',
     '- Use adventurePatch.spatialContext additively when the roll reveals, opens, blocks, narrows, or questions visible areas/routes/landmarks.',
     '- Tier rules for adventurePatch: critical_success/success add progress or discovery; partial_success: progress plus complication; failure/critical_failure require a consequence and changed next choice.',
     '- publicNarration, stateSummary, currentObjective, openThreads, and tier-appropriate adventurePatch are required.',
@@ -1298,7 +1368,7 @@ export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMaster
     '',
     ...formatSceneCheckEscalationCatalogCandidates(input.narrativeState),
     '',
-    ...formatSpatialContext(normalizeAdventureMemory(input.narrativeState.metadata).spatialContext),
+    ...formatCompactSpatialContext(normalizeAdventureMemory(input.narrativeState.metadata).spatialContext),
     '',
     ...buildRecentSceneCheckPatternLines(input.recentMessages),
     '',
@@ -1443,10 +1513,15 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
   try {
     validateSceneCheckOutcomeAdventurePatch(input.resolution.roll.tier, adventurePatch)
   } catch {
-    adventurePatch = synthesizeSceneCheckAdventurePatchFromModelProse(input, publicNarration)
+    const modelSpatialContext = adventurePatch.spatialContext
+    adventurePatch = {
+      ...synthesizeSceneCheckAdventurePatchFromModelProse(input, publicNarration),
+      ...(modelSpatialContext ? { spatialContext: modelSpatialContext } : {}),
+    }
     recoveries.push('scene_check_adventure_patch_defaulted_from_model_prose')
     validateSceneCheckOutcomeAdventurePatch(input.resolution.roll.tier, adventurePatch)
   }
+  adventurePatch = addSceneCheckLastOutcomeIfMissing(adventurePatch, input, publicNarration)
 
   return {
     gameMasterAgentId: options.gameMasterAgentId,
@@ -1570,6 +1645,12 @@ function fallbackSceneCheckAdventurePatch(input: GenerateGameMasterSceneCheckOut
       ? [baseSummary]
       : [],
     spatialContext: fallbackSceneCheckSpatialContext(input),
+    lastOutcome: {
+      kind: 'scene_check',
+      sourceId: input.sceneCheckId,
+      tier: roll.tier,
+      summary: baseSummary,
+    },
   }, { sourceId: input.sceneCheckId })
 }
 

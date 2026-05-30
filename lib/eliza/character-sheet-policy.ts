@@ -5,7 +5,8 @@ import type {
   SafeCharacterSettings,
   UpdateAICharacterInput,
 } from '@/types/eliza'
-import type { AgentCharacter, AgentMessageExample } from '@/lib/eliza/sdk-types'
+import type { AgentCharacter, AgentMessageExample, CharacterRecord } from '@/lib/eliza/sdk-types'
+import { buildNeutralDefaultPersonality } from '@/lib/eliza/persona-copy'
 import {
   aiPersonaUpdateSchema,
   elizaCharacterExportSchema,
@@ -37,6 +38,29 @@ export type ImportPolicyResult = {
   imported: string[]
   skipped: string[]
   warnings: string[]
+}
+
+export type PersonaCompletenessWarningCode =
+  | 'missing_persisted_persona'
+  | 'default_neutral_persona'
+  | 'missing_message_examples'
+  | 'missing_style'
+  | 'missing_lore'
+  | 'missing_topics'
+
+export type PersonaCompletenessWarning = {
+  code: PersonaCompletenessWarningCode
+  message: string
+}
+
+export type PersonaCompletenessEvaluation = {
+  persisted: boolean
+  defaultNeutralPersona: boolean
+  messageExampleCount: number
+  hasStyle: boolean
+  hasLore: boolean
+  hasTopics: boolean
+  warnings: PersonaCompletenessWarning[]
 }
 
 export const BACKEND_OWNED_EXACT_PATHS = new Set([
@@ -151,6 +175,112 @@ function normalizeNullableString(value: unknown): string | null | undefined {
 function normalizeStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined
   return value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean)
+}
+
+function hasStringItems(value: unknown): boolean {
+  return Array.isArray(value) && value.some((item) => typeof item === 'string' && item.trim().length > 0)
+}
+
+function countMessageExamples(value: unknown): number {
+  if (!Array.isArray(value)) return 0
+  return value.filter((conversation) => Array.isArray(conversation) && conversation.length >= 2).length
+}
+
+function isDefaultNeutralPersona(character: AgentCharacter | null, tokenId?: string | number | null): boolean {
+  if (!character) return false
+  const record = character as UnknownRecord
+  const token = tokenId === null || tokenId === undefined ? null : String(tokenId)
+  const defaultCopy = token ? buildNeutralDefaultPersonality(token) : null
+  const genericDefaultPattern = /A mysterious character whose story is still being written\. Character #([^\n.]+)\./
+  const legacyDefaultPattern = /A mysterious character from the world of WAGDIE\. Character #([^\n.]+)\./
+
+  const bio = Array.isArray(record.bio) ? record.bio : []
+  const candidateText = [
+    ...bio,
+    record.personality,
+    record.backstory,
+    ...(Array.isArray(record.lore) ? record.lore : []),
+  ]
+    .filter((item): item is string => typeof item === 'string')
+    .join('\n')
+
+  if (defaultCopy && candidateText.includes(defaultCopy)) return true
+  if (genericDefaultPattern.test(candidateText)) return true
+  if (legacyDefaultPattern.test(candidateText)) return true
+
+  const settings = asRecord(record.settings)
+  const metadata = asRecord(settings?.metadata)
+  const wagdieUser = asRecord(metadata?.wagdieUser)
+  return wagdieUser?.personaSource === 'neutral_default' || wagdieUser?.defaultNeutralPersona === true
+}
+
+export function evaluateCharacterSheetCompleteness(
+  record: CharacterRecord | null | undefined,
+  tokenId?: string | number | null
+): PersonaCompletenessEvaluation {
+  const character = record?.character ?? null
+  const characterRecord = character as UnknownRecord | null
+  const style = asRecord(characterRecord?.style)
+  const messageExampleCount = countMessageExamples(characterRecord?.messageExamples)
+  const hasStyle = Boolean(
+    style && (hasStringItems(style.chat) || hasStringItems(style.all) || hasStringItems(style.post))
+  )
+  const hasLore = hasStringItems(characterRecord?.lore)
+  const hasTopics = hasStringItems(characterRecord?.topics)
+  const defaultNeutralPersona = isDefaultNeutralPersona(character, tokenId)
+  const warnings: PersonaCompletenessWarning[] = []
+
+  if (!record) {
+    warnings.push({
+      code: 'missing_persisted_persona',
+      message: 'No persisted Official ElizaOS persona exists for this character.',
+    })
+  }
+
+  if (defaultNeutralPersona) {
+    warnings.push({
+      code: 'default_neutral_persona',
+      message: 'Persona appears to be an auto-created neutral default and needs owner-authored voice.',
+    })
+  }
+
+  if (messageExampleCount < 2) {
+    warnings.push({
+      code: 'missing_message_examples',
+      message: 'Persona should include at least two short public-room message examples.',
+    })
+  }
+
+  if (!hasStyle) {
+    warnings.push({
+      code: 'missing_style',
+      message: 'Persona is missing chat/style rules that preserve voice in short room turns.',
+    })
+  }
+
+  if (!hasLore) {
+    warnings.push({
+      code: 'missing_lore',
+      message: 'Persona is missing lore or unresolved motives.',
+    })
+  }
+
+  if (!hasTopics) {
+    warnings.push({
+      code: 'missing_topics',
+      message: 'Persona is missing topics such as recurring concerns, fears, or faction ties.',
+    })
+  }
+
+  return {
+    persisted: Boolean(record),
+    defaultNeutralPersona,
+    messageExampleCount,
+    hasStyle,
+    hasLore,
+    hasTopics,
+    warnings,
+  }
 }
 
 function normalizeTemplates(value: unknown): Record<string, string> | null | undefined {

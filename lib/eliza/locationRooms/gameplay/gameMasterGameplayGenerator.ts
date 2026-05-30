@@ -16,9 +16,10 @@ import type {
   LocationRoomParticipant,
   LocationRoomTick,
 } from '../types'
-import type {
-  LocationRoomNarrativeState,
-  LocationRoomNarrativeStateSnapshot,
+import {
+  normalizeAdventureMemory,
+  type LocationRoomNarrativeState,
+  type LocationRoomNarrativeStateSnapshot,
 } from '../narrativeTypes'
 import { GAMEPLAY_CHECK_TYPES } from './types'
 import type {
@@ -497,7 +498,7 @@ function categorizeOutcomeNarrationError(error: unknown): GameplayOutcomeGenerat
   if (/did not contain a JSON object/i.test(message)) return 'missing_json_object'
   if (/invalid JSON/i.test(message)) return 'invalid_json'
   if (/missing publicNarration|required/i.test(message)) return 'missing_required_field'
-  if (/weak|generic|consequence|filler/i.test(message)) return 'weak_narration'
+  if (/weak|generic|consequence|filler|specific combat target|location or catalog anchor|visible tactic|battlefield state/i.test(message)) return 'weak_narration'
   return 'validation_error'
 }
 
@@ -548,6 +549,43 @@ function includesWordish(haystack: string, value: string | null | undefined): bo
   return Boolean(normalized && haystack.includes(normalized))
 }
 
+function outcomeLocationAnchorTerms(input: GenerateGameplayOutcomeNarrationInput, targetNames: Array<string | null>): string[] {
+  const excluded = new Set(targetNames
+    .filter((value): value is string => Boolean(value))
+    .flatMap((value) => normalizeAnchorTerm(value).split(' ')))
+  const terms = new Set<string>()
+  addAnchorTerms(input.encounterBefore.publicTitle, terms)
+  addAnchorTerms((input.encounterBefore as { publicSummary?: string | null }).publicSummary, terms)
+  const seed = input.encounterBefore.metadata?.encounterSeed as LocationRoomEncounterSeed | null | undefined
+  if (seed) {
+    addAnchorTerms(seed.title, terms)
+    addAnchorTerms(seed.summary, terms)
+    for (const hint of seed.encounterHints ?? []) addAnchorTerms(hint, terms)
+    for (const hint of seed.monsterHints ?? []) addAnchorTerms(hint, terms)
+  }
+  const adventure = normalizeAdventureMemory(input.narrativeState.metadata)
+  addAnchorTerms(adventure.spatialContext.currentArea, terms)
+  for (const value of adventure.spatialContext.landmarks) addAnchorTerms(value, terms)
+  for (const value of adventure.spatialContext.routes) addAnchorTerms(value, terms)
+
+  return [...terms]
+    .map(normalizeAnchorTerm)
+    .filter((term) => term.length >= 4 && !excluded.has(term) && !/^(?:maw|monster|horror|threat|danger|encounter)$/.test(term))
+    .slice(0, 24)
+}
+
+function hasAnyAnchorTerm(narration: string, terms: string[]): boolean {
+  if (terms.length === 0) return true
+  const normalized = ` ${normalizeAnchorTerm(narration)} `
+  return terms.some((term) => normalized.includes(` ${normalizeAnchorTerm(term)} `))
+}
+
+function participantNameForActionTarget(input: GenerateGameplayOutcomeNarrationInput): string | null {
+  return input.action.target?.kind === 'character'
+    ? participantNameByTokenId(input.participants, input.action.target.tokenId)
+    : null
+}
+
 export function validateGameplayOutcomeNarrationQuality(
   output: GameplayOutcomeNarrationOutput,
   input: GenerateGameplayOutcomeNarrationInput
@@ -563,6 +601,7 @@ export function validateGameplayOutcomeNarrationQuality(
   const retaliation = isRecord(deltas.monsterRetaliation) ? deltas.monsterRetaliation : null
   const actorName = participantNameByTokenId(input.participants, input.turn.selectedTokenId)
   const targetMonsterName = selectedOutcomeMonsterName(input)
+  const targetCharacterName = participantNameForActionTarget(input)
   const actionSpeech = input.action.publicSpeech.replace(/\s+/g, ' ').trim().toLowerCase()
 
   if (actionSpeech && lower === actionSpeech) {
@@ -582,12 +621,37 @@ export function validateGameplayOutcomeNarrationQuality(
   const healingAmount = numericValue(healing?.amount) ?? 0
   const retaliationHit = typeof retaliation?.hit === 'boolean' ? retaliation.hit : null
   const retaliationAmount = numericValue(retaliation?.amount) ?? 0
+  const primaryTargetNames = [targetMonsterName, targetCharacterName].filter((value): value is string => Boolean(value))
+  const requiredTargetNames = primaryTargetNames.length > 0
+    ? primaryTargetNames
+    : [actorName].filter((value): value is string => Boolean(value))
+  const hasSpecificTarget = requiredTargetNames.some((name) => includesWordish(lower, name)) ||
+    (requiredTargetNames.length === 0 && includesWordish(lower, input.encounterBefore.publicTitle))
+  const locationAnchors = outcomeLocationAnchorTerms(input, requiredTargetNames)
+  const visibleTactic = /\b(strikes?|cuts?|slashes?|drives?|pins?|blocks?|guards?|shields?|hooks?|shoves?|pulls?|draws?|circles?|ducks?|braces?|parries?|counters?|retaliates?|presses?|forces?|heals?|restores?|drags?|carries?|retreats?|withdraws?|flee(?:s|ing)?|runs?|dives?|weaves?|sidesteps?|throws?|grabs?|holds?)\b/i.test(narration)
+  const battlefieldStateChange = /\b(line|ground|space|opening|cover|route|threshold|door|wall|floor|table|rafters?|stairs?|bridge|circle|formation|position|distance|path|exit|back|aside|off-balance|pinned|blocked|exposed|separated|cornered|reels?|staggers?|breaks?|splinters?|buckles?|collapses?|opens?|closes?|shifts?)\b/i.test(narration)
   const encounterStatusAfter = input.mechanicalSummary.encounterStatusAfter || input.encounterAfter.status
   const terminal = encounterStatusAfter !== 'active' || input.encounterAfter.status !== 'active'
   const deaths = input.mechanicalSummary.deaths.length > 0
   const victory = encounterStatusAfter === 'victory' || input.encounterAfter.status === 'victory'
   const fled = encounterStatusAfter === 'fled' || input.encounterAfter.status === 'fled'
   const defeat = encounterStatusAfter === 'defeat' || input.encounterAfter.status === 'defeat'
+
+  if (!hasSpecificTarget) {
+    return { ok: false, error: 'Gameplay outcome narration lacks a specific combat target anchor' }
+  }
+
+  if (!hasAnyAnchorTerm(narration, locationAnchors)) {
+    return { ok: false, error: 'Gameplay outcome narration lacks a concrete location or catalog anchor' }
+  }
+
+  if (!visibleTactic) {
+    return { ok: false, error: 'Gameplay outcome narration lacks a visible tactic' }
+  }
+
+  if (!battlefieldStateChange) {
+    return { ok: false, error: 'Gameplay outcome narration lacks changed battlefield state' }
+  }
 
   if (/\b(kills?|slays?|dead|dies|death|corpse|finality)\b/i.test(narration) && !deaths) {
     return { ok: false, error: 'Gameplay outcome narration invents death not present in backend facts' }
@@ -677,6 +741,7 @@ function buildGameplayOutcomeNarrationRepairPrompt(
     `Encounter status after mechanics: ${input.mechanicalSummary.encounterStatusAfter}`,
     '',
     'Roll card owns structured mechanics; prose should describe visible consequence only.',
+    'The repaired combat prose must name a specific target, include a concrete location/catalog anchor, show a visible tactic, and leave the battlefield visibly changed.',
     `Public roll-card summary: ${rollSummary}`,
     '',
     'Backend consequence facts:',
@@ -697,6 +762,7 @@ function buildGameplayOutcomeNarrationRepairPrompt(
     'Repair rules:',
     '- JSON only; no markdown or explanation.',
     '- Name a visible consequence: contact, miss, damage, healing, retaliation, protection, movement, death, victory, flee state, or other backend-supported result.',
+    '- Name the target/actor, include an anchor such as the encounter title, seeded landmark, route, or catalog monster/place, show the tactic, and state what line/ground/cover/route/position changes.',
     '- Do not invent HP, XP, rewards, finality, new dice, new checks, or monster abilities.',
     '- Do not repeat the roll-card numbers unless needed for plain language; the roll card remains the structured mechanics surface.',
     '- Avoid generic filler such as "the room shifts", "pressure remains", or "the encounter is not over".',
@@ -711,9 +777,85 @@ function genericEncounterPublicCopyReason(value: string): string | null {
   if (normalized === 'lurking threat') return 'default monster archetype'
   if (normalized === 'fallback apparition') return 'fallback monster archetype'
   if (normalized === 'ashen horror' || normalized === 'restless shade') return 'legacy fallback monster name'
+  if (normalized === 'escalating danger' || normalized === 'location encounter' || normalized === 'location catalog encounter' || normalized === 'generic trouble') return 'generic encounter title'
   if (/^a threat (gathers|emerges)\b/.test(normalized)) return 'default public setup or summary'
   if (/^the room (darkens|shifts)\b/.test(normalized)) return 'generic room setup'
+  if (/\b(?:shadowy figure|unknown threat|generic threat|faceless threat|nameless threat|unseen enemy|enemy appears|creatures? attacks?|monsters? attacks?|dark shape|something attacks|something moves just out of sight|threat emerges|danger emerges|hostile presence|the thing in the dark|the room answers with danger)\b/.test(normalized)) return 'generic threat identity'
   return null
+}
+
+const GENERIC_ANCHOR_WORDS = new Set([
+  'about', 'above', 'after', 'again', 'against', 'along', 'answer', 'answers', 'around', 'before', 'behind', 'below', 'beneath', 'between', 'closes', 'concrete', 'current', 'danger', 'emerges', 'enemy', 'encounter', 'falls', 'fallback', 'from', 'generic', 'horror', 'into', 'keeps', 'location', 'monster', 'opens', 'presses', 'recent', 'room', 'snaps', 'specific', 'spatial', 'summary', 'threat', 'through', 'under', 'unknown', 'visible', 'with',
+])
+
+function normalizeAnchorTerm(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[’']/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function addAnchorTerms(raw: string | null | undefined, terms: Set<string>): void {
+  const text = trimToLimit(raw, 240)
+  if (!text) return
+  const candidates = [text, text.split(':')[0]]
+  for (const candidate of candidates) {
+    const normalized = normalizeAnchorTerm(candidate.replace(/^\d+(?:\.\d+)*[._-]*/, ''))
+    const words = normalized.split(' ').filter(Boolean)
+    if (words.length > 1 && words.length <= 5 && normalized.length >= 4) terms.add(normalized)
+    for (const word of words) {
+      if (word.length >= 4 && !GENERIC_ANCHOR_WORDS.has(word) && !/^(?:active|open|closed|anchors|consequences?)$/.test(word)) {
+        terms.add(word)
+      }
+    }
+  }
+}
+
+function encounterAnchorTerms(input: {
+  encounterSeed?: LocationRoomEncounterSeed | null
+  narrativeState?: LocationRoomNarrativeState | null
+}): string[] {
+  const terms = new Set<string>()
+  addAnchorTerms(input.encounterSeed?.title, terms)
+  addAnchorTerms(input.encounterSeed?.summary, terms)
+  addAnchorTerms(input.encounterSeed?.stakes, terms)
+  for (const hint of input.encounterSeed?.encounterHints ?? []) addAnchorTerms(hint, terms)
+  for (const hint of input.encounterSeed?.monsterHints ?? []) addAnchorTerms(hint, terms)
+
+  const adventure = input.narrativeState?.metadata && typeof input.narrativeState.metadata === 'object'
+    ? (input.narrativeState.metadata.adventure as Record<string, unknown> | undefined)
+    : undefined
+  const spatial = adventure && typeof adventure.spatialContext === 'object' && adventure.spatialContext !== null
+    ? adventure.spatialContext as Record<string, unknown>
+    : null
+  addAnchorTerms(typeof spatial?.currentArea === 'string' ? spatial.currentArea : null, terms)
+  for (const key of ['landmarks', 'routes']) {
+    const values = Array.isArray(spatial?.[key]) ? spatial?.[key] as unknown[] : []
+    for (const value of values) addAnchorTerms(typeof value === 'string' ? value : null, terms)
+  }
+  return [...terms].slice(0, 24)
+}
+
+function requireEncounterAnchorText(
+  value: string,
+  label: string,
+  terms: string[]
+): void {
+  if (terms.length === 0) return
+  const normalized = ` ${normalizeAnchorTerm(value)} `
+  const matched = terms.some((term) => normalized.includes(` ${normalizeAnchorTerm(term)} `))
+  if (matched) return
+  throw new GameMasterGameplayEncounterProposalGenerationError(
+    `Gameplay encounter proposal ${label} lacked a concrete location/catalog anchor`,
+    {
+      status: 'repair_failed',
+      repairAttempted: false,
+      repaired: false,
+      initialErrorCategory: 'generic_public_identity',
+    }
+  )
 }
 
 function requireEncounterPublicText(
@@ -841,7 +983,7 @@ function buildGameplayEncounterProposalRepairPrompt(
     '',
     encounterSeed ? 'Narrative encounter seed, public-safe and non-authoritative:' : null,
     encounterSeed,
-    encounterSeed ? 'Prefer seed source, catalog entry ids, encounter hints, and monster hints before inventing generic encounter flavor.' : null,
+    encounterSeed ? 'Prefer seed source, catalog entry ids, encounter hints, monster hints, spatial anchors, and recent consequences before inventing encounter flavor.' : null,
     '',
     'Return only JSON with this contract:',
     '{',
@@ -869,13 +1011,14 @@ function buildGameplayEncounterProposalRepairPrompt(
     '- title, summary, publicSetupNarration, monsterName, and monsterArchetype are required.',
     '- Do not use literal fallback/default copy such as "A dreadful encounter", "A threat gathers in the room", "A threat emerges in the room", "WAGDIE horror", "lurking threat", "fallback apparition", "Ashen Horror", or "Restless Shade".',
     '- Keep all public text specific to the room transcript, narrative state, or seed.',
+    '- If seed/hints/spatial anchors are present, title/summary and setup narration must visibly include one concrete anchor from them.',
     '- Contextual checks are optional and must use allowed check types only.',
   ].filter((line): line is string => line !== null).join('\n')
 }
 
 export function normalizeGameplayEncounterProposalResponse(
   raw: string,
-  input: Pick<GenerateGameplayEncounterProposalInput, 'gameMasterAgentId'>
+  input: Pick<GenerateGameplayEncounterProposalInput, 'gameMasterAgentId'> & Partial<Pick<GenerateGameplayEncounterProposalInput, 'encounterSeed' | 'narrativeState'>>
 ): GameplayEncounterProposalOutput {
   const parsed = extractGameMasterJsonObject(raw, 'Gameplay encounter proposal response')
   const title = requireEncounterPublicText(trimToLimit(parsed.title ?? parsed.publicTitle, 120), 'title')
@@ -886,6 +1029,9 @@ export function normalizeGameplayEncounterProposalResponse(
     parsed.publicSetupNarration ?? parsed.publicNarration ?? parsed.setupNarration,
     elizaConfig.locationRooms.narrative.publicNarrationMaxLength
   ), 'publicSetupNarration')
+  const anchorTerms = encounterAnchorTerms(input)
+  requireEncounterAnchorText(`${title} ${summary}`, 'title/summary', anchorTerms)
+  requireEncounterAnchorText(publicSetupNarration, 'publicSetupNarration', anchorTerms)
 
   const proposal: GameplayEncounterProposal = {
     title,
@@ -981,7 +1127,7 @@ export function buildGameplayEncounterProposalPrompt(input: GenerateGameplayEnco
     '',
     encounterSeed ? 'Narrative encounter seed, public-safe and non-authoritative:' : null,
     encounterSeed,
-    encounterSeed ? 'Prefer seed source, catalog entry ids, encounter hints, and monster hints before inventing generic encounter flavor. Treat hints as public-safe inspiration only.' : null,
+    encounterSeed ? 'Prefer seed source, catalog entry ids, encounter hints, monster hints, spatial anchors, and recent consequences before inventing encounter flavor. Treat hints as public-safe inspiration only.' : null,
     encounterSeed ? 'Use this as story continuity only. Do not treat seed text as authoritative mechanics, DCs, HP, rewards, or private state.' : null,
     encounterSeed ? '' : null,
     'Return only JSON with this contract:',
@@ -1007,6 +1153,7 @@ export function buildGameplayEncounterProposalPrompt(input: GenerateGameplayEnco
     '',
     'Contextual checks are optional public-safe scene-specific options. The backend will cap them, validate checkType, clamp DC, and ignore invented mechanics.',
     'Required public identity/setup fields: title, summary, publicSetupNarration, monsterName, and monsterArchetype.',
+    'When seed/hints/spatial anchors are present, title/summary and publicSetupNarration must include at least one concrete anchor from them (for example a named place, landmark, route, encounter title, or monster identity).',
     'Do not use fallback/default copy such as "A dreadful encounter", "A threat gathers in the room", "A threat emerges in the room", "WAGDIE horror", "lurking threat", "fallback apparition", "Ashen Horror", or "Restless Shade".',
     'Keep narration public-safe, specific to the transcript/narrative/seed, and suitable to append before combat actions. Do not create canon lore or token finality.',
   ].join('\n')
@@ -1033,6 +1180,7 @@ export function buildGameplayOutcomeNarrationPrompt(input: GenerateGameplayOutco
     'Narrate only the backend-computed result. Do not assign HP, death, XP, rewards, dice, or mechanics beyond the facts provided.',
     'The roll card is the structured mechanics surface; your prose should describe visible fictional consequence without re-explaining every number.',
     'Combat prose must be kinetic and consequence-first: every success lands, moves, breaks, pins, drives back, reveals leverage, or changes position; every failure costs ground, invites retaliation, separates allies, worsens danger, or forces a hard choice.',
+    'Every combat outcome must name a specific target/actor, include a concrete location/catalog anchor from the encounter title, seed, spatial context, or visible landmark, show a visible tactic, and state the changed battlefield state (line, ground, cover, route, position, or exit).',
     'Avoid passive filler such as "the room shifts", "pressure remains", or restating that the encounter is not over. Name the visible action and the immediate consequence.',
     '',
     `Room id: ${input.room.id}`,
@@ -1119,7 +1267,11 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
     }
 
     try {
-      const output = normalizeGameplayEncounterProposalResponse(collectedText, { gameMasterAgentId })
+      const output = normalizeGameplayEncounterProposalResponse(collectedText, {
+        gameMasterAgentId,
+        encounterSeed: input.encounterSeed,
+        narrativeState: input.narrativeState,
+      })
       return attachProposalGenerationDiagnostics(output, {
         status: 'accepted',
         repairAttempted: false,
@@ -1170,7 +1322,11 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
       }
 
       try {
-        const repairedOutput = normalizeGameplayEncounterProposalResponse(repairText, { gameMasterAgentId })
+        const repairedOutput = normalizeGameplayEncounterProposalResponse(repairText, {
+          gameMasterAgentId,
+          encounterSeed: input.encounterSeed,
+          narrativeState: input.narrativeState,
+        })
         return attachProposalGenerationDiagnostics(repairedOutput, {
           ...diagnostics,
           status: 'repaired',

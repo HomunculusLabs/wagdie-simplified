@@ -132,7 +132,54 @@ function normalizeOfficialSessionResponse(
   }
 }
 
-function isOfficialSessionNotFoundError(error: unknown): boolean {
+function bodyContainsOfficialSessionNotFound(body: string): boolean {
+  if (!body.trim()) {
+    return false
+  }
+
+  try {
+    const parsed = JSON.parse(body)
+    if (valueContainsOfficialSessionNotFound(parsed)) {
+      return true
+    }
+  } catch {
+    // Fall back to text checks below.
+  }
+
+  return body.includes('SESSION_NOT_FOUND') || /session\b[\s\S]{0,120}\bnot\s+found/i.test(body)
+}
+
+function valueContainsOfficialSessionNotFound(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value === 'SESSION_NOT_FOUND' || bodyContainsOfficialSessionNotFound(value)
+  }
+
+  if (Array.isArray(value)) {
+    return value.some(valueContainsOfficialSessionNotFound)
+  }
+
+  if (!isRecord(value)) {
+    return false
+  }
+
+  const code = readNonEmptyString(value.code)
+  if (code === 'SESSION_NOT_FOUND') {
+    return true
+  }
+
+  return Object.values(value).some(valueContainsOfficialSessionNotFound)
+}
+
+export async function isOfficialSessionNotFoundResponse(response: Response): Promise<boolean> {
+  if (response.status !== 404) {
+    return false
+  }
+
+  const body = await response.clone().text().catch(() => '')
+  return bodyContainsOfficialSessionNotFound(body)
+}
+
+export function isOfficialSessionNotFoundError(error: unknown): boolean {
   if (!isWagdieElizaError(error) || error.statusCode !== 404) {
     return false
   }
@@ -141,7 +188,7 @@ function isOfficialSessionNotFoundError(error: unknown): boolean {
     ? error.details.upstreamBody
     : ''
 
-  return upstreamBody.includes('SESSION_NOT_FOUND') || /session\s+not\s+found/i.test(upstreamBody)
+  return bodyContainsOfficialSessionNotFound(upstreamBody)
 }
 
 export function normalizeOfficialResponseText(text: string): string {

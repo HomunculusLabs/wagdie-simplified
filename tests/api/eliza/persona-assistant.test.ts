@@ -105,6 +105,10 @@ describe('runPersonaAssistant prompt construction', () => {
     expect(promptText).toContain('Preserve the established character identity')
     expect(promptText).toContain('Include 3-5 exampleMessages')
     expect(promptText).toContain('exampleMessages are required')
+    expect(promptText).toContain('distinct in-world voice')
+    expect(promptText).toContain('concrete verbs')
+    expect(promptText).toContain('location-relevant motives')
+    expect(promptText).toContain('short public-room turns')
     expect(promptText).toContain('settings.metadata.wagdieUser')
     expect(promptText).toContain(
       'A mysterious character whose story is still being written. Character #4040.'

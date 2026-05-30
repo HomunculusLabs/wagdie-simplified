@@ -174,9 +174,18 @@ function contextText(input: BuildCatalogPreferredEncounterSeedInput): string {
   const adventure = normalizeAdventureMemory(input.narrativeState?.metadata)
   return [
     input.narrativeState?.currentObjective,
+    adventure.currentStakes,
     adventure.activeDecision?.prompt,
     ...(adventure.activeDecision?.options.map((option) => `${option.label} ${option.summary ?? ''}`) ?? []),
     ...(input.narrativeState?.openThreads ?? []),
+    adventure.spatialContext.currentArea,
+    ...adventure.spatialContext.landmarks,
+    ...adventure.spatialContext.routes,
+    ...adventure.spatialContext.unresolvedSpatialQuestions,
+    ...adventure.consequenceLedger.slice(-3).map((entry) => `${entry.status} ${entry.summary}`),
+    ...adventure.discoveries,
+    adventure.lastDeclaredAction?.summary,
+    adventure.lastOutcome?.summary,
     input.recentOutcomeSummary,
     input.fallbackSummary,
     input.selectedTokenId != null ? String(input.selectedTokenId) : null,
@@ -207,6 +216,26 @@ function rankEntries(entries: LocationAdventureCatalogEntry[], text: string, sel
 
 function formatCatalogHint(entry: LocationAdventureCatalogEntry): string | null {
   return nullableSafeText(entry.title ? `${entry.title}: ${entry.summary}` : entry.summary, 240)
+}
+
+function formatAdventureAnchorStakes(input: BuildCatalogPreferredEncounterSeedInput, gmStakes: string | null | undefined): string | null {
+  const adventure = normalizeAdventureMemory(input.narrativeState?.metadata)
+  const spatialParts = [
+    adventure.spatialContext.currentArea,
+    ...adventure.spatialContext.landmarks.slice(0, 3),
+    ...adventure.spatialContext.routes.slice(0, 2),
+  ].filter((part): part is string => Boolean(part))
+  const consequenceParts = adventure.consequenceLedger
+    .slice(-2)
+    .map((entry) => `${entry.status}: ${entry.summary}`)
+
+  return nullableSafeText([
+    gmStakes,
+    adventure.currentStakes ? `Current stakes: ${adventure.currentStakes}` : null,
+    spatialParts.length ? `Spatial anchors: ${spatialParts.join('; ')}` : null,
+    consequenceParts.length ? `Recent consequences: ${consequenceParts.join('; ')}` : null,
+    input.fallbackSummary ? `Recent outcome: ${input.fallbackSummary}` : null,
+  ].filter(Boolean).join(' '), 240)
 }
 
 function fallbackSeed(input: BuildCatalogPreferredEncounterSeedInput): LocationRoomEncounterSeed | null {
@@ -308,9 +337,9 @@ export function buildCatalogPreferredEncounterSeed(
       ], CATALOG_ID_LIMIT)
 
       return normalizeEncounterSeed({
-        title: primary.title ?? gmSeed?.title ?? 'Location encounter',
+        title: primary.title ?? gmSeed?.title,
         summary: primary.summary ?? gmSeed?.summary,
-        stakes: gmSeed?.stakes ?? input.fallbackSummary,
+        stakes: formatAdventureAnchorStakes(input, gmSeed?.stakes ?? null),
         source: 'location_catalog',
         catalogEntryIds,
         encounterHints,

@@ -6,6 +6,10 @@ export type NarrativeQualityMessage = {
   authorName?: string | null
   tokenId?: number | null
   content: string
+  messageDomain?: string | null
+  messageKind?: string | null
+  ttrpgPhase?: string | null
+  gameplayMessageKind?: string | null
   metadata?: Record<string, unknown> | null
 }
 
@@ -41,7 +45,25 @@ export type NarrativeQualityMetrics = {
   publicGameMasterBeatMaxGap: number
   spatialContinuitySignalCount: number
   genericPressurePhraseCount: number
+  catalogAnchorSignalCount: number
+  distinctCharacterVoiceSignalCount: number
+  sceneFrameStrengthCount: number
+  actionForwardResponseCount: number
+  combatTranscriptShare: number
+  combatTranscriptWindow: number
+  genericThreatIdentityCount: number
 }
+
+export type NarrativeQualityAttributionMetrics = Pick<
+  NarrativeQualityMetrics,
+  | 'catalogAnchorSignalCount'
+  | 'distinctCharacterVoiceSignalCount'
+  | 'sceneFrameStrengthCount'
+  | 'actionForwardResponseCount'
+  | 'combatTranscriptShare'
+  | 'combatTranscriptWindow'
+  | 'genericThreatIdentityCount'
+>
 
 export type NarrativeQualitySubmetrics = {
   rollOutcomeIntegrity: number
@@ -85,6 +107,16 @@ const AGENCY_PATTERN = /\b(choose|choice|option|decide|approach|press|bargain|re
 const CONTINUITY_PATTERN = /\b(stakes|consequence|cost|clue|clock|pressure|objective|unresolved|last|now|price|discover|found|evidence|outcome|thread|obligation|mark)\b/i
 const SPATIAL_CONTINUITY_PATTERN = /\b(room|door|stair|cellar|route|path|threshold|wall|table|tunnel|landing|arch|floor|passage|landmark|exit)\b/i
 const GENERIC_PRESSURE_PATTERN = /\b(room shifts|scene shifts|pressure gathers|danger gathers|repeated hesitation|something moves just out of sight|standing still|the room answers|the room waits|the room notices)\b/i
+const SCENE_FRAME_STRENGTH_PATTERN = /\b(choose|choice|option|decision|decide|risk|cost|price|obstacle|blocked?|reveals?|clue|route|path|door|exit|threshold|press|bargain|retreat|withdraw|protect|exploit|follow|confront|intercept|imminent|hostile|before|now|must)\b/i
+const ACTION_FORWARD_PATTERN = /\b(?:i|we)\s+(?:choose|press|push|move|step|cross|open|force|draw|raise|block|shield|follow|track|search|examine|inspect|test|ask|question|bargain|confront|protect|retreat|withdraw|pry|climb|descend|enter|listen|watch|mark|take|grab|cut|throw|whisper|smell|crawl|sneak|strike|shove|interpret|read|study|touch|pull|carry|drag|hide|lead|signal|warn|hold|brace|bar|unlock|light|extinguish|burn|break|tie|untie|offer|trade|circle|approach|leave|return|answer|resist|quiet|bait|investigate|navigate|recall)\b/i
+const AGREEMENT_ONLY_PATTERN = /^\s*(?:[^:]{1,40}:\s*)?(?:yes|yeah|yep|ok|okay|agreed|i agree|sounds good|that sounds right|fine)\s*[.!?]*\s*$/i
+const COMBAT_TRANSCRIPT_SHARE_WINDOW = 40
+const GENERIC_THREAT_IDENTITY_PATTERN = /\b(?:a dreadful encounter|wagdie horror|lurking threat|fallback apparition|ashen horror|restless shade|escalating danger|location encounter|shadowy figure|unknown threat|generic threat|faceless threat|nameless threat|unseen enemy|enemy appears|creatures? attacks?|monsters? attack|dark shape|something moves just out of sight|something attacks|threat emerges|danger emerges|hostile presence|the thing in the dark|the room answers with danger)\b/i
+const CATALOG_ANCHOR_FALLBACK_PATTERN = /\b(?:altar|auction|bell|brine|candle|captain|cellar|chapel|corpse|court|debt|dock|ferry|feather|floorboards?|fruit|index|lantern|ledger|library|market|mill|mirror|omen|orchard|pilings|plank|pews?|rafters?|relic|salt|sermon|stall|stair|tavern|throne|tunnel|wake|witness|wolves)\b/gi
+const POSSESSIVE_LOCATION_NAME_PATTERN = /\b[A-Z][a-z]+[’']s\s+[A-Z][a-z]+\b/
+const DISTINCT_VOICE_STOPWORDS = new Set([
+  'about', 'after', 'again', 'against', 'because', 'before', 'being', 'between', 'choose', 'could', 'every', 'from', 'have', 'into', 'just', 'more', 'most', 'next', 'only', 'party', 'press', 'room', 'scene', 'that', 'their', 'them', 'then', 'there', 'they', 'this', 'through', 'trying', 'what', 'when', 'where', 'while', 'with', 'would',
+])
 
 export function analyzeNarrativeMessages(
   messages: NarrativeQualityMessage[],
@@ -96,6 +128,8 @@ export function analyzeNarrativeMessages(
   const rollCards = messages.filter((message) => isRollCardMessage(message))
   const gmOutcomes = inferGmOutcomeMessages(messages)
   const gameMasterBeats = messages.filter((message) => isPublicGameMasterBeatMessage(message))
+  const beatAndOutcomeMessages = uniqueMessages([...gameMasterBeats, ...gmOutcomes])
+  const catalogAnchorTerms = extractCatalogAnchorTerms(messages)
   const checkTypes = rollCards.map((message) => inferCheckType(message))
   const failureOutcomes = gmOutcomes.filter((message) => FAILURE_PATTERN.test(message.content))
   const weakFailureOutcomes = failureOutcomes.filter((message) => message.content.length < 180 || !STRONG_FAILURE_PATTERN.test(message.content))
@@ -129,6 +163,27 @@ export function analyzeNarrativeMessages(
     publicGameMasterBeatMaxGap: maxPublicGameMasterBeatGap(messages),
     spatialContinuitySignalCount: countSpatialContinuitySignals(messages, gmOutcomes),
     genericPressurePhraseCount: countGenericPressurePhrases([...gameMasterBeats, ...gmOutcomes]),
+    catalogAnchorSignalCount: countCatalogAnchorSignals(beatAndOutcomeMessages, catalogAnchorTerms),
+    distinctCharacterVoiceSignalCount: countDistinctCharacterVoiceSignals(characterMessages),
+    sceneFrameStrengthCount: countSceneFrameStrengthSignals(gameMasterBeats),
+    actionForwardResponseCount: countActionForwardResponses(characterMessages),
+    combatTranscriptShare: combatTranscriptShare(messages),
+    combatTranscriptWindow: Math.min(messages.length, COMBAT_TRANSCRIPT_SHARE_WINDOW),
+    genericThreatIdentityCount: countGenericThreatIdentitySignals(messages),
+  }
+}
+
+export function narrativeQualityAttributionMetrics(
+  metrics: NarrativeQualityMetrics
+): NarrativeQualityAttributionMetrics {
+  return {
+    catalogAnchorSignalCount: metrics.catalogAnchorSignalCount,
+    distinctCharacterVoiceSignalCount: metrics.distinctCharacterVoiceSignalCount,
+    sceneFrameStrengthCount: metrics.sceneFrameStrengthCount,
+    actionForwardResponseCount: metrics.actionForwardResponseCount,
+    combatTranscriptShare: metrics.combatTranscriptShare,
+    combatTranscriptWindow: metrics.combatTranscriptWindow,
+    genericThreatIdentityCount: metrics.genericThreatIdentityCount,
   }
 }
 
@@ -199,17 +254,17 @@ export function warningsForNarrativeQuality(
 }
 
 export function isPublicGameMasterBeatMessage(message: NarrativeQualityMessage): boolean {
-  return message.authorKind === 'game_master' && message.metadata?.messageKind === 'gm_beat'
+  return message.authorKind === 'game_master' && messageKindFor(message) === 'gm_beat'
 }
 
 export function isRollCardMessage(message: NarrativeQualityMessage): boolean {
-  if (message.metadata?.messageKind === 'roll_card') return true
+  if (messageKindFor(message) === 'roll_card') return true
   return message.authorKind === 'game_master' && /\bcheck resolves total\b|\bd20\b/i.test(message.content)
 }
 
 export function isGmOutcomeMessage(message: NarrativeQualityMessage): boolean {
-  if (message.metadata?.messageKind === 'gm_outcome') return true
-  if (message.metadata?.messageKind) return false
+  if (messageKindFor(message) === 'gm_outcome') return true
+  if (messageKindFor(message)) return false
   return message.authorKind === 'game_master' && /critical_failure|failure|partial_success|success|goes badly|complication|cost/i.test(message.content) && !isRollCardMessage(message)
 }
 
@@ -238,11 +293,11 @@ function inferGmOutcomeMessages(messages: NarrativeQualityMessage[]): NarrativeQ
 }
 
 function isMetadataLessGameMasterMessage(message: NarrativeQualityMessage): boolean {
-  return message.authorKind === 'game_master' && !message.metadata?.messageKind && !isRollCardMessage(message)
+  return message.authorKind === 'game_master' && !messageKindFor(message) && !isRollCardMessage(message)
 }
 
 export function inferCheckType(message: NarrativeQualityMessage): string {
-  const structured = (message.metadata?.publicRolls as { action?: { checkType?: string } } | undefined)?.action?.checkType
+  const structured = ((message.metadata?.publicRolls ?? metadataValue(message, 'gameplayRolls')) as { action?: { checkType?: string } } | undefined)?.action?.checkType
   if (structured) return String(structured)
   const match = message.content.match(/\b(Investigate|Examine|Search|Track|Navigate|Sneak|Negotiate|Persuade|Intimidate|Recall Lore|Tend|Force|Endure|Escape|Help|Perception|Survival|Stealth|Arcana|Athletics|Persuasion)\b/i)
   return match ? match[1].toLowerCase().replace(/\s+/g, '_') : 'unknown'
@@ -370,6 +425,201 @@ function countSpatialContinuitySignals(
       (message.id ? outcomeIds.has(message.id) : isGmOutcomeMessage(message))
     return isBeatOrOutcome && SPATIAL_CONTINUITY_PATTERN.test(message.content)
   }).length
+}
+
+function countCatalogAnchorSignals(messages: NarrativeQualityMessage[], catalogAnchorTerms: string[]): number {
+  return messages.filter((message) => hasCatalogAnchorSignal(message.content, catalogAnchorTerms)).length
+}
+
+function countDistinctCharacterVoiceSignals(messages: NarrativeQualityMessage[]): number {
+  const speakerKeys = new Set(messages.map(speakerKeyFor).filter(Boolean))
+  if (speakerKeys.size < 2) return 0
+
+  const tokenSets = messages.map((message) => new Set(distinctiveTokensFor(message.content)))
+  return messages.filter((message, index) => {
+    const ownTokens = tokenSets[index]
+    if (ownTokens.size < 4) return false
+
+    const ownSpeaker = speakerKeyFor(message)
+    const otherTokens = new Set<string>()
+    for (let otherIndex = 0; otherIndex < messages.length; otherIndex += 1) {
+      if (otherIndex === index || speakerKeyFor(messages[otherIndex]) === ownSpeaker) continue
+      for (const token of tokenSets[otherIndex]) otherTokens.add(token)
+    }
+
+    const uniqueTokens = [...ownTokens].filter((token) => !otherTokens.has(token))
+    const maxSimilarity = Math.max(0, ...messages.map((otherMessage, otherIndex) => {
+      if (otherIndex === index || speakerKeyFor(otherMessage) === ownSpeaker) return 0
+      return jaccardSimilarity(ownTokens, tokenSets[otherIndex])
+    }))
+    return uniqueTokens.length >= 2 && maxSimilarity <= 0.72
+  }).length
+}
+
+function countSceneFrameStrengthSignals(messages: NarrativeQualityMessage[]): number {
+  return messages.filter((message) => SCENE_FRAME_STRENGTH_PATTERN.test(message.content)).length
+}
+
+function countActionForwardResponses(messages: NarrativeQualityMessage[]): number {
+  return messages.filter((message) => ACTION_FORWARD_PATTERN.test(message.content) && !AGREEMENT_ONLY_PATTERN.test(message.content)).length
+}
+
+function combatTranscriptShare(messages: NarrativeQualityMessage[]): number {
+  const recentMessages = messages.slice(-COMBAT_TRANSCRIPT_SHARE_WINDOW)
+  if (recentMessages.length === 0) return 0
+  const combatMessages = recentMessages.filter((message) => isCombatDomainMessage(message)).length
+  return Math.round((combatMessages / recentMessages.length) * 1000) / 1000
+}
+
+function countGenericThreatIdentitySignals(messages: NarrativeQualityMessage[]): number {
+  return messages.filter((message) => {
+    if (message.authorKind !== 'game_master') return false
+    return GENERIC_THREAT_IDENTITY_PATTERN.test([
+      message.content,
+      metadataString(message, 'title'),
+      metadataString(message, 'publicTitle'),
+      metadataString(message, 'monsterName'),
+      metadataString(message, 'monsterArchetype'),
+    ].filter(Boolean).join(' '))
+  }).length
+}
+
+function hasCatalogAnchorSignal(content: string, catalogAnchorTerms: string[]): boolean {
+  const normalizedContent = normalizeCatalogTerm(content)
+  if (catalogAnchorTerms.length > 0) {
+    return catalogAnchorTerms.some((term) => term.length >= 4 && normalizedCatalogContentIncludes(normalizedContent, term))
+  }
+
+  const fallbackMatches = content.match(CATALOG_ANCHOR_FALLBACK_PATTERN) ?? []
+  const uniqueFallbackMatches = new Set(fallbackMatches.map((match) => match.toLowerCase()))
+  return uniqueFallbackMatches.size >= 3 ||
+    (uniqueFallbackMatches.size >= 2 && POSSESSIVE_LOCATION_NAME_PATTERN.test(content))
+}
+
+function extractCatalogAnchorTerms(messages: NarrativeQualityMessage[]): string[] {
+  const terms = new Set<string>()
+  for (const message of messages) {
+    collectCatalogAnchorTerms(message.metadata, terms)
+    collectCatalogAnchorTerms(message, terms)
+  }
+  return [...terms].slice(0, 80)
+}
+
+function collectCatalogAnchorTerms(value: unknown, terms: Set<string>, keyHint: string | null = null, depth = 0): void {
+  if (depth > 5 || terms.size >= 80) return
+  if (typeof value === 'string') {
+    if (isCatalogAnchorKey(keyHint)) addCatalogAnchorTerm(value, terms)
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectCatalogAnchorTerms(item, terms, keyHint, depth + 1)
+    return
+  }
+  if (!value || typeof value !== 'object') return
+
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    collectCatalogAnchorTerms(nested, terms, key, depth + 1)
+  }
+}
+
+function isCatalogAnchorKey(key: string | null): boolean {
+  if (!key) return false
+  return /^(?:title|name|tags?|catalogEntryIds?|selectedCatalogEntryIds?|encounterHints?|monsterHints?)$/i.test(key)
+}
+
+function addCatalogAnchorTerm(raw: string, terms: Set<string>): void {
+  const candidates = [raw]
+  const colonPrefix = raw.split(':')[0]
+  if (colonPrefix && colonPrefix !== raw) candidates.push(colonPrefix)
+
+  for (const candidate of candidates) {
+    const normalized = normalizeCatalogTerm(candidate.replace(/^\d+(?:\.\d+)*[._-]*/, ''))
+    const words = normalized.split(' ').filter(Boolean)
+    if (words.length === 0 || words.length > 4) continue
+    const term = words.join(' ')
+    if (term.length >= 4 && !/^(?:hostile|threat|danger|unknown|fallback)$/.test(term)) terms.add(term)
+  }
+}
+
+function normalizeCatalogTerm(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[’']/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function normalizedCatalogContentIncludes(normalizedContent: string, normalizedTerm: string): boolean {
+  return (` ${normalizedContent} `).includes(` ${normalizedTerm} `)
+}
+
+function distinctiveTokensFor(content: string): string[] {
+  return content
+    .toLowerCase()
+    .replace(/^[^:]{1,40}:\s*/, '')
+    .replace(/[^a-z0-9' ]+/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.replace(/^'+|'+$/g, ''))
+    .filter((token) => token.length >= 4 && !DISTINCT_VOICE_STOPWORDS.has(token))
+}
+
+function jaccardSimilarity(left: Set<string>, right: Set<string>): number {
+  if (left.size === 0 && right.size === 0) return 1
+  let intersection = 0
+  for (const token of left) {
+    if (right.has(token)) intersection += 1
+  }
+  const union = new Set([...left, ...right]).size
+  return union === 0 ? 0 : intersection / union
+}
+
+function speakerKeyFor(message: NarrativeQualityMessage): string | null {
+  if (message.tokenId !== null && message.tokenId !== undefined) return `token:${message.tokenId}`
+  if (message.authorName) return `name:${message.authorName}`
+  return null
+}
+
+function isCombatDomainMessage(message: NarrativeQualityMessage): boolean {
+  return messageDomainFor(message) === 'combat' ||
+    ttrpgPhaseFor(message) === 'combat' ||
+    Boolean(message.metadata?.gameplay) ||
+    Boolean(gameplayMessageKindFor(message))
+}
+
+function uniqueMessages(messages: NarrativeQualityMessage[]): NarrativeQualityMessage[] {
+  const seen = new Set<string>()
+  return messages.filter((message, index) => {
+    const key = message.id ? `id:${message.id}` : `index:${index}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function metadataValue(message: NarrativeQualityMessage, key: string): unknown {
+  return message.metadata?.[key] ?? (message as unknown as Record<string, unknown>)[key]
+}
+
+function metadataString(message: NarrativeQualityMessage, key: string): string | null {
+  const value = metadataValue(message, key)
+  return typeof value === 'string' ? value : null
+}
+
+function messageKindFor(message: NarrativeQualityMessage): string | null {
+  return metadataString(message, 'messageKind')
+}
+
+function messageDomainFor(message: NarrativeQualityMessage): string | null {
+  return metadataString(message, 'messageDomain')
+}
+
+function ttrpgPhaseFor(message: NarrativeQualityMessage): string | null {
+  return metadataString(message, 'ttrpgPhase')
+}
+
+function gameplayMessageKindFor(message: NarrativeQualityMessage): string | null {
+  return metadataString(message, 'gameplayMessageKind')
 }
 
 function normalizedPrefix(content: string): string {

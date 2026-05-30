@@ -82,6 +82,7 @@ import type { OfficialConversationLink, OfficialConversationRepository } from '@
 
 const AGENT_ID = '11111111-1111-5111-8111-111111111111'
 const SESSION_ID = '22222222-2222-5222-8222-222222222222'
+const REPLACEMENT_SESSION_ID = '33333333-3333-5333-8333-333333333333'
 const WAGDIE_CONVERSATION_ID = '44444444-4444-5444-8444-444444444444'
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
@@ -451,6 +452,87 @@ describe('OfficialWagdieElizaClient', () => {
     )
   })
 
+  it('recovers a fresh official chat when the first session send returns SESSION_NOT_FOUND', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: { status: 'active' } }))
+      .mockResolvedValueOnce(jsonResponse({ sessionId: SESSION_ID, agentId: AGENT_ID }, { status: 201 }))
+      .mockResolvedValueOnce(jsonResponse({
+        error: { code: 'SESSION_NOT_FOUND', message: `Session with ID '${SESSION_ID}' not found` },
+      }, { status: 404 }))
+      .mockResolvedValueOnce(jsonResponse({ sessionId: REPLACEMENT_SESSION_ID, agentId: AGENT_ID }, { status: 201 }))
+      .mockResolvedValueOnce(jsonResponse({ success: true }))
+      .mockResolvedValueOnce({
+        ok: true,
+        body: sseStream([
+          'event: chunk\r\ndata: {\"chunk\":\"Recovered\"}\r\n\r\n',
+          'event: done\r\ndata: {\"messageId\":\"agent-message\",\"text\":\"Recovered\"}\r\n\r\n',
+        ]),
+        headers: new Headers({ 'content-type': 'text/event-stream' }),
+        status: 200,
+      })
+    global.fetch = fetchMock as typeof fetch
+    const conversationRepository = makeConversationRepository()
+    const client = new OfficialWagdieElizaClient({
+      baseUrl: 'https://elizaos.example',
+      apiKey: 'service-key',
+      officialUserId: 'wallet-derived-user-id',
+      walletAddress: '0xabc',
+      conversationRepository,
+    })
+    const complete = jest.fn()
+
+    await client.chat.sendMessageStream(
+      { characterId: AGENT_ID, message: 'Speak' },
+      { onComplete: complete }
+    )
+
+    expect(conversationRepository.create).toHaveBeenCalledTimes(1)
+    expect(conversationRepository.rebindSession).toHaveBeenCalledWith(
+      WAGDIE_CONVERSATION_ID,
+      'wallet-derived-user-id',
+      REPLACEMENT_SESSION_ID
+    )
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'Recovered' }),
+      WAGDIE_CONVERSATION_ID
+    )
+    expect(fetchMock.mock.calls.map((call) => [call[0], call[1]?.method])).toEqual([
+      [`https://elizaos.example/api/agents/${AGENT_ID}/start`, 'POST'],
+      ['https://elizaos.example/api/messaging/sessions', 'POST'],
+      [`https://elizaos.example/api/messaging/sessions/${SESSION_ID}/messages`, 'POST'],
+      ['https://elizaos.example/api/messaging/sessions', 'POST'],
+      [`https://elizaos.example/api/messaging/sessions/${SESSION_ID}`, 'DELETE'],
+      [`https://elizaos.example/api/messaging/sessions/${REPLACEMENT_SESSION_ID}/messages`, 'POST'],
+    ])
+    expect(conversationRepository.recordError).not.toHaveBeenCalled()
+  })
+
+  it('does not recover a fresh official chat from a generic 404', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: { status: 'active' } }))
+      .mockResolvedValueOnce(jsonResponse({ sessionId: SESSION_ID, agentId: AGENT_ID }, { status: 201 }))
+      .mockResolvedValueOnce(jsonResponse({ error: { code: 'NOT_FOUND', message: 'missing route' } }, { status: 404 }))
+    global.fetch = fetchMock as typeof fetch
+    const conversationRepository = makeConversationRepository()
+    const client = new OfficialWagdieElizaClient({
+      baseUrl: 'https://elizaos.example',
+      apiKey: 'service-key',
+      officialUserId: 'wallet-derived-user-id',
+      walletAddress: '0xabc',
+      conversationRepository,
+    })
+
+    await expect(client.chat.sendMessageStream(
+      { characterId: AGENT_ID, message: 'Speak' },
+      {}
+    )).rejects.toMatchObject({ statusCode: 404 })
+
+    expect(conversationRepository.rebindSession).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
   it('maps final official SSE content when the done event has nested text and closes without delimiter', async () => {
     const fetchMock = jest
       .fn()
@@ -627,6 +709,60 @@ describe('OfficialWagdieElizaClient', () => {
       expect.objectContaining({ content: 'Again' }),
       WAGDIE_CONVERSATION_ID
     )
+  })
+
+  it('recovers an existing mapped chat when the stored official session is missing', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: { status: 'active' } }))
+      .mockResolvedValueOnce(jsonResponse({
+        error: { code: 'SESSION_NOT_FOUND', message: `Session with ID '${SESSION_ID}' not found` },
+      }, { status: 404 }))
+      .mockResolvedValueOnce(jsonResponse({ sessionId: REPLACEMENT_SESSION_ID, agentId: AGENT_ID }, { status: 201 }))
+      .mockResolvedValueOnce(jsonResponse({ success: true }))
+      .mockResolvedValueOnce({
+        ok: true,
+        body: sseStream([
+          'event: done\r\ndata: {\"messageId\":\"agent-message-3\",\"text\":\"Rebound\"}\r\n\r\n',
+        ]),
+        headers: new Headers({ 'content-type': 'text/event-stream' }),
+        status: 200,
+      })
+    global.fetch = fetchMock as typeof fetch
+    const conversationRepository = makeConversationRepository()
+    const client = new OfficialWagdieElizaClient({
+      baseUrl: 'https://elizaos.example',
+      apiKey: 'service-key',
+      officialUserId: 'wallet-derived-user-id',
+      conversationRepository,
+    })
+    const complete = jest.fn()
+
+    await client.chat.sendMessageStream(
+      {
+        characterId: AGENT_ID,
+        conversationId: WAGDIE_CONVERSATION_ID,
+        message: 'Continue',
+      },
+      { onComplete: complete }
+    )
+
+    expect(conversationRepository.rebindSession).toHaveBeenCalledWith(
+      WAGDIE_CONVERSATION_ID,
+      'wallet-derived-user-id',
+      REPLACEMENT_SESSION_ID
+    )
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({ content: 'Rebound' }),
+      WAGDIE_CONVERSATION_ID
+    )
+    expect(fetchMock.mock.calls.map((call) => [call[0], call[1]?.method])).toEqual([
+      [`https://elizaos.example/api/agents/${AGENT_ID}/start`, 'POST'],
+      [`https://elizaos.example/api/messaging/sessions/${SESSION_ID}/messages`, 'POST'],
+      ['https://elizaos.example/api/messaging/sessions', 'POST'],
+      [`https://elizaos.example/api/messaging/sessions/${SESSION_ID}`, 'DELETE'],
+      [`https://elizaos.example/api/messaging/sessions/${REPLACEMENT_SESSION_ID}/messages`, 'POST'],
+    ])
   })
 
   it('returns NOT_FOUND when a mapped WAGDIE conversation is missing for the official user', async () => {

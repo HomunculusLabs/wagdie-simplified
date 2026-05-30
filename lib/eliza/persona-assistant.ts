@@ -108,7 +108,10 @@ function buildSystemPrompt(): string {
     'Use canonical system, not systemPrompt. Use exampleMessages, not messageExamples.',
     '',
     'Generation targets: bio 3-6 entries, lore 3-8 entries, topics 5-12 entries, adjectives 5-10 entries, style.all and style.chat rules, optional style.post, 3-5 exampleMessages, optional postExamples, and one concise system prompt.',
+    'Favor a distinct in-world voice over generic fantasy tone: concrete verbs, sensory details, recurring motives, fears, debts, faction ties, or location-relevant concerns that can surface in public room turns.',
+    'Style.chat should preserve voice in short public messages: one vivid action or motive, few abstractions, no long exposition, no modern app/meta language unless owner-requested.',
     'In generate mode, exampleMessages are required. Include varied owner-to-character chat examples that establish voice, tone, lore recall, and how the character responds under pressure.',
+    'At least two exampleMessages should read like short public-room turns: 1-2 sentences, in-world, action-forward, with concrete verbs and a motive tied to a place, threat, object, or companion.',
     `Limits: username ${ELIZA_FIELD_LIMITS.username} chars; backstory ${ELIZA_FIELD_LIMITS.backstory} chars; system ${ELIZA_FIELD_LIMITS.systemPrompt} chars; bio/lore entries ${ELIZA_FIELD_LIMITS.bio}/${ELIZA_FIELD_LIMITS.lore} chars; topic ${ELIZA_FIELD_LIMITS.topic} chars; adjective ${ELIZA_FIELD_LIMITS.adjective} chars; style rule ${ELIZA_FIELD_LIMITS.styleRule} chars; post example ${ELIZA_FIELD_LIMITS.postExample} chars.`,
   ].join('\n')
 }
@@ -130,7 +133,7 @@ function buildUserPrompt(
     safeJson(request.messages.slice(-20)),
     '',
     request.mode === 'generate'
-      ? 'Generate a pending proposal using only allowed fields. Preserve the established character identity and derive tone from character context and owner instructions without changing the character name. Include 3-5 exampleMessages with concrete userMessage and assistantMessage pairs; these chat examples are required because they anchor character tone. Do not add app, project, collection, brand, or universe names unless explicitly requested.'
+      ? 'Generate a pending proposal using only allowed fields. Preserve the established character identity and derive tone from character context and owner instructions without changing the character name. Include 3-5 exampleMessages with concrete userMessage and assistantMessage pairs; these chat examples are required because they anchor character tone. Make the voice distinct, in-world, and useful for short public room turns: concrete verbs, location-relevant motives, and no passive agreement-only replies. Do not add app, project, collection, brand, or universe names unless explicitly requested.'
       : 'Answer the owner conversationally and ask focused questions or explain what could be generated. Do not include a proposal in chat mode.',
   ].join('\n')
 }
@@ -426,7 +429,7 @@ function buildCorrectivePrompt(error: unknown): string {
     error instanceof Error ? `Error: ${error.message}` : 'Error: invalid assistant output',
     issues.length > 0 ? `Policy issues: ${safeJson(issues)}` : '',
     'Remember: proposal output may contain only the allowed assistant fields and safe settings paths. Use canonical system and exampleMessages.',
-    'For generate mode, include at least 3 exampleMessages with concrete userMessage and assistantMessage pairs that demonstrate the character voice.',
+    'For generate mode, include at least 3 exampleMessages with concrete userMessage and assistantMessage pairs that demonstrate distinct in-world voice, concrete verbs, location-relevant motives, and short public-room readiness.',
   ].filter(Boolean).join('\n')
 }
 

@@ -39,6 +39,11 @@ import {
 import { visibleSceneCheckEscalationCatalogEntries } from './encounterEscalation'
 import type { GameMasterGenerationDiagnostics } from './gameMasterGenerator'
 import type { GameplayRun } from './gameplay/types'
+import type { WagdieElizaClient } from '@/lib/eliza/gateway/types'
+import {
+  evaluateCharacterSheetCompleteness,
+  type PersonaCompletenessWarningCode,
+} from '@/lib/eliza/character-sheet-policy'
 
 export type LocationRoomRecommendedNextAction =
   | 'healthy'
@@ -95,6 +100,25 @@ export type LocationRoomHealthDiagnostics = {
     count: number
     minimumRequired: number
     sample: Array<{ tokenId: number; name: string }>
+  }
+  personaQuality: {
+    evaluated: boolean
+    uncheckedReason: 'official_elizaos_not_configured' | 'official_elizaos_api_key_missing' | 'no_participants' | null
+    checkedCount: number
+    participantLimit: number
+    missingPersistedPersonaCount: number
+    defaultNeutralPersonaCount: number
+    missingMessageExamplesCount: number
+    missingStyleCount: number
+    missingLoreCount: number
+    missingTopicsCount: number
+    warnings: Array<{
+      tokenId: number
+      name: string
+      code: PersonaCompletenessWarningCode
+      message: string
+    }>
+    safeError: string | null
   }
   room: {
     exists: boolean
@@ -305,6 +329,7 @@ type LocationRoomCombatPromotionBlocker =
   | 'source_trigger_consumed'
 
 type GameMasterResolver = Pick<typeof gameMasterAgentService, 'resolveActiveGameMasterAgent'>
+type PersonaDiagnosticsClientFactory = () => WagdieElizaClient
 
 export type LocationRoomAdminDiagnosticsDeps = {
   roomRepository?: LocationRoomRepository
@@ -312,18 +337,27 @@ export type LocationRoomAdminDiagnosticsDeps = {
   narrativeRepository?: LocationRoomNarrativeRepository
   gameplayRepository?: LocationRoomGameplayRepository
   gameMasterResolver?: GameMasterResolver
+  personaClientFactory?: PersonaDiagnosticsClientFactory
   now?: () => Date
 }
 
 const MINIMUM_PARTICIPANTS = 2
 const ACTIVE_TICK_LIMIT = 25
 const RECENT_TICK_LIMIT = 10
+const PERSONA_DIAGNOSTIC_PARTICIPANT_LIMIT = 25
 const SAFE_ROOM_ERROR = 'Location room operation failed. Check server logs for details.'
 const SAFE_TICK_ERROR = 'Location room tick failed. Check server logs for details.'
 const SAFE_NARRATIVE_ERROR = 'Narrative beat failed. Check server logs for details.'
 const SAFE_GAMEPLAY_ERROR = 'Gameplay operation failed. Check server logs for details.'
 const CROWS_DEN_ALIAS_ID = 'crows_den'
 const CROWS_DEN_CANONICAL_ID = '11'
+
+function createDefaultPersonaDiagnosticsClient(): WagdieElizaClient {
+  // Lazily load the Official client so admin diagnostics tests and non-persona
+  // diagnostics do not parse the hosted SDK's ESM bundle unless this check runs.
+  const clientModule = require('@/lib/eliza/client') as typeof import('@/lib/eliza/client')
+  return clientModule.createOfficialServerClient()
+}
 
 function sanitizeStoredError(value: string | null | undefined, fallback: string): string | null {
   return value && value.trim() ? fallback : null
@@ -790,6 +824,72 @@ function sampleParticipants(participants: LocationRoomParticipant[]) {
   }))
 }
 
+function emptyPersonaQualitySummary(
+  uncheckedReason: LocationRoomHealthDiagnostics['personaQuality']['uncheckedReason']
+): LocationRoomHealthDiagnostics['personaQuality'] {
+  return {
+    evaluated: false,
+    uncheckedReason,
+    checkedCount: 0,
+    participantLimit: PERSONA_DIAGNOSTIC_PARTICIPANT_LIMIT,
+    missingPersistedPersonaCount: 0,
+    defaultNeutralPersonaCount: 0,
+    missingMessageExamplesCount: 0,
+    missingStyleCount: 0,
+    missingLoreCount: 0,
+    missingTopicsCount: 0,
+    warnings: [],
+    safeError: null,
+  }
+}
+
+async function buildPersonaQualitySummary(params: {
+  participants: LocationRoomParticipant[]
+  officialConfigured: boolean
+  officialApiKeyConfigured: boolean
+  clientFactory: PersonaDiagnosticsClientFactory
+}): Promise<LocationRoomHealthDiagnostics['personaQuality']> {
+  if (!params.officialConfigured) return emptyPersonaQualitySummary('official_elizaos_not_configured')
+  if (!params.officialApiKeyConfigured) return emptyPersonaQualitySummary('official_elizaos_api_key_missing')
+  if (params.participants.length === 0) return emptyPersonaQualitySummary('no_participants')
+
+  const summary: LocationRoomHealthDiagnostics['personaQuality'] = {
+    ...emptyPersonaQualitySummary(null),
+    evaluated: true,
+  }
+  const participants = params.participants.slice(0, PERSONA_DIAGNOSTIC_PARTICIPANT_LIMIT)
+
+  try {
+    const client = params.clientFactory()
+
+    for (const participant of participants) {
+      const record = await client.characters.getRecordByExternalId(String(participant.tokenId))
+      const evaluation = evaluateCharacterSheetCompleteness(record, participant.tokenId)
+      summary.checkedCount += 1
+      if (!evaluation.persisted) summary.missingPersistedPersonaCount += 1
+      if (evaluation.defaultNeutralPersona) summary.defaultNeutralPersonaCount += 1
+      if (evaluation.warnings.some((warning) => warning.code === 'missing_message_examples')) summary.missingMessageExamplesCount += 1
+      if (evaluation.warnings.some((warning) => warning.code === 'missing_style')) summary.missingStyleCount += 1
+      if (evaluation.warnings.some((warning) => warning.code === 'missing_lore')) summary.missingLoreCount += 1
+      if (evaluation.warnings.some((warning) => warning.code === 'missing_topics')) summary.missingTopicsCount += 1
+
+      for (const warning of evaluation.warnings) {
+        summary.warnings.push({
+          tokenId: participant.tokenId,
+          name: participant.name,
+          code: warning.code,
+          message: warning.message,
+        })
+      }
+    }
+  } catch (error) {
+    console.error('[Location Room Admin Diagnostics] Persona quality lookup failed:', error)
+    summary.safeError = 'Persona quality diagnostics could not be resolved. Check server logs for details.'
+  }
+
+  return summary
+}
+
 function buildCanonicalHints(
   requestedLocationId: string,
   location: LocationRoomLocationDetails | null,
@@ -889,6 +989,7 @@ export class LocationRoomAdminDiagnosticsService {
   private readonly narrativeRepository: LocationRoomNarrativeRepository
   private readonly gameplayRepository: LocationRoomGameplayRepository
   private readonly gameMasterResolver: GameMasterResolver
+  private readonly personaClientFactory: PersonaDiagnosticsClientFactory
   private readonly now: () => Date
 
   constructor(deps: LocationRoomAdminDiagnosticsDeps = {}) {
@@ -897,6 +998,7 @@ export class LocationRoomAdminDiagnosticsService {
     this.narrativeRepository = deps.narrativeRepository ?? locationRoomNarrativeRepository
     this.gameplayRepository = deps.gameplayRepository ?? locationRoomGameplayRepository
     this.gameMasterResolver = deps.gameMasterResolver ?? gameMasterAgentService
+    this.personaClientFactory = deps.personaClientFactory ?? createDefaultPersonaDiagnosticsClient
     this.now = deps.now ?? (() => new Date())
   }
 
@@ -922,9 +1024,11 @@ export class LocationRoomAdminDiagnosticsService {
       envFallbackAgentId: null,
     }
     const gameplayEnabledForLocation = isGameplayEnabledForLocation(locationId)
+    const officialElizaOsConfigured = Boolean(elizaConfig.official.baseUrl)
+    const officialElizaOsApiKeyConfigured = Boolean(elizaConfig.official.apiKey)
     const config = {
       locationRoomsEnabled: elizaConfig.locationRooms.enabled,
-      officialElizaOsConfigured: Boolean(elizaConfig.official.baseUrl),
+      officialElizaOsConfigured,
       narrativeEnabled: elizaConfig.locationRooms.narrative.enabled,
       gameplayEnabledForLocation,
       tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
@@ -950,6 +1054,11 @@ export class LocationRoomAdminDiagnosticsService {
       const adventureCatalog = buildAdventureCatalogSummary(null, null)
       const triggerReadiness = buildTriggerReadinessSummary(null, gameplayEnabledForLocation, null, null)
       const promotion = buildPromotionSummary(null, gameplayEnabledForLocation, null, [])
+      const personaQuality = emptyPersonaQualitySummary(
+        officialElizaOsConfigured
+          ? officialElizaOsApiKeyConfigured ? 'no_participants' : 'official_elizaos_api_key_missing'
+          : 'official_elizaos_not_configured'
+      )
 
       return {
         generatedAt: now.toISOString(),
@@ -964,6 +1073,7 @@ export class LocationRoomAdminDiagnosticsService {
         config,
         gmReadiness,
         participants: { count: 0, minimumRequired: MINIMUM_PARTICIPANTS, sample: [] },
+        personaQuality,
         room: {
           exists: false,
           id: null,
@@ -1041,6 +1151,13 @@ export class LocationRoomAdminDiagnosticsService {
       this.roomRepository.findRoomByLocationId(locationId),
       this.membershipRepository.listEligibleParticipantsByLocation(locationId),
     ])
+
+    const personaQuality = await buildPersonaQualitySummary({
+      participants,
+      officialConfigured: officialElizaOsConfigured,
+      officialApiKeyConfigured: officialElizaOsApiKeyConfigured,
+      clientFactory: this.personaClientFactory,
+    })
 
     const [activeTicks, recentTicks] = room
       ? await Promise.all([
@@ -1133,6 +1250,7 @@ export class LocationRoomAdminDiagnosticsService {
         minimumRequired: MINIMUM_PARTICIPANTS,
         sample: sampleParticipants(participants),
       },
+      personaQuality,
       room: {
         exists: Boolean(room),
         id: room?.id ?? null,

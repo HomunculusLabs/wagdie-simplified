@@ -33,6 +33,20 @@ async function drainStream(body: ReadableStream<Uint8Array> | null): Promise<voi
   }
 }
 
+async function readStreamText(body: ReadableStream<Uint8Array> | null): Promise<string> {
+  if (!body) return ''
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    text += decoder.decode(value, { stream: true })
+  }
+  text += decoder.decode()
+  return text
+}
+
 describe('Eliza Chat API Route', () => {
   const originalMode = elizaConfig.mode
 
@@ -232,6 +246,91 @@ describe('Eliza Chat API Route', () => {
       }),
       expect.any(Object)
     )
+  })
+
+  it('normalizes null conversation IDs to first-turn undefined before streaming', async () => {
+    ;(getSession as jest.Mock).mockResolvedValueOnce({
+      address: '0xabc',
+      eliza: {
+        tokens: {
+          accessToken: 'user-access-token',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        },
+      },
+    })
+    ;(getCharacter as jest.Mock).mockResolvedValueOnce({ name: 'Test Character' })
+    const sendMessageStream = jest.fn(async (_payload: any, callbacks: any) => {
+      callbacks.onComplete({ id: 'msg-1', content: 'Hi', createdAt: new Date().toISOString() }, 'conv-1')
+    })
+    ;(getElizaClient as jest.Mock).mockReturnValue({ chat: { sendMessageStream } })
+    ;(getCharacterByTokenId as jest.Mock).mockResolvedValueOnce({
+      id: 'record-1',
+      character: { name: 'Test Character', bio: ['Bio'] },
+    })
+
+    const response = await chatHandler(createNextRequest({ tokenId: '1', message: 'Hello', conversationId: null }))
+    await drainStream(response.body as any)
+
+    expect(sendMessageStream).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: undefined }),
+      expect.any(Object)
+    )
+  })
+
+  it('emits SSE error instead of complete when gateway completion is blank', async () => {
+    ;(getSession as jest.Mock).mockResolvedValueOnce({
+      address: '0xabc',
+      eliza: {
+        tokens: {
+          accessToken: 'user-access-token',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        },
+      },
+    })
+    ;(getCharacter as jest.Mock).mockResolvedValueOnce({ name: 'Test Character' })
+    const sendMessageStream = jest.fn(async (_payload: any, callbacks: any) => {
+      callbacks.onComplete({ id: 'msg-1', content: '', createdAt: new Date().toISOString() }, 'conv-1')
+    })
+    ;(getElizaClient as jest.Mock).mockReturnValue({ chat: { sendMessageStream } })
+    ;(getCharacterByTokenId as jest.Mock).mockResolvedValueOnce({
+      id: 'record-1',
+      character: { name: 'Test Character', bio: ['Bio'] },
+    })
+
+    const response = await chatHandler(createNextRequest({ tokenId: '1', message: 'Hello' }))
+    const streamText = await readStreamText(response.body as any)
+
+    expect(streamText).toContain('event: error')
+    expect(streamText).toContain('EMPTY_ASSISTANT_MESSAGE')
+    expect(streamText).not.toContain('event: complete')
+  })
+
+  it('emits SSE error instead of complete when gateway omits conversation ID', async () => {
+    ;(getSession as jest.Mock).mockResolvedValueOnce({
+      address: '0xabc',
+      eliza: {
+        tokens: {
+          accessToken: 'user-access-token',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        },
+      },
+    })
+    ;(getCharacter as jest.Mock).mockResolvedValueOnce({ name: 'Test Character' })
+    const sendMessageStream = jest.fn(async (_payload: any, callbacks: any) => {
+      callbacks.onComplete({ id: 'msg-1', content: 'Hi', createdAt: new Date().toISOString() }, '')
+    })
+    ;(getElizaClient as jest.Mock).mockReturnValue({ chat: { sendMessageStream } })
+    ;(getCharacterByTokenId as jest.Mock).mockResolvedValueOnce({
+      id: 'record-1',
+      character: { name: 'Test Character', bio: ['Bio'] },
+    })
+
+    const response = await chatHandler(createNextRequest({ tokenId: '1', message: 'Hello' }))
+    const streamText = await readStreamText(response.body as any)
+
+    expect(streamText).toContain('event: error')
+    expect(streamText).toContain('MISSING_CONVERSATION_ID')
+    expect(streamText).not.toContain('event: complete')
   })
 
   it('should use server gateway for character resolution and Venice-backed chat streaming', async () => {

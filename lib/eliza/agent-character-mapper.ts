@@ -151,7 +151,7 @@ export function toAgentCharacterFromAICharacter(input: Partial<AICharacter>): Ag
   if (username) character.username = username
 
   const templates = asStringMap(input.templates)
-  if (templates && Object.keys(templates).length > 0) character.templates = templates
+  if (templates !== undefined) character.templates = templates
 
   if (input.settings) {
     character.settings = mergeSafeSettings(undefined, input.settings)

@@ -1,6 +1,61 @@
-import { sanitizePersonaAssistantProposal } from '@/lib/eliza/character-sheet-policy'
+import {
+  evaluateCharacterSheetCompleteness,
+  sanitizePersonaAssistantProposal,
+} from '@/lib/eliza/character-sheet-policy'
 
 describe('persona assistant proposal policy', () => {
+  it('evaluates sparse and default personas as warnings only', () => {
+    const result = evaluateCharacterSheetCompleteness({
+      id: 'record-123',
+      externalId: '123',
+      character: {
+        name: 'Character #123',
+        bio: ['A mysterious character whose story is still being written. Character #123.'],
+      },
+      createdAt: 'created-at',
+      updatedAt: 'updated-at',
+    }, '123')
+
+    expect(result.persisted).toBe(true)
+    expect(result.defaultNeutralPersona).toBe(true)
+    expect(result.warnings.map((warning) => warning.code)).toEqual(expect.arrayContaining([
+      'default_neutral_persona',
+      'missing_message_examples',
+      'missing_style',
+      'missing_lore',
+      'missing_topics',
+    ]))
+  })
+
+  it('flags legacy generated default persona copy as neutral default', () => {
+    const result = evaluateCharacterSheetCompleteness({
+      id: 'record-4040',
+      externalId: '4040',
+      character: {
+        name: 'Character #4040',
+        bio: ['A mysterious character from the world of WAGDIE. Character #4040.'],
+      },
+      createdAt: 'created-at',
+      updatedAt: 'updated-at',
+    }, '4040')
+
+    expect(result.defaultNeutralPersona).toBe(true)
+    expect(result.warnings.map((warning) => warning.code)).toContain('default_neutral_persona')
+  })
+
+  it('evaluates missing persisted personas without throwing readiness blockers', () => {
+    const result = evaluateCharacterSheetCompleteness(null, '4040')
+
+    expect(result.persisted).toBe(false)
+    expect(result.warnings.map((warning) => warning.code)).toEqual(expect.arrayContaining([
+      'missing_persisted_persona',
+      'missing_message_examples',
+      'missing_style',
+      'missing_lore',
+      'missing_topics',
+    ]))
+  })
+
   it('accepts allowed proposal fields and safe settings only', () => {
     const result = sanitizePersonaAssistantProposal({
       username: 'Ash',

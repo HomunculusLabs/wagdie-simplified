@@ -1,6 +1,10 @@
 #!/usr/bin/env ts-node
 
-import { scoreNarrativeQuality, type NarrativeQualityMessage } from './location-room-narrative-quality'
+import {
+  narrativeQualityAttributionMetrics,
+  scoreNarrativeQuality,
+  type NarrativeQualityMessage,
+} from './location-room-narrative-quality'
 
 type PublicMessage = NarrativeQualityMessage
 
@@ -90,6 +94,7 @@ async function main(): Promise<void> {
     : []
   const escalationWarnings = escalationObservabilityWarnings(snapshot, quality.rawMetrics)
   const warnings = [...quality.warnings, ...escalationWarnings]
+  const attributionMetrics = narrativeQualityAttributionMetrics(quality.rawMetrics)
 
   console.log(JSON.stringify({
     locationId: config.locationId,
@@ -101,6 +106,7 @@ async function main(): Promise<void> {
     grade: quality.grade,
     submetrics: quality.submetrics,
     metrics: quality.rawMetrics,
+    attributionMetrics,
     ttrpg: snapshot.ttrpg,
     gameplay: snapshot.gameplay,
     warnings,

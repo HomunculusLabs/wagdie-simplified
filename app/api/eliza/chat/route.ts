@@ -86,9 +86,13 @@ export async function POST(request: NextRequest): Promise<Response> {
       )
     }
 
+    const normalizedConversationId = typeof body.conversationId === 'string' && body.conversationId.trim()
+      ? body.conversationId.trim()
+      : undefined
+
     console.info('[Eliza Chat] Request accepted', {
       tokenId: parsedToken.externalId,
-      hasConversationId: Boolean(body.conversationId),
+      hasConversationId: Boolean(normalizedConversationId),
     })
 
     // Verify character exists in WAGDIE database
@@ -130,18 +134,46 @@ export async function POST(request: NextRequest): Promise<Response> {
               controller.enqueue(encoder.encode(event))
             },
             onComplete: (message: ChatMessage, conversationId: string) => {
+              const content = typeof message.content === 'string' ? message.content : ''
+              const completedConversationId = typeof conversationId === 'string' ? conversationId.trim() : ''
+
+              if (!content.trim() || !completedConversationId) {
+                const payload = !content.trim()
+                  ? {
+                    code: 'EMPTY_ASSISTANT_MESSAGE',
+                    message: 'The assistant response was empty. Please try again.',
+                  }
+                  : {
+                    code: 'MISSING_CONVERSATION_ID',
+                    message: 'The chat response did not include a conversation ID. Please try again.',
+                  }
+
+                console.error('[Eliza Chat] Empty or invalid stream completion blocked', {
+                  tokenId: parsedToken.externalId,
+                  conversationId: completedConversationId || undefined,
+                  hasContent: Boolean(content.trim()),
+                  contentLength: content.length,
+                  code: payload.code,
+                })
+
+                const event = `event: error\ndata: ${JSON.stringify(payload)}\n\n`
+                controller.enqueue(encoder.encode(event))
+                controller.close()
+                return
+              }
+
               console.info('[Eliza Chat] Stream complete', {
                 tokenId: parsedToken.externalId,
-                conversationId,
-                hasContent: Boolean(message.content),
-                contentLength: message.content?.length ?? 0,
+                conversationId: completedConversationId,
+                hasContent: true,
+                contentLength: content.length,
               })
 
               // Include message.id and message.createdAt for improved client fidelity
               const event = `event: complete\ndata: ${JSON.stringify({
                 id: message.id,
-                content: message.content,
-                conversationId,
+                content,
+                conversationId: completedConversationId,
                 createdAt: message.createdAt,
               })}\n\n`
               controller.enqueue(encoder.encode(event))
@@ -152,7 +184,7 @@ export async function POST(request: NextRequest): Promise<Response> {
 
               console.error('[Eliza Chat] Stream error', {
                 tokenId: parsedToken.externalId,
-                hasConversationId: Boolean(body.conversationId),
+                hasConversationId: Boolean(normalizedConversationId),
                 code: payload.code,
                 message: payload.message,
               })
@@ -174,7 +206,7 @@ export async function POST(request: NextRequest): Promise<Response> {
               characterId: record.id,
               character: record.character,
               message: body.message,
-              conversationId: body.conversationId,
+              conversationId: normalizedConversationId,
               userId: tokenResult.officialUserId,
               walletAddress: walletResult.address,
               tokenId: parsedToken.externalId,
@@ -186,7 +218,7 @@ export async function POST(request: NextRequest): Promise<Response> {
           const payload = toStreamErrorPayload(error)
           console.error('[Eliza Chat] Stream setup failed', {
             tokenId: parsedToken.externalId,
-            hasConversationId: Boolean(body.conversationId),
+            hasConversationId: Boolean(normalizedConversationId),
             code: payload.code,
             message: payload.message,
             details: error && typeof error === 'object' && 'details' in error

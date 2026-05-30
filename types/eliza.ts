@@ -349,7 +349,7 @@ export interface StreamCompleteEvent {
 
 export interface StreamErrorEvent {
   event: 'error'
-  data: { message: string }
+  data: { code?: string; message: string }
 }
 
 export type StreamEvent = StreamTokenEvent | StreamCompleteEvent | StreamErrorEvent

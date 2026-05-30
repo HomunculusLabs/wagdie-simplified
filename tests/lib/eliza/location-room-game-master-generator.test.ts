@@ -345,17 +345,60 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Combat readiness: foreshadow')
     expect(prompt).toContain('Threat level: 1')
     expect(prompt).toContain('Last encounter seed: Title: Old Bell')
-    expect(prompt).toContain('Quiet private adventure memory')
-    expect(prompt).toContain('Active decision: bell-choice')
+    expect(prompt).toContain('Adventure memory: active bell-choice')
+    expect(prompt).toContain('catalog anchors')
+    expect(prompt).toContain('no ids/sections/tags or database-list prose')
+    expect(prompt).not.toContain('50.10.ash-rope')
     expect(prompt).toContain(officialSafetyNotice)
     expect(prompt).toContain('Return only JSON with this contract')
     expect(prompt).toContain('"ttrpgPhase"')
     expect(prompt).toContain('"adventurePatch"')
     expect(prompt).toContain('Non-aftermath beats must include a concrete currentObjective')
-    expect(prompt).toContain('adventurePatch is private continuity memory')
-    expect(prompt).toContain('activeDecision is rare')
+    expect(prompt).toContain('Frame public GM beats near a meaningful choice')
+    expect(prompt).toContain('SpeakerInstruction should push one concrete declared action')
+    expect(prompt).toContain('adventurePatch is private memory')
+    expect(prompt).toContain('activeDecision rare')
     expect(prompt).toContain('Most beats keep requestedGameplayAction null')
     expect(prompt).toContain('requestedGameplayAction "start_combat"')
+  })
+
+  it('frames retrieved catalog entries as bounded private sourcebook anchors', () => {
+    const state = narrativeState()
+    const prompt = buildGameMasterBeatPrompt({
+      gameMasterAgentId: 'gm-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages: [],
+      narrativeState: {
+        ...state,
+        currentObjective: 'Find the cellar route and bargain with Mire Voss by the bell rope.',
+        openThreads: ['Which cellar route stays safe?', 'What does Mire Voss want?'],
+        metadata: {
+          ...state.metadata,
+          adventureCatalog: {
+            defaults: {},
+            sections: {
+              '20_characters': [{ id: '20.10.mire-voss', section: '20_characters', title: 'Mire Voss', summary: 'A brine-stained broker listens from the cellar stair.', tags: ['mire', 'bargain'] }],
+              '40_places': [
+                { id: '40.99.hidden-rookery', section: '40_places', title: 'Hidden Rookery', summary: 'A reveal-gated rookery waits behind the rafters.', tags: ['rookery'], revealConditions: ['discovery:hidden-rookery'] },
+                { id: '40.10.cellar-stair', section: '40_places', title: 'Cellar Stair', summary: 'The root-choked stair descends under the taproom arch.', tags: ['cellar', 'route'] },
+              ],
+              '50_items': [{ id: '50.10.bell-rope', section: '50_items', title: 'Bell Rope', summary: 'A soot-stiff rope swings toward anyone who lies.', tags: ['bell', 'rope'] }],
+              '80_encounters': [{ id: '80.10.rafters-ambush', section: '80_encounters', title: 'Rafters Ambush', summary: 'Crows drop from the rafters when the route stalls.', tags: ['rafters'] }],
+            },
+          },
+        },
+      },
+    })
+
+    expect(prompt).toContain('catalog anchors')
+    expect(prompt).not.toContain('3)')
+    expect(prompt).toMatch(/Cellar Stair|Mire Voss|Bell Rope/)
+    expect(prompt).not.toContain('40.99.hidden-rookery')
+    expect(prompt).not.toContain('Hidden Rookery')
+    expect(prompt).not.toContain('80.10.rafters-ambush')
   })
 
   it('clamps near-limit Unicode GM beat prompts safely while preserving the JSON contract', () => {
@@ -790,6 +833,10 @@ describe('game-master beat generator helpers', () => {
       currentStakes: 'The ash may reveal a route before the watcher moves.',
       discoveries: ['The ash marks point below the stair.'],
       clocks: [expect.objectContaining({ id: 'watcher', value: 2, max: 6 })],
+      lastOutcome: expect.objectContaining({
+        kind: 'beat',
+        sourceId: 'game-master-model-prose',
+      }),
     }))
     expect(output.metadata.adventurePatch).toEqual(output.adventurePatch)
 
@@ -999,7 +1046,7 @@ describe('game-master beat generator helpers', () => {
     )).toThrow('visibly escalate')
 
     const escalated = normalizeGameMasterBeatResponse(
-      '{"publicNarration":"The ash parts around a hidden stair.","speakerInstruction":"Choose whether to descend.","stateSummary":"A hidden stair opens.","currentObjective":"Explore the stair","openThreads":["What waits?"],"ttrpgPhase":"exploration","combatReadiness":"none","threatLevel":0,"requestedGameplayAction":null,"adventurePatch":{"currentStakes":"The stair may close if ignored."}}',
+      '{"publicNarration":"The stair opens as ash parts around it.","speakerInstruction":"Choose whether to descend.","stateSummary":"A hidden stair opens.","currentObjective":"Explore the stair","openThreads":["What waits?"],"ttrpgPhase":"exploration","combatReadiness":"none","threatLevel":0,"requestedGameplayAction":null,"adventurePatch":{"currentStakes":"The stair may close if ignored."}}',
       { participants, speaker: participants[0] },
       { gameMasterAgentId: 'gm-1', limits, progressionContext: repeatedFlatContext }
     )
@@ -1034,6 +1081,25 @@ describe('game-master beat generator helpers', () => {
       { participants, speaker: participants[0] },
       { gameMasterAgentId: 'gm-1', limits }
     )).toThrow('currentObjective')
+
+    expect(() => normalizeGameMasterBeatResponse(JSON.stringify({
+      publicNarration: 'The ash chills the taproom while dust hangs in the rafters.',
+      speakerInstruction: 'React in character without changing the scene.',
+      stateSummary: 'The taproom remains quiet and cold.',
+      currentObjective: 'Endure the silence.',
+      openThreads: ['Why is the air cold?'],
+      ttrpgPhase: 'exploration',
+      combatReadiness: 'none',
+      threatLevel: 0,
+      requestedGameplayAction: null,
+      adventurePatch: {
+        currentStakes: 'The silence may deepen if ignored.',
+        lastOutcome: { kind: 'beat', sourceId: 'passive-test', summary: 'The room stayed passive.' },
+      },
+    }),
+      { participants, speaker: participants[0] },
+      { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } }
+    )).toThrow('passive atmosphere only')
 
     expect(() => normalizeGameMasterBeatResponse(
       '{"speakerInstruction":"Speak","stateSummary":"State","currentObjective":"Follow the bell","openThreads":[],"ttrpgPhase":"exploration"}',
@@ -1181,7 +1247,7 @@ describe('game-master beat generator helpers', () => {
     expect(repairPrompt).toContain('Non-aftermath beats require currentObjective')
     expect(repairPrompt).toContain('"adventurePatch"')
     expect(repairPrompt).not.toContain('Recent public transcript')
-    expect(repairPrompt).not.toContain('Quiet private adventure memory')
+    expect(repairPrompt).not.toContain('Adventure memory: active')
     expect(repairPrompt).not.toContain('activeDecision is rare')
     expect(repairPrompt).not.toContain('not json')
   })
@@ -1297,6 +1363,8 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('"publicSpeech"')
     expect(prompt).toContain('"declaredAction"')
     expect(prompt).toContain('"sceneCheckProposal": null')
+    expect(prompt).toContain('Make declaredAction concrete and action-forward')
+    expect(prompt).toContain('publicSpeech may react in character')
     expect(prompt).toContain('Visible spatial context')
     expect(prompt).toContain('Known routes: cellar stair below the seam')
     expect(prompt).toContain('ash-marks: Read the Ash Marks')
@@ -1489,6 +1557,7 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Use only the backend roll facts')
     expect(prompt).toContain('Tier rules for adventurePatch')
     expect(prompt).toContain('partial_success: progress plus complication')
+    expect(prompt).toContain('include lastOutcome for this roll')
     expect(prompt).toContain('Spatial context')
     expect(prompt).toContain('root-choked cellar door')
     expect(prompt).toContain('adventurePatch.spatialContext')
@@ -1497,6 +1566,7 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality')
     expect(prompt).toContain('\"escalation\"')
     expect(prompt).toContain('combat_ready means readiness, not a direct combat request')
+    expect(prompt).toContain('ids only in catalogEntryIds, not public prose')
 
     const catalogPrompt = buildGameMasterSceneCheckOutcomePrompt({
       ...outcomeInput,
@@ -1603,6 +1673,11 @@ describe('game-master beat generator helpers', () => {
           currentArea: 'Hidden stair below the ash marks',
           routes: ['hidden stair descending from the taproom'],
         }),
+        lastOutcome: expect.objectContaining({
+          kind: 'scene_check',
+          sourceId: 'scene_check:beat-1',
+          tier: resolution.roll.tier,
+        }),
       }),
     }))
     expect(output.metadata.adventurePatch).toEqual(output.adventurePatch)
@@ -1649,6 +1724,11 @@ describe('game-master beat generator helpers', () => {
         adventurePatch: tierPatch,
       }), tierInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })
       expect(tierOutput.adventurePatch).toBeTruthy()
+      expect(tierOutput.adventurePatch.lastOutcome).toEqual(expect.objectContaining({
+        kind: 'scene_check',
+        sourceId: 'scene_check:beat-1',
+        tier,
+      }))
     }
 
     const failureInput = {
@@ -1849,7 +1929,7 @@ describe('game-master beat generator helpers', () => {
     expect(repairPrompt).toContain('Repair kind: generic')
     expect(repairPrompt).toContain('Return only a JSON object with this exact scene-check outcome contract')
     expect(repairPrompt).toContain('Backend-computed roll facts')
-    expect(repairPrompt).not.toContain('Escalation catalog candidates')
+    expect(repairPrompt).not.toContain('Escalation candidates')
     expect(repairPrompt).not.toContain('Recent public transcript')
   })
 
@@ -1921,6 +2001,8 @@ describe('game-master beat generator helpers', () => {
     expect(withContext).toContain('Private instruction for this utterance: Resist the call, but reveal fear.')
     expect(withContext).toContain('Active visible decision:')
     expect(withContext).toContain('pull-rope: Pull the rope')
+    expect(withContext).toContain('Active decisions are GM-authored')
+    expect(withContext).toContain('concrete declaredAction that moves the scene forward')
     expect(withContext).toContain('"declaredAction"')
     expect(withContext).toContain('Do not include sceneCheckProposal because there is no scene-check context.')
 
@@ -1948,6 +2030,11 @@ describe('game-master beat generator helpers', () => {
       narrativeContext: true,
       activeDecision,
     })).toThrow('JSON object')
+
+    expect(() => normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
+      publicSpeech: 'Yes, that is wise.',
+      declaredAction: { summary: 'I agree.', chosenOptionId: 'pull-rope', actionIntent: 'agree' },
+    }), { narrativeContext: true, activeDecision })).toThrow('concrete fictional action')
 
     expect(() => normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
       publicSpeech: 'I will not name the chain.',

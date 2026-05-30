@@ -48,9 +48,11 @@ import type {
 } from '@/lib/eliza/locationRooms/types'
 import {
   analyzeNarrativeMessages as analyzeQualityNarrativeMessages,
+  narrativeQualityAttributionMetrics,
   scoreNarrativeQuality,
   warningsForNarrativeQuality,
   type NarrativeQualityAdventureState,
+  type NarrativeQualityAttributionMetrics,
   type NarrativeQualityMetrics,
   type NarrativeQualityResult,
 } from '../../../scripts/location-room-narrative-quality'
@@ -146,6 +148,7 @@ export type NarrativeHarnessScenarioResult = {
   scenario: NarrativeHarnessScenario
   messages: LocationRoomMessage[]
   metrics: NarrativeHarnessMetrics
+  attributionMetrics: NarrativeQualityAttributionMetrics
   quality: NarrativeQualityResult
   adventureState: NarrativeQualityAdventureState
   warnings: string[]
@@ -161,6 +164,7 @@ export type NarrativeHarnessMetrics = NarrativeQualityMetrics
 
 export type NarrativeHarnessAggregateMetrics = NarrativeHarnessMetrics & {
   scenarioCount: number
+  attributionMetrics: NarrativeQualityAttributionMetrics
   warnings: string[]
   quality: NarrativeQualityResult
 }
@@ -1139,6 +1143,7 @@ export async function runNarrativeHarnessScenario(
     scenario,
     messages: repository.messages,
     metrics: quality.rawMetrics,
+    attributionMetrics: narrativeQualityAttributionMetrics(quality.rawMetrics),
     quality,
     adventureState,
     warnings: warningsForScenario(quality.rawMetrics, ticksPerScenario),
@@ -1167,6 +1172,7 @@ function aggregateHarnessResults(results: NarrativeHarnessScenarioResult[]): Nar
   return {
     ...quality.rawMetrics,
     scenarioCount: results.length,
+    attributionMetrics: narrativeQualityAttributionMetrics(quality.rawMetrics),
     warnings: results.flatMap((result) => result.warnings.map((warning) => `${result.scenario.id}: ${warning}`)),
     quality,
   }

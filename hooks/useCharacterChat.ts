@@ -179,23 +179,46 @@ export function useCharacterChat(tokenId: string): UseCharacterChatReturn {
               setStreamingContent(fullContent)
               break
 
-            case 'complete':
-              if (!fullContent && typeof data.content === 'string' && data.content.length > 0) {
-                fullContent = data.content
+            case 'complete': {
+              const streamedContent = fullContent.trim() ? fullContent : ''
+              const completedContent = streamedContent || (
+                typeof data.content === 'string' && data.content.trim() ? data.content : ''
+              )
+              const completedConversationId = typeof data.conversationId === 'string'
+                ? data.conversationId.trim()
+                : ''
+
+              if (!completedContent.trim()) {
+                throw new CharacterChatError({
+                  code: 'EMPTY_ASSISTANT_MESSAGE',
+                  message: 'The assistant response was empty. Please try again.',
+                })
+              }
+
+              if (!completedConversationId) {
+                throw new CharacterChatError({
+                  code: 'MISSING_CONVERSATION_ID',
+                  message: 'The chat response did not include a conversation ID. Please try again.',
+                })
+              }
+
+              if (!streamedContent) {
+                fullContent = completedContent
                 setStreamingContent(fullContent)
               }
 
               // Add assistant message (use server createdAt when available)
               const assistantMessage: ChatMessage = {
-                id: data.id,
-                conversationId: data.conversationId,
+                id: typeof data.id === 'string' && data.id ? data.id : `assistant-${Date.now()}`,
+                conversationId: completedConversationId,
                 role: 'assistant',
-                content: data.content,
+                content: completedContent,
                 createdAt: data.createdAt ?? new Date().toISOString(),
               }
               setMessages(prev => [...prev, assistantMessage])
-              setConversationId(data.conversationId)
+              setConversationId(completedConversationId)
               break
+            }
 
             case 'error':
               throw new CharacterChatError(data)

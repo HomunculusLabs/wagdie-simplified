@@ -443,22 +443,24 @@ async function sendSseMessage(
 
   const events = parseSse(text)
   const eventNames = new Set(events.map((event) => event.event))
-  const doneOrCompleteEvents = events.filter(
-    (event) => event.event === 'done' || event.event === 'complete'
-  )
-  const doneHasText = doneOrCompleteEvents.some((event) => {
+  const hasAssistantText = events.some((event) => {
     try {
       const data = JSON.parse(event.data) as Record<string, unknown>
-      return typeof data.text === 'string' || typeof data.content === 'string' || typeof data.message === 'string'
+      return ['chunk', 'token', 'text', 'content', 'message'].some((key) =>
+        typeof data[key] === 'string' && Boolean((data[key] as string).trim())
+      )
     } catch {
       return Boolean(event.data.trim())
     }
   })
+  const doneOrCompleteEvents = events.filter(
+    (event) => event.event === 'done' || event.event === 'complete'
+  )
   const hasTokenLikeEvent =
-    eventNames.has('chunk') || eventNames.has('token') || eventNames.has('message') || doneHasText
+    eventNames.has('chunk') || eventNames.has('token') || eventNames.has('message') || hasAssistantText
   const hasCompleteLikeEvent = doneOrCompleteEvents.length > 0
 
-  if (!hasTokenLikeEvent || !hasCompleteLikeEvent) {
+  if (!hasTokenLikeEvent || !hasCompleteLikeEvent || !hasAssistantText) {
     return fail(
       name,
       `expected token/chunk and done/complete SSE events, got: ${Array.from(eventNames).join(', ') || 'none'}`,

@@ -49,7 +49,7 @@ function readTextField(value: unknown, keys: string[]): string | undefined {
   return undefined
 }
 
-function readNestedTextField(value: unknown, paths: string[][]): string | undefined {
+function readNestedStringField(value: unknown, paths: string[][]): string | undefined {
   for (const path of paths) {
     let current = value
 
@@ -62,12 +62,17 @@ function readNestedTextField(value: unknown, paths: string[][]): string | undefi
       current = (current as Record<string, unknown>)[key]
     }
 
-    if (typeof current === 'string' && current.trim()) {
+    if (typeof current === 'string') {
       return current
     }
   }
 
   return undefined
+}
+
+function readNestedTextField(value: unknown, paths: string[][]): string | undefined {
+  const candidate = readNestedStringField(value, paths)
+  return candidate?.trim() ? candidate : undefined
 }
 
 function readNumberField(value: unknown, keys: string[]): number | undefined {
@@ -88,6 +93,17 @@ function readNumberField(value: unknown, keys: string[]): number | undefined {
   return undefined
 }
 
+function readChunkText(data: unknown): string | undefined {
+  return readTextField(data, ['chunk', 'text', 'content']) ??
+    readNestedStringField(data, [
+      ['content', 'text'],
+      ['delta', 'content'],
+      ['data', 'chunk'],
+      ['data', 'text'],
+      ['data', 'content', 'text'],
+    ])
+}
+
 function mapCompleteMessage(data: unknown, fallbackText: string): ChatMessage {
   const record = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
   const content = fallbackText.trim()
@@ -96,10 +112,14 @@ function mapCompleteMessage(data: unknown, fallbackText: string): ChatMessage {
       readNestedTextField(record, [
         ['content', 'text'],
         ['data', 'text'],
+        ['data', 'content'],
         ['data', 'content', 'text'],
+        ['data', 'message'],
         ['response', 'text'],
+        ['response', 'content'],
         ['response', 'content', 'text'],
         ['agentResponse', 'text'],
+        ['agentResponse', 'content'],
         ['agentResponse', 'content', 'text'],
       ]) ??
       fallbackText
@@ -110,6 +130,38 @@ function mapCompleteMessage(data: unknown, fallbackText: string): ChatMessage {
     content,
     createdAt: new Date().toISOString(),
   }
+}
+
+function parseEventData(event: OfficialSseEvent): unknown {
+  try {
+    return JSON.parse(event.data)
+  } catch {
+    return event.data
+  }
+}
+
+function getEventType(event: OfficialSseEvent, data: unknown): string {
+  return event.event ||
+    (data && typeof data === 'object' ? String((data as Record<string, unknown>).type ?? '') : '')
+}
+
+function createEmptyStreamError(
+  message: string,
+  details: {
+    reason: string
+    eventTypes: string[]
+    contentLength: number
+    bytesRead: number
+  }
+): WagdieElizaError {
+  console.warn('[Official ElizaOS] stream ended without assistant content', details)
+
+  return new WagdieElizaError(message, {
+    code: 'API_ERROR',
+    statusCode: 502,
+    isRetryable: true,
+    details,
+  })
 }
 
 export async function streamOfficialElizaSse(
@@ -143,6 +195,76 @@ export async function streamOfficialElizaSse(
   const decoder = new TextDecoder()
   let buffer = ''
   let fullText = ''
+  let bytesRead = 0
+  const seenEventTypes = new Set<string>()
+
+  const fail = (reason: string, message: string): never => {
+    throw createEmptyStreamError(message, {
+      reason,
+      eventTypes: Array.from(seenEventTypes),
+      contentLength: fullText.trim().length,
+      bytesRead,
+    })
+  }
+
+  const handleEvent = async (event: OfficialSseEvent): Promise<boolean> => {
+    const data = parseEventData(event)
+    const type = getEventType(event, data)
+    if (type) {
+      seenEventTypes.add(type)
+    }
+
+    if (type === 'chunk') {
+      const chunk = readChunkText(data)
+      if (typeof chunk === 'string' && chunk.length > 0) {
+        fullText += chunk
+        callbacks.onChunk?.(chunk)
+      }
+      return false
+    }
+
+    if (type === 'done' || type === 'complete') {
+      const message = mapCompleteMessage(data, fullText)
+      if (!message.content.trim()) {
+        fail('empty_terminal', 'Official ElizaOS stream ended without assistant content')
+      }
+
+      if (!fullText.trim()) {
+        fullText = message.content
+        callbacks.onChunk?.(message.content)
+      }
+
+      await callbacks.onComplete?.(message, conversationId)
+      return true
+    }
+
+    if (type === 'error') {
+      const message = readTextField(data, ['message', 'error']) ?? 'Official ElizaOS stream failed'
+      const statusCode = readNumberField(data, ['statusCode', 'status', 'upstreamStatus']) ?? 502
+      const code = statusCode === 401 || statusCode === 403
+        ? 'AUTH_ERROR'
+        : statusCode === 429
+          ? 'RATE_LIMIT'
+          : 'API_ERROR'
+      const error = new WagdieElizaError(message, {
+        code,
+        statusCode,
+        isRetryable: isRetryableGatewayStatus(statusCode),
+        details: {
+          eventType: 'error',
+          upstreamStatus: statusCode,
+        },
+      })
+      try {
+        await callbacks.onError?.(error)
+      } catch (callbackError) {
+        console.warn('[Official ElizaOS] stream error callback failed', callbackError)
+      }
+      throw error
+    }
+
+    return false
+  }
 
   let reading = true
   while (reading) {
@@ -154,67 +276,14 @@ export async function streamOfficialElizaSse(
       break
     }
 
+    bytesRead += value.byteLength
     buffer += decoder.decode(value, { stream: true })
     const parsed = parseSseEvents(buffer)
     buffer = parsed.rest
 
     for (const event of parsed.events) {
-      let data: unknown
-      try {
-        data = JSON.parse(event.data)
-      } catch {
-        data = event.data
-      }
-
-      const type =
-        event.event ??
-        (data && typeof data === 'object' ? String((data as Record<string, unknown>).type ?? '') : '')
-
-      if (type === 'chunk') {
-        const chunk =
-          readTextField(data, ['chunk', 'text', 'content']) ??
-          readNestedTextField(data, [
-            ['content', 'text'],
-            ['delta', 'content'],
-            ['data', 'chunk'],
-            ['data', 'text'],
-            ['data', 'content', 'text'],
-          ])
-        if (chunk) {
-          fullText += chunk
-          callbacks.onChunk?.(chunk)
-        }
-      } else if (type === 'done' || type === 'complete') {
-        const message = mapCompleteMessage(data, fullText)
-        if (!fullText && message.content) {
-          fullText = message.content
-          callbacks.onChunk?.(message.content)
-        }
-        await callbacks.onComplete?.(message, conversationId)
+      if (await handleEvent(event)) {
         return
-      } else if (type === 'error') {
-        const message = readTextField(data, ['message', 'error']) ?? 'Official ElizaOS stream failed'
-        const statusCode = readNumberField(data, ['statusCode', 'status', 'upstreamStatus']) ?? 502
-        const code = statusCode === 401 || statusCode === 403
-          ? 'AUTH_ERROR'
-          : statusCode === 429
-            ? 'RATE_LIMIT'
-            : 'API_ERROR'
-        const error = new WagdieElizaError(message, {
-          code,
-          statusCode,
-          isRetryable: isRetryableGatewayStatus(statusCode),
-          details: {
-            eventType: 'error',
-            upstreamStatus: statusCode,
-          },
-        })
-        try {
-          await callbacks.onError?.(error)
-        } catch (callbackError) {
-          console.warn('[Official ElizaOS] stream error callback failed', callbackError)
-        }
-        throw error
       }
     }
   }
@@ -223,50 +292,19 @@ export async function streamOfficialElizaSse(
     const parsed = parseSseEvents(`${buffer}\n\n`)
 
     for (const event of parsed.events) {
-      let data: unknown
-      try {
-        data = JSON.parse(event.data)
-      } catch {
-        data = event.data
-      }
-
-      const type =
-        event.event ??
-        (data && typeof data === 'object' ? String((data as Record<string, unknown>).type ?? '') : '')
-
-      if (type === 'chunk') {
-        const chunk =
-          readTextField(data, ['chunk', 'text', 'content']) ??
-          readNestedTextField(data, [
-            ['content', 'text'],
-            ['delta', 'content'],
-            ['data', 'chunk'],
-            ['data', 'text'],
-            ['data', 'content', 'text'],
-          ])
-        if (chunk) {
-          fullText += chunk
-          callbacks.onChunk?.(chunk)
-        }
-      } else if (type === 'done' || type === 'complete') {
-        const message = mapCompleteMessage(data, fullText)
-        if (!fullText && message.content) {
-          fullText = message.content
-          callbacks.onChunk?.(message.content)
-        }
-        await callbacks.onComplete?.(message, conversationId)
+      if (await handleEvent(event)) {
         return
       }
     }
   }
 
-  await callbacks.onComplete?.(
-    {
-      id: `official-${Date.now()}`,
-      role: 'assistant',
-      content: fullText,
-      createdAt: new Date().toISOString(),
-    },
-    conversationId
-  )
+  if (bytesRead === 0 || seenEventTypes.size === 0) {
+    fail('empty_stream', 'Official ElizaOS stream ended without assistant content')
+  }
+
+  if (fullText.trim()) {
+    fail('missing_terminal', 'Official ElizaOS stream ended without a completion event')
+  }
+
+  fail('unsupported_stream', 'Official ElizaOS stream ended without assistant content')
 }

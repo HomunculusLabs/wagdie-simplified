@@ -261,8 +261,11 @@ describe('location room adventure metadata helpers', () => {
         '10_plot': [],
         '20_characters': [{ id: '20.10.bell-merchant', section: '20_characters', title: 'Bell Merchant', summary: 'A merchant who trades in cursed bells.', tags: ['merchant', 'bell'] }],
         '30_monsters': [{ id: '30.10.crow-wight', section: '30_monsters', title: 'Crow Wight', summary: 'A wight nesting above the market.', tags: ['crow', 'threat'] }],
-        '40_places': [],
-        '50_items': [],
+        '40_places': [
+          { id: '40.99.hidden-vault', section: '40_places', title: 'Hidden Vault', summary: 'A reveal-gated vault beneath the market.', tags: ['vault'], revealConditions: ['discovery:hidden-vault'] },
+          { id: '40.10.mirror-arch', section: '40_places', title: 'Mirror Arch', summary: 'A mirror-bright arch opens a quieter market route.', tags: ['arch', 'route'] },
+        ],
+        '50_items': [{ id: '50.10.hush-map', section: '50_items', title: 'Hush Map', summary: 'A folded map that marks quiet routes.', tags: ['map', 'route'] }],
         '60_shops_services': [{ id: '60.10.black-market', section: '60_shops_services', title: 'Black Market', summary: 'A stall selling hush-maps.', tags: ['merchant', 'market'] }],
         '70_factions': [],
         '80_encounters': [],
@@ -292,6 +295,23 @@ describe('location room adventure metadata helpers', () => {
       tags: ['merchant'],
       limit: 2,
     }).map((entry) => entry.id)).toEqual(['60.10.black-market', '20.10.bell-merchant'])
+
+    const spatialResults = retrieveAdventureCatalogEntries(catalog, {
+      currentObjective: 'Open the hidden vault without alerting the market.',
+      spatialContext: {
+        currentArea: 'Market threshold near the mirror arch',
+        landmarks: ['mirror-bright arch'],
+        routes: ['quiet route under the arch'],
+        unresolvedSpatialQuestions: ['Where does the arch route surface?'],
+      },
+      discoveries: ['The mirror arch listens for quiet steps.'],
+      lastDeclaredAction: { tokenId: 1443, beatId: 'beat-2', summary: 'I unfold the hush-map.', actionIntent: 'search' },
+      clocks: [{ id: 'third-bell', label: 'Third bell', value: 2, max: 6, summary: 'The market alarm nears.' }],
+      limit: 3,
+    }).map((entry) => entry.id)
+    expect(spatialResults[0]).toBe('40.10.mirror-arch')
+    expect(spatialResults).toContain('50.10.hush-map')
+    expect(spatialResults).not.toContain('40.99.hidden-vault')
   })
 
   it('drops unsafe patch fields before merge', () => {

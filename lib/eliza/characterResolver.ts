@@ -57,6 +57,14 @@ function buildDefaultCharacter(params: {
     backstory,
     systemPrompt: null,
     exampleMessages: [],
+    settings: {
+      metadata: {
+        wagdieUser: {
+          personaSource: 'neutral_default',
+          defaultNeutralPersona: true,
+        },
+      },
+    },
   })
 }
 

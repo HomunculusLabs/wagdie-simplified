@@ -21,6 +21,8 @@ import { WagdieElizaError } from '@/lib/eliza/gateway/errors'
 import {
   OfficialElizaMessagingClient,
   collectOfficialHttpResponse,
+  isOfficialSessionNotFoundError,
+  isOfficialSessionNotFoundResponse,
   sendAndCollectOfficialEphemeralSessionMessage,
 } from '@/lib/eliza/official/messaging'
 import { streamOfficialElizaSse } from '@/lib/eliza/official/stream'
@@ -198,6 +200,41 @@ describe('OfficialElizaMessagingClient', () => {
         upstreamBody: 'upstream unavailable',
       },
     })
+  })
+
+  it.each([
+    ['structured error code', new Response(JSON.stringify({ error: { code: 'SESSION_NOT_FOUND' } }), { status: 404 })],
+    ['literal body', new Response('SESSION_NOT_FOUND', { status: 404 })],
+    ['plain message', new Response("Session with ID 'abc' not found", { status: 404 })],
+  ])('classifies official missing-session responses from %s', async (_label, response) => {
+    await expect(isOfficialSessionNotFoundResponse(response)).resolves.toBe(true)
+  })
+
+  it.each([
+    ['generic 404', new Response('missing route', { status: 404 })],
+    ['empty 404', new Response('', { status: 404 })],
+    ['non-404 with missing-session body', new Response('SESSION_NOT_FOUND', { status: 500 })],
+  ])('does not classify %s as an official missing-session response', async (_label, response) => {
+    await expect(isOfficialSessionNotFoundResponse(response)).resolves.toBe(false)
+  })
+
+  it('classifies WagdieElizaError upstream bodies using the same missing-session rules', () => {
+    const error = new WagdieElizaError('Official ElizaOS streaming request failed', {
+      code: 'API_ERROR',
+      statusCode: 404,
+      details: {
+        upstreamBody: JSON.stringify({ error: { code: 'SESSION_NOT_FOUND' } }),
+      },
+    })
+
+    expect(isOfficialSessionNotFoundError(error)).toBe(true)
+  })
+
+  it('does not consume the original response body while classifying missing sessions', async () => {
+    const response = new Response('SESSION_NOT_FOUND', { status: 404 })
+
+    await expect(isOfficialSessionNotFoundResponse(response)).resolves.toBe(true)
+    await expect(response.text()).resolves.toBe('SESSION_NOT_FOUND')
   })
 
   it('recovers a fresh ephemeral SESSION_NOT_FOUND once with a replacement session', async () => {
