@@ -23,6 +23,7 @@ import type {
   GenerateOfficialLocationRoomTurnInput,
   GenerateOfficialLocationRoomTurnResult,
   LocationRoomMessage,
+  LocationRoomPublicGenerationDiagnostics,
   LocationRoomNarrativeTurnSceneCheckContext,
   LocationRoomParticipant,
 } from './types'
@@ -217,6 +218,97 @@ export function normalizeLocationRoomGeneratedContent(content: string): string |
   return normalized.slice(0, MAX_ROOM_UTTERANCE_CHARS).trim() || null
 }
 
+function officialTurnResponseFlags(raw: string) {
+  const text = normalizeOfficialResponseText(raw)
+  return {
+    empty: text.length === 0,
+    hasJsonObject: text.indexOf('{') >= 0 && text.lastIndexOf('}') > text.indexOf('{'),
+    fencedJson: /```(?:json)?/i.test(text),
+    startsWithJsonObject: text.trim().startsWith('{'),
+  }
+}
+
+function categorizeOfficialTurnResponseError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  if (/empty/i.test(message)) return 'empty_response'
+  if (/did not contain a JSON object/i.test(message)) return 'missing_json_object'
+  if (/invalid JSON/i.test(message)) return 'invalid_json'
+  if (/publicSpeech/i.test(message)) return 'missing_public_speech'
+  if (/declaredAction/i.test(message)) return 'invalid_declared_action'
+  if (/scene-check proposal/i.test(message)) return 'scene_check_proposal_invalid_optional'
+  return 'validation_error'
+}
+
+function officialTurnDiagnosticsForInitialFailure(raw: string, error: unknown): LocationRoomPublicGenerationDiagnostics {
+  return {
+    status: 'repair_failed',
+    repairAttempted: true,
+    repaired: false,
+    initialErrorCategory: categorizeOfficialTurnResponseError(error),
+    initialResponseLength: raw.length,
+    initialResponseFlags: officialTurnResponseFlags(raw),
+  }
+}
+
+function buildOfficialLocationRoomTurnRepairPrompt(
+  input: GenerateOfficialLocationRoomTurnInput,
+  diagnostics: LocationRoomPublicGenerationDiagnostics
+): string {
+  if (!input.narrativeContext) {
+    return clampOfficialPrompt([
+      'Repair the failed WAGDIE character utterance.',
+      `Failure category: ${diagnostics.initialErrorCategory ?? 'validation_error'}`,
+      `Previous response length: ${diagnostics.initialResponseLength ?? 0}`,
+      '',
+      'Minimal context:',
+      `Location id: ${input.room.locationId}.`,
+      `Speaker: ${truncatePromptValue(input.speaker.name, 80)} (#${input.speaker.tokenId}).`,
+      '',
+      'Repair rules:',
+      '- Write exactly one short in-world utterance as the character.',
+      '- Do not use JSON, markdown, speaker labels, stage directions, or out-of-world explanations.',
+      '- Do not synthesize dice, DCs, HP, rewards, death, wallets, or finality.',
+    ].join('\n'), false)
+  }
+
+  return clampOfficialPrompt([
+    'Repair the failed WAGDIE character turn with one compact JSON object.',
+    `Failure category: ${diagnostics.initialErrorCategory ?? 'validation_error'}`,
+    `Previous response length: ${diagnostics.initialResponseLength ?? 0}`,
+    '',
+    'Minimal context:',
+    `Location id: ${input.room.locationId}.`,
+    `Speaker: ${truncatePromptValue(input.speaker.name, 80)} (#${input.speaker.tokenId}).`,
+    ...formatNarrativeContext(input),
+    '',
+    'Repair rules:',
+    '- JSON only; no markdown, commentary, speaker labels, or prose outside the object.',
+    '- publicSpeech is required, non-empty, public-safe, and under two sentences.',
+    '- declaredAction is required as a JSON object with a non-empty summary of the intended fictional action.',
+    '- Do not synthesize dice, DCs, HP, rewards, death, wallets, or finality.',
+    '- If sceneCheckProposal is allowed, set it to null unless the action is clearly roll-worthy and matches the offered checks.',
+    '',
+    CHARACTER_PROMPT_CONTRACT_MARKER,
+    JSON.stringify({
+      publicSpeech: 'short public in-character utterance',
+      declaredAction: { summary: 'what you intend to do next in the fiction', chosenOptionId: null, actionIntent: 'brief narrative intent' },
+      sceneCheckProposal: input.narrativeContext?.sceneCheck ? null : undefined,
+    }),
+  ].join('\n'), true)
+}
+
+export class OfficialLocationRoomTurnGenerationError extends Error {
+  constructor(
+    message: string,
+    readonly diagnostics: LocationRoomPublicGenerationDiagnostics,
+    options?: { cause?: unknown }
+  ) {
+    super(message)
+    this.name = 'OfficialLocationRoomTurnGenerationError'
+    this.cause = options?.cause
+  }
+}
+
 export function normalizeOfficialLocationRoomTurnResponse(
   raw: string,
   options: {
@@ -224,7 +316,7 @@ export function normalizeOfficialLocationRoomTurnResponse(
     narrativeContext?: boolean
     activeDecision?: LocationRoomAdventureDecision | null
   } = {}
-): Omit<GenerateOfficialLocationRoomTurnResult, 'officialAgentId'> {
+): Omit<GenerateOfficialLocationRoomTurnResult, 'officialAgentId' | 'turnGeneration'> {
   const sceneCheckContext = options.sceneCheckContext ?? null
   const activeDecision = options.activeDecision ?? null
   const requiresStructured = options.narrativeContext === true || Boolean(sceneCheckContext)
@@ -238,29 +330,24 @@ export function normalizeOfficialLocationRoomTurnResponse(
     }
   }
 
-  let parsed: Record<string, unknown> | null = null
-  try {
-    parsed = extractGameMasterJsonObject(raw, 'Location-room character turn response')
-  } catch {
-    const content = normalizeLocationRoomGeneratedContent(raw) ?? ''
-    return {
-      content,
-      declaredAction: content ? normalizeDeclaredAction({ summary: content }, { activeDecision }) : null,
-      sceneCheckProposal: null,
-      sceneCheckProposalError: null,
-    }
-  }
-
+  const parsed = extractGameMasterJsonObject(raw, 'Location-room character turn response')
   const content = typeof parsed.publicSpeech === 'string'
     ? normalizeLocationRoomGeneratedContent(parsed.publicSpeech) ?? ''
     : ''
-  const declaredAction = normalizeDeclaredAction(parsed.declaredAction ?? parsed.declared_action, { activeDecision }) ??
-    (content ? normalizeDeclaredAction({ summary: content }, { activeDecision }) : null)
+  if (!content) {
+    throw new Error('Location-room character turn response missing required publicSpeech')
+  }
+
+  const declaredAction = normalizeDeclaredAction(parsed.declaredAction ?? parsed.declared_action, { activeDecision })
+  if (!declaredAction) {
+    throw new Error('Location-room character turn response missing valid declaredAction')
+  }
 
   if (!sceneCheckContext) {
     return {
       content,
       declaredAction,
+      declaredActionSource: 'structured_model',
       sceneCheckProposal: null,
       sceneCheckProposalError: null,
     }
@@ -272,6 +359,7 @@ export function normalizeOfficialLocationRoomTurnResponse(
     return {
       content,
       declaredAction,
+      declaredActionSource: 'structured_model',
       sceneCheckProposal: null,
       sceneCheckProposalError: null,
     }
@@ -285,6 +373,7 @@ export function normalizeOfficialLocationRoomTurnResponse(
     return {
       content,
       declaredAction,
+      declaredActionSource: 'structured_model',
       sceneCheckProposal: null,
       sceneCheckProposalError: proposal.error,
     }
@@ -293,6 +382,7 @@ export function normalizeOfficialLocationRoomTurnResponse(
   return {
     content,
     declaredAction,
+    declaredActionSource: 'structured_model',
     sceneCheckProposal: proposal.value,
     sceneCheckProposalError: null,
   }
@@ -323,7 +413,6 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
       },
     })
 
-    await this.messaging.startAgent(record.id)
     const sessionMetadata = {
       source: 'wagdie-location-room',
       roomId: input.room.id,
@@ -334,25 +423,45 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
       officialAgentId: record.id,
     }
 
-    const collected = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
-      session: {
-        agentId: record.id,
-        userId: input.room.officialUserId,
-        metadata: sessionMetadata,
-      },
-      message: {
-        content: buildOfficialLocationRoomPrompt(input),
-        transport: 'http',
-        metadata: {
-          source: 'wagdie-location-room',
-          roomId: input.room.id,
-          locationId: input.room.locationId,
-          speakerTokenId: input.speaker.tokenId,
-          officialAgentId: record.id,
+    let collected: Awaited<ReturnType<OfficialElizaMessagingClient['collectStreamedResponseText']>>
+    let transportStage = 'start_agent'
+    try {
+      await this.messaging.startAgent(record.id)
+      transportStage = 'collect_stream'
+      collected = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+        session: {
+          agentId: record.id,
+          userId: input.room.officialUserId,
+          metadata: sessionMetadata,
         },
-      },
-      logContext: sessionMetadata,
-    })
+        message: {
+          content: buildOfficialLocationRoomPrompt(input),
+          transport: 'http',
+          metadata: {
+            source: 'wagdie-location-room',
+            roomId: input.room.id,
+            locationId: input.room.locationId,
+            speakerTokenId: input.speaker.tokenId,
+            officialAgentId: record.id,
+          },
+        },
+        logContext: sessionMetadata,
+      })
+    } catch (transportError) {
+      throw new OfficialLocationRoomTurnGenerationError(
+        'Official location-room turn generation failed during Official ElizaOS transport',
+        {
+          status: 'repair_failed',
+          repairAttempted: false,
+          repaired: false,
+          initialErrorCategory: 'transport_error',
+          transportStage,
+        },
+        { cause: transportError }
+      )
+    }
+
+    try {
       const normalized = normalizeOfficialLocationRoomTurnResponse(collected.text, {
         narrativeContext: Boolean(input.narrativeContext),
         activeDecision: input.narrativeContext?.activeDecision ?? null,
@@ -366,7 +475,103 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
       return {
         officialAgentId: record.id,
         ...normalized,
+        turnGeneration: {
+          status: 'accepted',
+          repairAttempted: false,
+          repaired: false,
+          initialResponseLength: collected.text.length,
+          initialResponseFlags: officialTurnResponseFlags(collected.text),
+        },
       }
+    } catch (initialError) {
+      const diagnostics = officialTurnDiagnosticsForInitialFailure(collected.text, initialError)
+      let repairText = ''
+
+      try {
+        const repairSessionMetadata = {
+          ...sessionMetadata,
+          source: 'wagdie-location-room-repair',
+          repairAttempted: true,
+          initialErrorCategory: diagnostics.initialErrorCategory,
+        }
+        const repaired = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+          session: {
+            agentId: record.id,
+            userId: input.room.officialUserId,
+            metadata: repairSessionMetadata,
+          },
+          message: {
+            content: buildOfficialLocationRoomTurnRepairPrompt(input, diagnostics),
+            transport: 'http',
+            metadata: {
+              source: 'wagdie-location-room-repair',
+              roomId: input.room.id,
+              locationId: input.room.locationId,
+              speakerTokenId: input.speaker.tokenId,
+              officialAgentId: record.id,
+              repairAttempted: true,
+              initialErrorCategory: diagnostics.initialErrorCategory,
+            },
+          },
+          logContext: repairSessionMetadata,
+        })
+        repairText = repaired.text
+      } catch (repairTransportError) {
+        const failedDiagnostics: LocationRoomPublicGenerationDiagnostics = {
+          ...diagnostics,
+          status: 'repair_failed',
+          repairAttempted: true,
+          repaired: false,
+          repairErrorCategory: 'repair_transport_error',
+          transportStage: 'repair_collect_stream',
+          repairResponseLength: repairText.length,
+          repairResponseFlags: officialTurnResponseFlags(repairText),
+        }
+        throw new OfficialLocationRoomTurnGenerationError(
+          `Official location-room turn repair failed (initial: ${failedDiagnostics.initialErrorCategory}, repair: ${failedDiagnostics.repairErrorCategory})`,
+          failedDiagnostics,
+          { cause: repairTransportError }
+        )
+      }
+
+      try {
+        const normalized = normalizeOfficialLocationRoomTurnResponse(repairText, {
+          narrativeContext: Boolean(input.narrativeContext),
+          activeDecision: input.narrativeContext?.activeDecision ?? null,
+          sceneCheckContext: input.narrativeContext?.sceneCheck ?? null,
+        })
+        if (!normalized.content) {
+          throw new Error('Official ElizaOS generated an empty location-room turn')
+        }
+        return {
+          officialAgentId: record.id,
+          ...normalized,
+          turnGeneration: {
+            ...diagnostics,
+            status: 'repaired',
+            repairAttempted: true,
+            repaired: true,
+            repairResponseLength: repairText.length,
+            repairResponseFlags: officialTurnResponseFlags(repairText),
+          },
+        }
+      } catch (repairError) {
+        const failedDiagnostics: LocationRoomPublicGenerationDiagnostics = {
+          ...diagnostics,
+          status: 'repair_failed',
+          repairAttempted: true,
+          repaired: false,
+          repairErrorCategory: categorizeOfficialTurnResponseError(repairError),
+          repairResponseLength: repairText.length,
+          repairResponseFlags: officialTurnResponseFlags(repairText),
+        }
+        throw new OfficialLocationRoomTurnGenerationError(
+          `Official location-room turn repair failed (initial: ${failedDiagnostics.initialErrorCategory}, repair: ${failedDiagnostics.repairErrorCategory})`,
+          failedDiagnostics,
+          { cause: repairError }
+        )
+      }
+    }
   }
 }
 

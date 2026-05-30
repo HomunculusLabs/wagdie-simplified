@@ -12,7 +12,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth/session'
 import { getElizaClient } from '@/lib/eliza/client'
 import { requireWalletSession, requireElizaUserToken } from '@/lib/eliza/sessionAuth'
-import { resolveCharacterByTokenId } from '@/lib/eliza/characterResolver'
+import { getCharacterByTokenId } from '@/lib/eliza/characterResolver'
+import { parseCanonicalElizaTokenId } from '@/lib/eliza/routeAuth'
+import { AI_PERSONA_REQUIRED_ERROR, AI_PERSONA_REQUIRED_MESSAGE } from '@/lib/eliza/chatReadiness'
 import { getCharacter } from '@/lib/services/character-service'
 import type { StreamCallbacks, ChatMessage } from '@/lib/eliza/gateway/types'
 import { isWagdieElizaError } from '@/lib/eliza/gateway/errors'
@@ -28,8 +30,8 @@ interface ChatRequest {
 function toStreamErrorPayload(error: unknown): { code: string; message: string } {
   if (isWagdieElizaError(error) && error.code === 'NOT_FOUND') {
     return {
-      code: 'AI_PERSONA_REQUIRED',
-      message: 'AI persona not found. Open this character, go to the AI persona tab, connect the owner wallet, review or edit the persona, then click Save AI Persona before chatting.',
+      code: AI_PERSONA_REQUIRED_ERROR,
+      message: AI_PERSONA_REQUIRED_MESSAGE,
     }
   }
 
@@ -76,8 +78,8 @@ export async function POST(request: NextRequest): Promise<Response> {
       )
     }
 
-    const parsedTokenId = parseInt(body.tokenId, 10)
-    if (isNaN(parsedTokenId) || parsedTokenId < 0) {
+    const parsedToken = parseCanonicalElizaTokenId(body.tokenId)
+    if (!parsedToken) {
       return NextResponse.json(
         { error: 'INVALID_TOKEN_ID', message: 'Invalid token ID' },
         { status: 400 }
@@ -85,12 +87,12 @@ export async function POST(request: NextRequest): Promise<Response> {
     }
 
     console.info('[Eliza Chat] Request accepted', {
-      tokenId: body.tokenId,
+      tokenId: parsedToken.externalId,
       hasConversationId: Boolean(body.conversationId),
     })
 
     // Verify character exists in WAGDIE database
-    const wagdieCharacter = await getCharacter(parsedTokenId)
+    const wagdieCharacter = await getCharacter(parsedToken.tokenId)
     if (!wagdieCharacter) {
       return NextResponse.json(
         { error: 'NOT_FOUND', message: 'WAGDIE character not found' },
@@ -100,16 +102,19 @@ export async function POST(request: NextRequest): Promise<Response> {
 
     const serverClient = getElizaClient()
 
-    // Resolve or auto-create character in Eliza (FR-011) via centralized resolver
-    // IMPORTANT: use serverClient for record resolution/creation (may require API key on live endpoint)
-    const record = await resolveCharacterByTokenId({
+    // Public chat must use a no-side-effect canonical lookup. Persona creation
+    // happens through PUT /api/eliza/characters/[tokenId] after the owner saves.
+    const record = await getCharacterByTokenId({
       elizaClient: serverClient,
-      tokenId: body.tokenId,
-      wagdieDefaults: {
-        name: wagdieCharacter.name ?? null,
-        backgroundStory: wagdieCharacter.background_story ?? null,
-      },
+      tokenId: parsedToken.externalId,
     })
+
+    if (!record) {
+      return NextResponse.json(
+        { error: AI_PERSONA_REQUIRED_ERROR, message: AI_PERSONA_REQUIRED_MESSAGE },
+        { status: 409 }
+      )
+    }
 
     // Create SSE stream
     const encoder = new TextEncoder()
@@ -126,7 +131,7 @@ export async function POST(request: NextRequest): Promise<Response> {
             },
             onComplete: (message: ChatMessage, conversationId: string) => {
               console.info('[Eliza Chat] Stream complete', {
-                tokenId: body.tokenId,
+                tokenId: parsedToken.externalId,
                 conversationId,
                 hasContent: Boolean(message.content),
                 contentLength: message.content?.length ?? 0,
@@ -146,7 +151,7 @@ export async function POST(request: NextRequest): Promise<Response> {
               const payload = toStreamErrorPayload(error)
 
               console.error('[Eliza Chat] Stream error', {
-                tokenId: body.tokenId,
+                tokenId: parsedToken.externalId,
                 hasConversationId: Boolean(body.conversationId),
                 code: payload.code,
                 message: payload.message,
@@ -172,7 +177,7 @@ export async function POST(request: NextRequest): Promise<Response> {
               conversationId: body.conversationId,
               userId: tokenResult.officialUserId,
               walletAddress: walletResult.address,
-              tokenId: body.tokenId,
+              tokenId: parsedToken.externalId,
               signal: upstreamAbortController.signal,
             },
             callbacks
@@ -180,7 +185,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         } catch (error) {
           const payload = toStreamErrorPayload(error)
           console.error('[Eliza Chat] Stream setup failed', {
-            tokenId: body.tokenId,
+            tokenId: parsedToken.externalId,
             hasConversationId: Boolean(body.conversationId),
             code: payload.code,
             message: payload.message,

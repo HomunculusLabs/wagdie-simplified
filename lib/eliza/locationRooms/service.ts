@@ -974,18 +974,6 @@ export class LocationRoomService {
           })
         : run
 
-      if (completedTurns >= currentRun.targetCompletedTurns) {
-        await this.gameplayRepository.markRunCompleted(currentRun.id, {
-          stopReason: 'target_reached',
-          completedTurns,
-          lastTickId: currentRun.lastTickId,
-          lastAdvancedAt: currentRun.lastAdvancedAt ?? now.toISOString(),
-          completedAt: now.toISOString(),
-        })
-        counters.completed += 1
-        continue
-      }
-
       const room = await this.repository.findRoomById(currentRun.roomId)
       if (!room) {
         await this.gameplayRepository.markRunFailed(currentRun.id, {
@@ -1453,7 +1441,7 @@ export class LocationRoomService {
       lastAdvancedAt: now.toISOString(),
     })
 
-    if (completedTurns >= updatedRun.targetCompletedTurns) {
+    if (completedTurns >= updatedRun.targetCompletedTurns && encounter?.status !== 'active') {
       updatedRun = await this.gameplayRepository.markRunCompleted(run.id, {
         ...terminalBase,
         stopReason: 'target_reached',
@@ -1670,7 +1658,9 @@ export class LocationRoomService {
 
         await this.repository.markTickCompleted(tick.id)
         await this.repository.updateRoomAfterProcessedTick(room, {
-          tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
+          tickIntervalMinutes: gameplayResult.encounterStatusAfter && gameplayResult.encounterStatusAfter !== 'active'
+            ? elizaConfig.locationRooms.activeNarrativeTickIntervalMinutes
+            : elizaConfig.locationRooms.tickIntervalMinutes,
           now,
         })
 

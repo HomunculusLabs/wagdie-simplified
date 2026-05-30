@@ -137,7 +137,7 @@ describe('PersonaAssistantDockSlot', () => {
       }))
     })
 
-    const chatButton = await screen.findByRole('button', { name: /^chat$/i })
+    const chatButton = await screen.findByRole('button', { name: /Open chat with this character/i })
     act(() => {
       chatButton.click()
     })
@@ -147,6 +147,26 @@ describe('PersonaAssistantDockSlot', () => {
       characterName: 'Test Character',
       characterId: 'eliza-character-123',
     })
+  })
+
+  it('does not open normal chat when the saved persona id is missing', async () => {
+    render(<PersonaAssistantDockSlot />)
+    appendAssistantContent()
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('persona-assistant-dock-target-change', {
+        detail: { tokenId: '123', characterName: 'Test Character' },
+      }))
+    })
+
+    const chatButton = await screen.findByRole('button', { name: /Save AI Persona before public chat/i })
+    expect(chatButton).toBeDisabled()
+
+    act(() => {
+      chatButton.click()
+    })
+
+    expect(mockOpenChat).not.toHaveBeenCalled()
   })
 
   it('closes the persona assistant sidebar without unmounting the portal target', async () => {
@@ -169,7 +189,7 @@ describe('PersonaAssistantDockSlot', () => {
   it('keeps the portal target mounted but suppresses it while normal chat is open', async () => {
     mockUseChatDock.mockReturnValue({
       isOpen: true,
-      target: { tokenId: '123', characterName: 'Test Character' },
+      target: { tokenId: '123', characterName: 'Test Character', characterId: 'eliza-character-123' },
     })
 
     render(<PersonaAssistantDockSlot />)

@@ -129,8 +129,7 @@ const baseProps = {
   onInfect: jest.fn(),
   onCure: jest.fn(),
   onChat: jest.fn(),
-  showChatAction: true,
-  chatCharacterId: 'eliza-character-123',
+  chatReadiness: { status: 'ready' as const, characterId: 'eliza-character-123' },
 }
 
 describe('CharacterSheetLayout', () => {
@@ -138,7 +137,7 @@ describe('CharacterSheetLayout', () => {
     jest.clearAllMocks()
   })
 
-  it('keeps the chat action visible on the owner AI persona tab', () => {
+  it('keeps the chat action visible when the canonical AI persona is ready', () => {
     const onChat = jest.fn()
 
     render(<CharacterSheetLayout {...baseProps} onChat={onChat} />)
@@ -148,6 +147,37 @@ describe('CharacterSheetLayout', () => {
 
     fireEvent.click(chatButton)
     expect(onChat).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows an actionable missing-persona notice instead of a chat button', () => {
+    const onChat = jest.fn()
+    const onTabChange = jest.fn()
+
+    render(
+      <CharacterSheetLayout
+        {...baseProps}
+        onChat={onChat}
+        onTabChange={onTabChange}
+        chatReadiness={{ status: 'missing' }}
+      />
+    )
+
+    expect(screen.queryByRole('button', { name: /^chat$/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/ai persona required before chat/i)).toBeInTheDocument()
+    expect(screen.getByText(/click Save AI Persona before chatting/i)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /open ai persona/i }))
+    expect(onTabChange).toHaveBeenCalledWith('ai-persona')
+    expect(onChat).not.toHaveBeenCalled()
+  })
+
+  it('passes no linked elizaOS id to the AI persona tab while missing', () => {
+    render(<CharacterSheetLayout {...baseProps} chatReadiness={{ status: 'missing' }} />)
+
+    expect(screen.getByTestId('ai-persona-tab')).not.toHaveAttribute('data-character-id')
+    expect(mockAIPersonaTab).toHaveBeenCalledWith(expect.objectContaining({
+      characterId: undefined,
+    }))
   })
 
   it('compacts the artwork and stats rail while the persona assistant dock is visible', async () => {

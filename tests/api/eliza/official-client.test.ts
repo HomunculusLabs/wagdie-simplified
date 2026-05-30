@@ -451,6 +451,63 @@ describe('OfficialWagdieElizaClient', () => {
     )
   })
 
+  it('maps final official SSE content when the done event has nested text and closes without delimiter', async () => {
+    const fetchMock = jest
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ success: true, data: { status: 'active' } }))
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            sessionId: SESSION_ID,
+            agentId: AGENT_ID,
+            userId: 'wallet-derived-user-id',
+            createdAt: new Date().toISOString(),
+            metadata: {},
+          },
+          { status: 201 }
+        )
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        body: sseStream([
+          'event: user_message\r\ndata: {\"id\":\"user-message\"}\r\n\r\n',
+          'event: done\r\ndata: {\"messageId\":\"agent-message\",\"content\":{\"text\":\"Nested reply\"}}',
+        ]),
+        headers: new Headers({ 'content-type': 'text/event-stream' }),
+        status: 200,
+      })
+
+    global.fetch = fetchMock as typeof fetch
+
+    const client = new OfficialWagdieElizaClient({
+      baseUrl: 'https://elizaos.example',
+      apiKey: 'service-key',
+      officialUserId: 'wallet-derived-user-id',
+      walletAddress: '0xabc',
+      conversationRepository: makeConversationRepository(),
+    })
+
+    const chunks: string[] = []
+    const complete = jest.fn()
+
+    await client.chat.sendMessageStream(
+      {
+        characterId: AGENT_ID,
+        message: 'Speak',
+      },
+      {
+        onChunk: (chunk) => chunks.push(chunk),
+        onComplete: complete,
+      }
+    )
+
+    expect(chunks).toEqual(['Nested reply'])
+    expect(complete).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'agent-message', content: 'Nested reply' }),
+      WAGDIE_CONVERSATION_ID
+    )
+  })
+
   it('best-effort deletes newly created official sessions when mapping creation fails', async () => {
     const fetchMock = jest
       .fn()

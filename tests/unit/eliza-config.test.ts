@@ -13,6 +13,8 @@ describe('elizaConfig location room settings', () => {
     delete process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_ENCOUNTER_ROUNDS
     delete process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_TARGET_TURNS
     delete process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_MAX_ACTIVE_RUNS_PER_WORKER
+    delete process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_MONSTER_COUNT
+    delete process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_TOTAL_MONSTER_HP
   })
 
   afterAll(() => {
@@ -32,10 +34,14 @@ describe('elizaConfig location room settings', () => {
         gameMasterAgentId: '',
       },
       gameplay: {
-        maxEncounterRounds: 12,
+        maxEncounterRounds: 6,
         automation: {
-          targetCompletedTurns: 100,
+          targetCompletedTurns: 20,
           maxActiveRunsPerWorker: 10,
+        },
+        monsterBudget: {
+          maxMonsterCount: 3,
+          maxTotalMonsterHp: 36,
         },
       },
     })
@@ -51,6 +57,8 @@ describe('elizaConfig location room settings', () => {
     process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_ENCOUNTER_ROUNDS = '100'
     process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_TARGET_TURNS = '150'
     process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_MAX_ACTIVE_RUNS_PER_WORKER = '7'
+    process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_MONSTER_COUNT = '5'
+    process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_TOTAL_MONSTER_HP = '72'
 
     const { elizaConfig } = await import('@/lib/eliza/config')
 
@@ -69,6 +77,10 @@ describe('elizaConfig location room settings', () => {
           targetCompletedTurns: 150,
           maxActiveRunsPerWorker: 7,
         },
+        monsterBudget: {
+          maxMonsterCount: 5,
+          maxTotalMonsterHp: 72,
+        },
       },
     })
   })
@@ -82,6 +94,8 @@ describe('elizaConfig location room settings', () => {
     process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_ENCOUNTER_ROUNDS = '201'
     process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_TARGET_TURNS = '0'
     process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_MAX_ACTIVE_RUNS_PER_WORKER = '1.5'
+    process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_MONSTER_COUNT = '13'
+    process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_TOTAL_MONSTER_HP = '0'
 
     const { elizaConfig } = await import('@/lib/eliza/config')
 
@@ -95,10 +109,14 @@ describe('elizaConfig location room settings', () => {
         gameMasterAgentId: '',
       },
       gameplay: {
-        maxEncounterRounds: 12,
+        maxEncounterRounds: 6,
         automation: {
-          targetCompletedTurns: 100,
+          targetCompletedTurns: 20,
           maxActiveRunsPerWorker: 10,
+        },
+        monsterBudget: {
+          maxMonsterCount: 3,
+          maxTotalMonsterHp: 36,
         },
       },
     })

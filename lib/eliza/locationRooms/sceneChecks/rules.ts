@@ -240,7 +240,7 @@ export function adjudicateSceneCheck(input: {
         source: 'backend',
         adjudicationSource: 'backend',
         requestSource: null,
-        reason: 'backend_fallback',
+        reason: 'backend_inferred',
         actorTokenId: input.actorTokenId,
         actorName: input.actorName ?? null,
         actionIntent: fallbackRequest.value.actionIntent,

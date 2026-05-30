@@ -6,14 +6,14 @@ import { NextRequest } from 'next/server'
 import { POST as chatHandler } from '@/app/api/eliza/chat/route'
 import { getSession } from '@/lib/auth/session'
 import { getElizaClient } from '@/lib/eliza/client'
-import { resolveCharacterByTokenId } from '@/lib/eliza/characterResolver'
+import { getCharacterByTokenId } from '@/lib/eliza/characterResolver'
 import { getCharacter } from '@/lib/services/character-service'
 import { elizaConfig } from '@/lib/eliza/config'
 import { getOfficialElizaUserIdForWallet } from '@/lib/eliza/authBridge'
 
 jest.mock('@/lib/auth/session', () => ({ getSession: jest.fn() }))
 jest.mock('@/lib/eliza/client', () => ({ getElizaClient: jest.fn() }))
-jest.mock('@/lib/eliza/characterResolver', () => ({ resolveCharacterByTokenId: jest.fn() }))
+jest.mock('@/lib/eliza/characterResolver', () => ({ getCharacterByTokenId: jest.fn() }))
 jest.mock('@/lib/services/character-service', () => ({ getCharacter: jest.fn() }))
 
 function createNextRequest(body: unknown) {
@@ -127,6 +127,64 @@ describe('Eliza Chat API Route', () => {
     expect(data.message).toContain('WAGDIE character not found')
   })
 
+  it('should return 400 for non-canonical token IDs', async () => {
+    ;(getSession as jest.Mock).mockResolvedValueOnce({
+      address: '0xabc',
+      eliza: {
+        tokens: {
+          accessToken: 'token',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        },
+      },
+    })
+
+    const response = await chatHandler(createNextRequest({ tokenId: '00123', message: 'Hello' }))
+    expect(response.status).toBe(400)
+
+    const data = await (response as any).json()
+    expect(data.error).toBe('INVALID_TOKEN_ID')
+    expect(getCharacter).not.toHaveBeenCalled()
+    expect(getElizaClient).not.toHaveBeenCalled()
+  })
+
+  it('should return 409 when the canonical AI persona is missing', async () => {
+    ;(getSession as jest.Mock).mockResolvedValueOnce({
+      address: '0xabc',
+      eliza: {
+        tokens: {
+          accessToken: 'token',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        },
+      },
+    })
+
+    ;(getCharacter as jest.Mock).mockResolvedValueOnce({
+      name: 'Test Character',
+      background_story: 'Backstory',
+    })
+
+    const serverClient = {
+      chat: { sendMessageStream: jest.fn() },
+      characters: { createRecord: jest.fn() },
+    }
+
+    ;(getElizaClient as jest.Mock).mockReturnValue(serverClient)
+    ;(getCharacterByTokenId as jest.Mock).mockResolvedValueOnce(null)
+
+    const response = await chatHandler(createNextRequest({ tokenId: '4073', message: 'Hello' }))
+    expect(response.status).toBe(409)
+
+    const data = await (response as any).json()
+    expect(data.error).toBe('AI_PERSONA_REQUIRED')
+    expect(data.message).toContain('Save AI Persona')
+    expect(getCharacterByTokenId).toHaveBeenCalledWith(expect.objectContaining({
+      elizaClient: serverClient,
+      tokenId: '4073',
+    }))
+    expect(serverClient.characters.createRecord).not.toHaveBeenCalled()
+    expect(serverClient.chat.sendMessageStream).not.toHaveBeenCalled()
+  })
+
   it('passes stable wallet-derived official user id to chat stream in official mode', async () => {
     elizaConfig.mode = 'official'
 
@@ -158,7 +216,7 @@ describe('Eliza Chat API Route', () => {
     })
 
     ;(getElizaClient as jest.Mock).mockReturnValue({ chat: { sendMessageStream } })
-    ;(resolveCharacterByTokenId as jest.Mock).mockResolvedValueOnce({
+    ;(getCharacterByTokenId as jest.Mock).mockResolvedValueOnce({
       id: 'record-1',
       character: { name: 'Test Character', bio: ['Bio'] },
     })
@@ -208,7 +266,7 @@ describe('Eliza Chat API Route', () => {
 
     ;(getElizaClient as jest.Mock).mockReturnValue(serverClient)
 
-    ;(resolveCharacterByTokenId as jest.Mock).mockResolvedValueOnce({
+    ;(getCharacterByTokenId as jest.Mock).mockResolvedValueOnce({
       id: 'record-1',
       character: { name: 'Test Character', bio: ['Bio'] },
     })
@@ -217,12 +275,11 @@ describe('Eliza Chat API Route', () => {
 
     expect(getElizaClient).toHaveBeenCalledTimes(1)
 
-    expect(resolveCharacterByTokenId).toHaveBeenCalledTimes(1)
-    expect(resolveCharacterByTokenId).toHaveBeenCalledWith(
+    expect(getCharacterByTokenId).toHaveBeenCalledTimes(1)
+    expect(getCharacterByTokenId).toHaveBeenCalledWith(
       expect.objectContaining({
         elizaClient: serverClient,
         tokenId: '1',
-        wagdieDefaults: expect.any(Object),
       })
     )
 

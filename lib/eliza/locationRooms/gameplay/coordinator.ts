@@ -1,14 +1,20 @@
 import { elizaConfig } from '@/lib/eliza/config'
 import {
   GAMEPLAY_GAME_MASTER_AUTHOR_NAME,
+  GameMasterGameplayEncounterProposalGenerationError,
+  GameMasterGameplayOutcomeGenerationError,
   formatPublicGameplayRollSummary,
   officialGameMasterGameplayGenerator,
+  type GameplayEncounterProposalGenerationDiagnostics,
   type GameplayMechanicalOutcomeSummary,
+  type GameplayOutcomeGenerationDiagnostics,
   type GameMasterGameplayGenerator,
 } from './gameMasterGameplayGenerator'
 import { projectPublicGameplayRolls } from './publicRolls'
 import {
+  GameplayActionGenerationError,
   officialGameplayActionGenerator,
+  type GameplayActionGenerationDiagnostics,
   type GameplayActionGenerator,
 } from './actionGenerator'
 import {
@@ -104,6 +110,7 @@ export type ProcessGameplayLocationRoomTurnResult =
       selectedTokenId: number | null
       messageId?: string
       messageIds: string[]
+      encounterStatusAfter?: string
     }
   | {
       status: 'skipped'
@@ -339,6 +346,148 @@ function triggerSpeakerInstruction(
   return typeof stored === 'string' && stored.trim() ? stored.trim() : null
 }
 
+type UnexpectedGenerationFailureDiagnostics = {
+  status: 'repair_failed'
+  repairAttempted: false
+  repaired: false
+  initialErrorCategory: 'unexpected_error'
+}
+
+function unexpectedGenerationFailureDiagnostics(): UnexpectedGenerationFailureDiagnostics {
+  return {
+    status: 'repair_failed',
+    repairAttempted: false,
+    repaired: false,
+    initialErrorCategory: 'unexpected_error',
+  }
+}
+
+function safeOutcomeGenerationFailureMetadata(error: unknown): {
+  status: 'repair_failed'
+  diagnostics: GameplayOutcomeGenerationDiagnostics | UnexpectedGenerationFailureDiagnostics
+} {
+  if (error instanceof GameMasterGameplayOutcomeGenerationError) {
+    return {
+      status: 'repair_failed',
+      diagnostics: error.diagnostics,
+    }
+  }
+
+  return {
+    status: 'repair_failed',
+    diagnostics: unexpectedGenerationFailureDiagnostics(),
+  }
+}
+
+function safeActionGenerationFailureMetadata(error: unknown): {
+  status: 'repair_failed'
+  diagnostics: GameplayActionGenerationDiagnostics | UnexpectedGenerationFailureDiagnostics
+} {
+  if (error instanceof GameplayActionGenerationError) {
+    return {
+      status: 'repair_failed',
+      diagnostics: error.diagnostics,
+    }
+  }
+
+  return {
+    status: 'repair_failed',
+    diagnostics: unexpectedGenerationFailureDiagnostics(),
+  }
+}
+
+function safeEncounterProposalGenerationFailureMetadata(error: unknown): {
+  status: 'repair_failed'
+  diagnostics: GameplayEncounterProposalGenerationDiagnostics | UnexpectedGenerationFailureDiagnostics
+} {
+  if (error instanceof GameMasterGameplayEncounterProposalGenerationError) {
+    return {
+      status: 'repair_failed',
+      diagnostics: error.diagnostics,
+    }
+  }
+
+  return {
+    status: 'repair_failed',
+    diagnostics: unexpectedGenerationFailureDiagnostics(),
+  }
+}
+
+function genericGameplaySetupReason(value: string): string | null {
+  const normalized = value.replace(/\s+/g, ' ').trim().toLowerCase()
+  if (!normalized) return 'empty'
+  if (normalized === 'a dreadful encounter') return 'default public title'
+  if (normalized === 'wagdie horror') return 'default monster name'
+  if (normalized === 'lurking threat') return 'default monster archetype'
+  if (normalized === 'fallback apparition') return 'fallback monster archetype'
+  if (normalized === 'ashen horror' || normalized === 'restless shade') return 'legacy fallback monster name'
+  if (/^a threat (gathers|emerges)\b/.test(normalized)) return 'default public setup or summary'
+  if (/^the room (darkens|shifts)\b/.test(normalized)) return 'generic room setup'
+  return null
+}
+
+function encounterProposalValidationError(
+  message: string,
+  initialErrorCategory: GameplayEncounterProposalGenerationDiagnostics['initialErrorCategory']
+): GameMasterGameplayEncounterProposalGenerationError {
+  return new GameMasterGameplayEncounterProposalGenerationError(message, {
+    status: 'repair_failed',
+    repairAttempted: false,
+    repaired: false,
+    initialErrorCategory,
+  })
+}
+
+function requireModelSourcedGameplayText(value: unknown, label: string): string {
+  const text = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : ''
+  if (!text) {
+    throw encounterProposalValidationError(
+      `Gameplay encounter ${label} missing model-sourced public text`,
+      'missing_required_field'
+    )
+  }
+  const genericReason = genericGameplaySetupReason(text)
+  if (genericReason) {
+    throw encounterProposalValidationError(
+      `Gameplay encounter ${label} used generic fallback copy (${genericReason})`,
+      'generic_public_identity'
+    )
+  }
+  return text
+}
+
+function requireModelSourcedGameplaySetup(value: unknown): string {
+  return requireModelSourcedGameplayText(value, 'setup narration')
+}
+
+function requireModelSourcedEncounterProposalIdentity(proposal: {
+  title?: unknown
+  summary?: unknown
+  monsterName?: unknown
+  monsterArchetype?: unknown
+}): void {
+  requireModelSourcedGameplayText(proposal.title, 'title')
+  requireModelSourcedGameplayText(proposal.summary, 'summary')
+  requireModelSourcedGameplayText(proposal.monsterName, 'monsterName')
+  requireModelSourcedGameplayText(proposal.monsterArchetype, 'monsterArchetype')
+}
+
+function actionValidationErrorCategory(error: string): GameplayActionGenerationDiagnostics['initialErrorCategory'] {
+  if (/target|Attack actions require|Help actions require/i.test(error)) return 'target_constraint'
+  if (/roll choice|check type|contextual/i.test(error)) return 'roll_choice_constraint'
+  if (/public speech|Unsupported gameplay action type|must be a JSON object/i.test(error)) return 'missing_required_field'
+  return 'validation_error'
+}
+
+function actionValidationGenerationError(error: string): GameplayActionGenerationError {
+  return new GameplayActionGenerationError(`Generated gameplay action failed validation: ${error}`, {
+    status: 'repair_failed',
+    repairAttempted: false,
+    repaired: false,
+    initialErrorCategory: actionValidationErrorCategory(error),
+  })
+}
+
 function rewardClaimSummaryForContext(claim: {
   id: string
   status: string
@@ -371,9 +520,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
   async processTurn(input: ProcessGameplayLocationRoomTurnInput): Promise<ProcessGameplayLocationRoomTurnResult> {
     const gameMasterAgentId = await this.gameMasterAgentResolver.resolveRuntimeGameMasterAgentId()
     let narrativeState = await this.narrativeRepository.ensureStateForRoom({ room: input.room })
-    const effectiveMaxEncounterRounds = input.gameplayRun
-      ? Math.max(elizaConfig.locationRooms.gameplay.maxEncounterRounds, input.gameplayRun.targetCompletedTurns)
-      : elizaConfig.locationRooms.gameplay.maxEncounterRounds
+    const effectiveMaxEncounterRounds = elizaConfig.locationRooms.gameplay.maxEncounterRounds
     let gameplayState = await this.gameplayRepository.ensureStateForRoom({ room: input.room })
     const reconciled = await reconcileCharacters(gameplayState, input.participants, input.now, this.sheetResolver)
     if (reconciled.changed) {
@@ -424,36 +571,51 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         }
       }
 
-      const proposalOutput = await this.gameMasterGenerator.generateEncounterProposal({
-        gameMasterAgentId,
-        room: input.room,
-        tick: input.tick,
-        participants: playableParticipants,
-        recentMessages: input.recentMessages,
-        narrativeState,
-        gameplayState,
-        encounterSeed: input.encounterTrigger.encounterSeed ?? null,
-        requestedDifficulty: elizaConfig.locationRooms.gameplay.defaultDifficulty,
-        budget: {
+      let proposalOutput: Awaited<ReturnType<GameMasterGameplayGenerator['generateEncounterProposal']>>
+      let normalized: ReturnType<typeof normalizeEncounterProposal>
+      try {
+        proposalOutput = await this.gameMasterGenerator.generateEncounterProposal({
+          gameMasterAgentId,
+          room: input.room,
+          tick: input.tick,
+          participants: playableParticipants,
+          recentMessages: input.recentMessages,
+          narrativeState,
+          gameplayState,
+          encounterSeed: input.encounterTrigger.encounterSeed ?? null,
+          requestedDifficulty: elizaConfig.locationRooms.gameplay.defaultDifficulty,
+          budget: {
+            partySize: playableParticipants.length,
+            difficulty: elizaConfig.locationRooms.gameplay.defaultDifficulty,
+            maxMonsterCount: elizaConfig.locationRooms.gameplay.monsterBudget.maxMonsterCount,
+            maxTotalMonsterHp: elizaConfig.locationRooms.gameplay.monsterBudget.maxTotalMonsterHp,
+            maxXpPerCharacter: elizaConfig.locationRooms.gameplay.rewardBudget.maxXpPerCharacter,
+            maxTemporaryBoons: elizaConfig.locationRooms.gameplay.rewardBudget.maxTemporaryBoons,
+            maxNarrativeRewards: elizaConfig.locationRooms.gameplay.rewardBudget.maxNarrativeRewards,
+          },
+        })
+        requireModelSourcedEncounterProposalIdentity(proposalOutput.proposal)
+        normalized = normalizeEncounterProposal(proposalOutput.proposal, {
           partySize: playableParticipants.length,
+          averageLevel: 1,
           difficulty: elizaConfig.locationRooms.gameplay.defaultDifficulty,
           maxMonsterCount: elizaConfig.locationRooms.gameplay.monsterBudget.maxMonsterCount,
           maxTotalMonsterHp: elizaConfig.locationRooms.gameplay.monsterBudget.maxTotalMonsterHp,
           maxXpPerCharacter: elizaConfig.locationRooms.gameplay.rewardBudget.maxXpPerCharacter,
           maxTemporaryBoons: elizaConfig.locationRooms.gameplay.rewardBudget.maxTemporaryBoons,
           maxNarrativeRewards: elizaConfig.locationRooms.gameplay.rewardBudget.maxNarrativeRewards,
-        },
-      })
-      const normalized = normalizeEncounterProposal(proposalOutput.proposal, {
-        partySize: playableParticipants.length,
-        averageLevel: 1,
-        difficulty: elizaConfig.locationRooms.gameplay.defaultDifficulty,
-        maxMonsterCount: elizaConfig.locationRooms.gameplay.monsterBudget.maxMonsterCount,
-        maxTotalMonsterHp: elizaConfig.locationRooms.gameplay.monsterBudget.maxTotalMonsterHp,
-        maxXpPerCharacter: elizaConfig.locationRooms.gameplay.rewardBudget.maxXpPerCharacter,
-        maxTemporaryBoons: elizaConfig.locationRooms.gameplay.rewardBudget.maxTemporaryBoons,
-        maxNarrativeRewards: elizaConfig.locationRooms.gameplay.rewardBudget.maxNarrativeRewards,
-      })
+        })
+        setupNarration = requireModelSourcedGameplaySetup(proposalOutput.publicSetupNarration)
+      } catch (error) {
+        const encounterProposalGenerationFailure = safeEncounterProposalGenerationFailureMetadata(error)
+        await this.gameplayRepository.updateState(input.room, {
+          metadata: {
+            ...gameplayState.metadata,
+            encounterProposalGenerationFailure,
+          },
+        })
+        throw error
+      }
 
       encounter = await this.gameplayRepository.createActiveEncounter({
         room: input.room,
@@ -468,7 +630,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
           createdByTickId: input.tick.id,
           gameMasterAgentId: proposalOutput.gameMasterAgentId,
           proposalMetadata: proposalOutput.metadata,
-          publicSetupNarration: proposalOutput.publicSetupNarration,
+          publicSetupNarration: setupNarration,
           triggerSource: input.encounterTrigger.source,
           triggerId: input.encounterTrigger.triggerId,
           narrativeBeatId: input.encounterTrigger.narrativeBeatId ?? null,
@@ -477,7 +639,6 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
           triggerSpeakerInstruction: input.encounterTrigger.speakerInstruction ?? null,
         },
       })
-      setupNarration = proposalOutput.publicSetupNarration ?? normalized.publicSummary
       createdEncounterThisTick = encounter.metadata.createdByTickId === input.tick.id
       narrativeState = await this.narrativeRepository.updateState(input.room, {
         metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
@@ -493,11 +654,12 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
           lastGameplayTriggerTickId: input.tick.id,
         }),
       })
+      const { encounterProposalGenerationFailure: _encounterProposalGenerationFailure, ...gameplayMetadata } = gameplayState.metadata
       gameplayState = await this.gameplayRepository.updateState(input.room, {
         status: 'active_encounter',
         activeEncounterId: encounter.id,
         metadata: {
-          ...gameplayState.metadata,
+          ...gameplayMetadata,
           lastEncounterStartedTickId: input.tick.id,
           lastEncounterTriggerId: input.encounterTrigger.triggerId,
         },
@@ -505,9 +667,9 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
     }
 
     createdEncounterThisTick = encounter.metadata.createdByTickId === input.tick.id
-    setupNarration = typeof encounter.metadata.publicSetupNarration === 'string'
-      ? encounter.metadata.publicSetupNarration
-      : encounter.publicSummary
+    setupNarration = createdEncounterThisTick
+      ? requireModelSourcedGameplaySetup(encounter.metadata.publicSetupNarration)
+      : null
 
     if (encounter.status !== 'active' && !turn) {
       return {
@@ -538,7 +700,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         tokenId: null,
         officialAgentId: gameMasterAgentId,
         authorName: GAMEPLAY_GAME_MASTER_AUTHOR_NAME,
-        content: setupNarration || encounter.publicSummary || 'A threat emerges in the room.',
+        content: setupNarration,
         visibility: 'public',
         dedupeKey: 'gameplay:gm_setup',
         metadata: {
@@ -629,37 +791,53 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
     }
 
     if (!action) {
-      const generated = await this.actionGenerator.generateAction({
-        room: input.room,
-        tick: input.tick,
-        speaker,
-        participants: selectableParticipants,
-        recentMessages: input.recentMessages,
-        encounter,
-        gameplayState,
-        characterState: gameplayState.characters[String(speaker.tokenId)],
-        visibleMonsters: parseGameplayMonsters(encounter.monsterState),
-        validation: validationContext,
-        speakerInstruction: triggerSpeakerInstruction(input.encounterTrigger, encounter),
-      })
-      const generatedValidation = validateGameplayActionEnvelope(generated.action, validationContext)
-      if (!generatedValidation.ok) {
-        throw new Error(`Generated gameplay action failed validation: ${generatedValidation.error}`)
-      }
+      try {
+        const generated = await this.actionGenerator.generateAction({
+          room: input.room,
+          tick: input.tick,
+          speaker,
+          participants: selectableParticipants,
+          recentMessages: input.recentMessages,
+          encounter,
+          gameplayState,
+          characterState: gameplayState.characters[String(speaker.tokenId)],
+          visibleMonsters: parseGameplayMonsters(encounter.monsterState),
+          validation: validationContext,
+          speakerInstruction: triggerSpeakerInstruction(input.encounterTrigger, encounter),
+        })
+        const generatedValidation = validateGameplayActionEnvelope(generated.action, validationContext)
+        if (!generatedValidation.ok) {
+          throw actionValidationGenerationError(generatedValidation.error)
+        }
 
-      action = generatedValidation.action
-      actionOfficialAgentId = generated.officialAgentId
-      turn = await this.gameplayRepository.storeTurnOutcome(turn.id, {
-        status: 'action_recorded',
-        selectedTokenId: speaker.tokenId,
-        action,
-        publicMessageIds: messageIds,
-        metadata: {
-          ...turn.metadata,
-          officialAgentId: generated.officialAgentId,
-          actionRawResponseLength: generated.rawResponseLength,
-        },
-      })
+        action = generatedValidation.action
+        actionOfficialAgentId = generated.officialAgentId
+        const { actionGenerationFailure: _actionGenerationFailure, ...turnMetadata } = turn.metadata
+        turn = await this.gameplayRepository.storeTurnOutcome(turn.id, {
+          status: 'action_recorded',
+          selectedTokenId: speaker.tokenId,
+          action,
+          publicMessageIds: messageIds,
+          metadata: {
+            ...turnMetadata,
+            officialAgentId: generated.officialAgentId,
+            actionRawResponseLength: generated.rawResponseLength,
+            ...(generated.generationDiagnostics ? { actionGenerationDiagnostics: generated.generationDiagnostics } : {}),
+          },
+        })
+      } catch (error) {
+        const actionGenerationFailure = safeActionGenerationFailureMetadata(error)
+        await this.gameplayRepository.storeTurnOutcome(turn.id, {
+          status: 'planned',
+          selectedTokenId: speaker.tokenId,
+          publicMessageIds: messageIds,
+          metadata: {
+            ...turn.metadata,
+            actionGenerationFailure,
+          },
+        })
+        throw error
+      }
     }
 
     let mechanics: ResolveGameplayTurnMechanicsResult
@@ -852,21 +1030,42 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       },
     })
 
-    const outcome = await this.gameMasterGenerator.generateOutcomeNarration({
-      gameMasterAgentId,
-      room: input.room,
-      tick: input.tick,
-      participants: selectableParticipants,
-      recentMessages: input.recentMessages,
-      narrativeState,
-      gameplayStateBefore: gameplayStateBeforeOutcome,
-      gameplayStateAfter: gameplayState,
-      encounterBefore: encounterBeforeOutcome,
-      encounterAfter: encounter,
-      turn,
-      action,
-      mechanicalSummary,
-    })
+    let outcome: Awaited<ReturnType<GameMasterGameplayGenerator['generateOutcomeNarration']>>
+    try {
+      outcome = await this.gameMasterGenerator.generateOutcomeNarration({
+        gameMasterAgentId,
+        room: input.room,
+        tick: input.tick,
+        participants: selectableParticipants,
+        recentMessages: input.recentMessages,
+        narrativeState,
+        gameplayStateBefore: gameplayStateBeforeOutcome,
+        gameplayStateAfter: gameplayState,
+        encounterBefore: encounterBeforeOutcome,
+        encounterAfter: encounter,
+        turn,
+        action,
+        mechanicalSummary,
+      })
+    } catch (error) {
+      const outcomeGenerationFailure = safeOutcomeGenerationFailureMetadata(error)
+      await this.gameplayRepository.storeTurnOutcome(turn.id, {
+        status: 'resolved',
+        selectedTokenId: speaker.tokenId,
+        action,
+        diceResults: mechanics.diceResults,
+        mechanicalDeltas: deltas as unknown as Record<string, unknown>,
+        publicMessageIds: messageIds,
+        outcomeSummary: null,
+        metadata: {
+          ...turn.metadata,
+          officialAgentId: actionOfficialAgentId ?? undefined,
+          gameMasterAgentId,
+          outcomeGenerationFailure,
+        },
+      })
+      throw error
+    }
     const outcomeContent = outcome.publicNarration
 
     const outcomeMessage = await this.repository.appendMessage({
@@ -913,6 +1112,15 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       }),
     })
 
+    const completedTurnMetadata: Record<string, unknown> = {
+      ...turn.metadata,
+      officialAgentId: actionOfficialAgentId ?? undefined,
+      gameMasterAgentId: outcome.gameMasterAgentId,
+      outcomeRawResponseLength: outcome.metadata.rawResponseLength,
+      ...(outcome.metadata.generationDiagnostics ? { outcomeGenerationDiagnostics: outcome.metadata.generationDiagnostics } : {}),
+    }
+    delete completedTurnMetadata.outcomeGenerationFailure
+
     turn = await this.gameplayRepository.storeTurnOutcome(turn.id, {
       status: 'completed',
       selectedTokenId: speaker.tokenId,
@@ -921,12 +1129,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       mechanicalDeltas: deltas as unknown as Record<string, unknown>,
       publicMessageIds: messageIds,
       outcomeSummary: outcome.publicNarration,
-      metadata: {
-        ...turn.metadata,
-        officialAgentId: actionOfficialAgentId ?? undefined,
-        gameMasterAgentId: outcome.gameMasterAgentId,
-        outcomeRawResponseLength: outcome.metadata.rawResponseLength,
-      },
+      metadata: completedTurnMetadata,
       completedAt: nowIso(input.now),
     })
 
@@ -935,6 +1138,7 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
       selectedTokenId: speaker.tokenId,
       messageId: actionMessage.id,
       messageIds: turn.publicMessageIds,
+      encounterStatusAfter: encounter.status,
     }
   }
 

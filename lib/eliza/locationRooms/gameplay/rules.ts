@@ -146,8 +146,8 @@ export type ResolveGameplayTurnMechanicsResult = {
 
 const DEFAULT_PUBLIC_SPEECH_MAX_LENGTH = 500
 const DEFAULT_INTENT_SUMMARY_MAX_LENGTH = 240
-const DEFAULT_MAX_MONSTER_COUNT = 6
-const DEFAULT_MAX_TOTAL_MONSTER_HP = 180
+const DEFAULT_MAX_MONSTER_COUNT = 3
+const DEFAULT_MAX_TOTAL_MONSTER_HP = 36
 const DEFAULT_MAX_XP_PER_CHARACTER = 100
 const DEFAULT_MAX_TEMPORARY_BOONS = 2
 const DEFAULT_MAX_NARRATIVE_REWARDS = 3
@@ -1068,7 +1068,7 @@ export function resolveGameplayTurnMechanics(
     charactersAfter,
     monstersAfter,
     roundNumberAfter,
-    input.maxEncounterRounds ?? 12
+    input.maxEncounterRounds ?? elizaConfig.locationRooms.gameplay.maxEncounterRounds
   )
 
   const rewardPlan = parseGameplayRewardPlan(input.encounter.rewardPlan)

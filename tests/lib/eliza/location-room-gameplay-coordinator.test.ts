@@ -19,8 +19,15 @@ import type {
   GameplayCharacterSheet,
   GameplayCharacterSheetResolver,
 } from '@/lib/eliza/locationRooms/gameplay/characterSheetResolver'
-import type { GameMasterGameplayGenerator } from '@/lib/eliza/locationRooms/gameplay/gameMasterGameplayGenerator'
-import type { GameplayActionGenerator } from '@/lib/eliza/locationRooms/gameplay/actionGenerator'
+import {
+  GameMasterGameplayEncounterProposalGenerationError,
+  GameMasterGameplayOutcomeGenerationError,
+  type GameMasterGameplayGenerator,
+} from '@/lib/eliza/locationRooms/gameplay/gameMasterGameplayGenerator'
+import {
+  GameplayActionGenerationError,
+  type GameplayActionGenerator,
+} from '@/lib/eliza/locationRooms/gameplay/actionGenerator'
 import type { LocationRoomGameplayRepository } from '@/lib/eliza/locationRooms/gameplay/repository'
 import type {
   GameplayDeathReview,
@@ -504,6 +511,45 @@ describe('location room gameplay coordinator', () => {
     expect(gameplayRepository.createActiveEncounter).not.toHaveBeenCalled()
   })
 
+  it('persists encounter proposal diagnostics before encounter creation fails', async () => {
+    const { coordinator, gameplayRepository, roomRepository, gmGenerator } = makeCoordinator()
+    const failure = new GameMasterGameplayEncounterProposalGenerationError('proposal repair failed', {
+      status: 'repair_failed',
+      repairAttempted: true,
+      repaired: false,
+      initialErrorCategory: 'generic_public_identity',
+      repairErrorCategory: 'missing_required_field',
+      initialResponseLength: 100,
+      repairResponseLength: 80,
+    })
+    gmGenerator.generateEncounterProposal.mockRejectedValueOnce(failure)
+
+    await expect(coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+      encounterTrigger: combatTrigger(),
+    })).rejects.toThrow('proposal repair failed')
+
+    expect(gameplayRepository.createActiveEncounter).not.toHaveBeenCalled()
+    expect(gameplayRepository.turns).toHaveLength(0)
+    expect(roomRepository.messages).toHaveLength(0)
+    expect(gameplayRepository.state.metadata).toEqual(expect.objectContaining({
+      encounterProposalGenerationFailure: {
+        status: 'repair_failed',
+        diagnostics: expect.objectContaining({
+          status: 'repair_failed',
+          repairAttempted: true,
+          repaired: false,
+          initialErrorCategory: 'generic_public_identity',
+          repairErrorCategory: 'missing_required_field',
+        }),
+      },
+    }))
+  })
+
   it('does not resolve character sheets while stats gate is disabled by default', async () => {
     const sheetResolver: jest.Mocked<GameplayCharacterSheetResolver> = {
       resolveSheets: jest.fn(async () => new Map()),
@@ -767,7 +813,139 @@ describe('location room gameplay coordinator', () => {
       publicMessageIds: ['msg-1'],
       diceResults: [],
       mechanicalDeltas: {},
+      metadata: expect.objectContaining({
+        actionGenerationFailure: expect.objectContaining({
+          diagnostics: expect.objectContaining({ initialErrorCategory: 'target_constraint' }),
+        }),
+      }),
     })
+  })
+
+  it('persists typed action generation diagnostics and rethrows before character action or roll card append', async () => {
+    const { coordinator, gameplayRepository, roomRepository, actionGenerator } = makeCoordinator()
+    const failure = new GameplayActionGenerationError('action repair failed', {
+      status: 'repair_failed',
+      repairAttempted: true,
+      repaired: false,
+      initialErrorCategory: 'missing_json_object',
+      repairErrorCategory: 'target_constraint',
+      initialResponseLength: 20,
+      repairResponseLength: 40,
+    })
+    actionGenerator.generateAction.mockRejectedValueOnce(failure)
+
+    await expect(coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+      encounterTrigger: combatTrigger(),
+    })).rejects.toThrow('action repair failed')
+
+    expect(roomRepository.messages.map((message) => message.metadata.gameplayMessageKind)).toEqual(['gm_setup'])
+    expect(roomRepository.messages.some((message) => message.metadata.gameplayMessageKind === 'character_action')).toBe(false)
+    expect(roomRepository.messages.some((message) => message.metadata.gameplayMessageKind === 'roll_card')).toBe(false)
+    expect(gameplayRepository.turns[0]).toMatchObject({
+      status: 'planned',
+      selectedTokenId: 1,
+      publicMessageIds: ['msg-1'],
+      diceResults: [],
+      mechanicalDeltas: {},
+      metadata: expect.objectContaining({
+        actionGenerationFailure: {
+          status: 'repair_failed',
+          diagnostics: expect.objectContaining({
+            status: 'repair_failed',
+            repairAttempted: true,
+            repaired: false,
+            initialErrorCategory: 'missing_json_object',
+            repairErrorCategory: 'target_constraint',
+          }),
+        },
+      }),
+    })
+  })
+
+  it('refuses generic persisted setup copy instead of appending a setup fallback', async () => {
+    const { coordinator, gameplayRepository, roomRepository } = makeCoordinator()
+    gameplayRepository.encounters.push({
+      id: 'encounter-existing',
+      roomId: 'room-1',
+      locationId: 'loc-1',
+      status: 'active',
+      difficulty: 'normal',
+      roundNumber: 1,
+      publicTitle: 'Existing Maw',
+      publicSummary: 'A threat gathers in the room.',
+      monsterState: [{ id: 'monster-1', name: 'Existing Maw', archetype: 'bell horror', hp: 2, maxHp: 2, ac: 12, attackBonus: 2, damageFormula: '1d6', status: 'alive' }],
+      rewardPlan: { xpPerCharacter: 5, temporaryBoons: [], narrativeRewards: [], victoryText: null, metadata: {} },
+      mechanics: {},
+      metadata: { createdByTickId: 'tick-1', publicSetupNarration: 'A threat emerges in the room.' },
+      lastError: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      completedAt: null,
+    })
+
+    await expect(coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+      encounterTrigger: combatTrigger(),
+    })).rejects.toThrow('generic fallback copy')
+
+    expect(roomRepository.messages).toHaveLength(0)
+    expect(gameplayRepository.turns).toHaveLength(0)
+  })
+
+  it('honors configured max encounter rounds during active gameplay runs', async () => {
+    const { coordinator, gameplayRepository, roomRepository, gmGenerator } = makeCoordinator({ rngValues: [0, 0, 0.999] })
+    gameplayRepository.state.status = 'active_encounter'
+    gameplayRepository.state.activeEncounterId = 'encounter-existing'
+    gameplayRepository.encounters.push({
+      id: 'encounter-existing',
+      roomId: 'room-1',
+      locationId: 'loc-1',
+      status: 'active',
+      difficulty: 'normal',
+      roundNumber: 6,
+      publicTitle: 'Existing Maw',
+      publicSummary: 'Existing summary.',
+      monsterState: [{ id: 'monster-1', name: 'Existing Maw', archetype: 'bell horror', hp: 20, maxHp: 20, ac: 12, attackBonus: 2, damageFormula: '1d6', status: 'alive' }],
+      rewardPlan: { xpPerCharacter: 5, temporaryBoons: [], narrativeRewards: [], victoryText: null, metadata: {} },
+      mechanics: {},
+      metadata: { createdByTickId: 'previous-tick' },
+      lastError: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      completedAt: null,
+    })
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+      gameplayRun: { id: 'run-1', targetCompletedTurns: 20 },
+    })
+
+    expect(result).toMatchObject({ status: 'completed', encounterStatusAfter: 'abandoned' })
+    expect(gameplayRepository.encounters[0]).toMatchObject({
+      status: 'abandoned',
+      roundNumber: 7,
+      completedAt: now.toISOString(),
+    })
+    expect(gameplayRepository.state).toMatchObject({ status: 'aftermath', activeEncounterId: null })
+    expect(gmGenerator.generateEncounterProposal).not.toHaveBeenCalled()
+    expect(roomRepository.messages.map((message) => message.metadata.gameplayMessageKind)).toEqual([
+      'character_action',
+      'roll_card',
+      'gm_outcome',
+    ])
   })
 
   it('returns a completed turn on retry without regenerating or duplicating messages', async () => {
@@ -818,6 +996,12 @@ describe('location room gameplay coordinator', () => {
     expect(gameplayRepository.turns[0]).toMatchObject({
       status: 'resolved',
       publicMessageIds: ['msg-1', 'msg-2', 'msg-3'],
+      outcomeSummary: null,
+      metadata: expect.objectContaining({
+        outcomeGenerationFailure: expect.objectContaining({
+          diagnostics: expect.objectContaining({ initialErrorCategory: 'unexpected_error' }),
+        }),
+      }),
     })
     expect(roomRepository.messages[2].metadata).toEqual(expect.objectContaining({
       dedupeKey: 'gameplay:roll_card',
@@ -834,6 +1018,7 @@ describe('location room gameplay coordinator', () => {
       'gm_outcome',
     ])
     expect(gameplayRepository.turns[0].publicMessageIds).toEqual(['msg-1', 'msg-2', 'msg-3', 'msg-4'])
+    expect(gameplayRepository.turns[0].metadata).not.toHaveProperty('outcomeGenerationFailure')
     expect(actionGenerator.generateAction).toHaveBeenCalledTimes(1)
     expect(gmGenerator.generateOutcomeNarration).toHaveBeenCalledTimes(2)
     expect(roomRepository.messages[3].metadata).toEqual(expect.objectContaining({
@@ -841,6 +1026,77 @@ describe('location room gameplay coordinator', () => {
       rollSummary: expect.stringContaining('Rolls:'),
     }))
     expect(roomRepository.messages[3].metadata).not.toHaveProperty('publicRolls')
+  })
+
+  it('persists typed GM outcome repair failure diagnostics without appending static outcome', async () => {
+    const { coordinator, gameplayRepository, roomRepository, narrativeRepository, gmGenerator, actionGenerator } = makeCoordinator()
+    const failure = new GameMasterGameplayOutcomeGenerationError('repair failed', {
+      status: 'repair_failed',
+      repairAttempted: true,
+      repaired: false,
+      initialErrorCategory: 'weak_narration',
+      repairErrorCategory: 'missing_json_object',
+      initialResponseLength: 64,
+      repairResponseLength: 12,
+    })
+    gmGenerator.generateOutcomeNarration.mockRejectedValueOnce(failure)
+    const input = {
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+      encounterTrigger: combatTrigger(),
+    }
+
+    await expect(coordinator.processTurn(input)).rejects.toThrow('repair failed')
+
+    expect(roomRepository.messages.map((message) => message.metadata.gameplayMessageKind)).toEqual([
+      'gm_setup',
+      'character_action',
+      'roll_card',
+    ])
+    expect(roomRepository.messages.some((message) => message.metadata.gameplayMessageKind === 'gm_outcome')).toBe(false)
+    expect(narrativeRepository.updateState).toHaveBeenCalledTimes(1)
+    expect(gameplayRepository.turns[0]).toMatchObject({
+      status: 'resolved',
+      publicMessageIds: ['msg-1', 'msg-2', 'msg-3'],
+      outcomeSummary: null,
+      action: expect.objectContaining({ actionType: 'attack' }),
+      diceResults: expect.any(Array),
+      mechanicalDeltas: expect.objectContaining({ deaths: expect.any(Array) }),
+      metadata: expect.objectContaining({
+        gameMasterAgentId: 'gm-1',
+        outcomeGenerationFailure: {
+          status: 'repair_failed',
+          diagnostics: expect.objectContaining({
+            status: 'repair_failed',
+            repairAttempted: true,
+            repaired: false,
+            initialErrorCategory: 'weak_narration',
+            repairErrorCategory: 'missing_json_object',
+          }),
+        },
+      }),
+    })
+    expect(actionGenerator.generateAction).toHaveBeenCalledTimes(1)
+
+    const result = await coordinator.processTurn(input)
+
+    expect(result).toMatchObject({ status: 'completed', messageIds: ['msg-1', 'msg-2', 'msg-3', 'msg-4'] })
+    expect(roomRepository.messages.map((message) => message.metadata.gameplayMessageKind)).toEqual([
+      'gm_setup',
+      'character_action',
+      'roll_card',
+      'gm_outcome',
+    ])
+    expect(actionGenerator.generateAction).toHaveBeenCalledTimes(1)
+    expect(gmGenerator.generateOutcomeNarration).toHaveBeenCalledTimes(2)
+    expect(gameplayRepository.turns[0]).toMatchObject({
+      status: 'completed',
+      outcomeSummary: 'The backend result echoes through the room.',
+    })
+    expect(gameplayRepository.turns[0].metadata).not.toHaveProperty('outcomeGenerationFailure')
   })
 
   it('dedupes an appended outcome on retry before completion and preserves no-setup ordering', async () => {

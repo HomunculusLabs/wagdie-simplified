@@ -22,7 +22,6 @@ import {
 } from './types'
 import {
   GAMEPLAY_FIXED_CHECK_CONFIG,
-  inferGameplayRollChoice,
   parseGameplayContextualChecks,
   parseGameplayMonsters,
   validateGameplayActionEnvelope,
@@ -43,10 +42,22 @@ export type GenerateGameplayActionInput = {
   validation: GameplayActionValidationContext
 }
 
+export type GameplayActionGenerationDiagnostics = {
+  status: 'accepted' | 'repaired' | 'repair_failed'
+  repairAttempted: boolean
+  repaired: boolean
+  initialErrorCategory?: GameplayActionSemanticErrorCategory | 'transport_error' | 'character_resolution_error'
+  repairErrorCategory?: GameplayActionSemanticErrorCategory
+  transportStage?: 'resolve_character' | 'start_agent' | 'initial_collect' | 'repair_collect'
+  initialResponseLength?: number
+  repairResponseLength?: number
+}
+
 export type GenerateGameplayActionResult = {
   officialAgentId: string | null
   action: GameplayActionEnvelope
   rawResponseLength: number
+  generationDiagnostics?: GameplayActionGenerationDiagnostics
 }
 
 export interface GameplayActionGenerator {
@@ -128,6 +139,18 @@ function formatTranscript(messages: LocationRoomMessage[]): string {
   }).join('\n')
 }
 
+function formatRecentSpeakerOpenings(messages: LocationRoomMessage[], speaker: LocationRoomParticipant): string {
+  const openings = messages
+    .filter((message) => message.tokenId === speaker.tokenId && typeof message.content === 'string')
+    .slice(-3)
+    .map((message) => message.content.replace(/\s+/g, ' ').trim().split(' ').slice(0, 8).join(' '))
+    .filter((opening) => opening.length > 0)
+
+  return openings.length > 0
+    ? openings.map((opening) => `- ${opening}`).join('\n')
+    : 'No recent openings from this character.'
+}
+
 function formatMonsters(monsters: GameplayMonsterState[]): string {
   if (monsters.length === 0) return 'No visible monsters.'
   return monsters.map((monster) => {
@@ -155,6 +178,62 @@ function formatContextualChecks(encounter: GameplayEncounter): string {
   ].filter(Boolean).join(' ')).join('\n')
 }
 
+export type GameplayActionSemanticErrorCategory =
+  | 'empty_response'
+  | 'missing_json_object'
+  | 'invalid_json'
+  | 'missing_required_field'
+  | 'target_constraint'
+  | 'roll_choice_constraint'
+  | 'validation_error'
+  | 'repair_transport_error'
+
+export class GameplayActionSemanticError extends Error {
+  constructor(
+    message: string,
+    readonly category: GameplayActionSemanticErrorCategory,
+    options?: { cause?: unknown }
+  ) {
+    super(message)
+    this.name = 'GameplayActionSemanticError'
+    this.cause = options?.cause
+  }
+}
+
+function categorizeGameplayActionResponseError(error: unknown): GameplayActionSemanticErrorCategory {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  if (/empty/i.test(message)) return 'empty_response'
+  if (/did not contain a JSON object/i.test(message)) return 'missing_json_object'
+  if (/invalid JSON/i.test(message)) return 'invalid_json'
+  if (/public speech|Unsupported gameplay action type|must be a JSON object/i.test(message)) return 'missing_required_field'
+  if (/target|Attack actions require|Help actions require/i.test(message)) return 'target_constraint'
+  if (/roll choice|check type|contextual/i.test(message)) return 'roll_choice_constraint'
+  return 'validation_error'
+}
+
+function toGameplayActionSemanticError(error: unknown): GameplayActionSemanticError {
+  if (error instanceof GameplayActionSemanticError) {
+    return error
+  }
+
+  const message = error instanceof Error ? error.message : String(error ?? 'Gameplay action response was invalid')
+  return new GameplayActionSemanticError(
+    message,
+    categorizeGameplayActionResponseError(error),
+    { cause: error }
+  )
+}
+
+type GameplayActionRepairDiagnostics = {
+  category: GameplayActionSemanticErrorCategory
+  message: string
+  responseLength: number
+}
+
+function sanitizeActionErrorMessage(message: string): string {
+  return message.replace(/\s+/g, ' ').slice(0, 240)
+}
+
 export function buildGameplayActionPrompt(input: GenerateGameplayActionInput): string {
   const monsters = input.visibleMonsters ?? parseGameplayMonsters(input.encounter.monsterState)
 
@@ -178,6 +257,9 @@ export function buildGameplayActionPrompt(input: GenerateGameplayActionInput): s
     'Recent public transcript:',
     formatTranscript(input.recentMessages),
     '',
+    'Recent openings from you to avoid repeating:',
+    formatRecentSpeakerOpenings(input.recentMessages, input.speaker),
+    '',
     input.speakerInstruction ? `Private GM instruction: ${input.speakerInstruction}` : 'No private GM instruction for this turn.',
     '',
     `Available action types: ${GAMEPLAY_ACTION_TYPES.join(', ')}`,
@@ -194,76 +276,137 @@ export function buildGameplayActionPrompt(input: GenerateGameplayActionInput): s
     '  "actionType": "attack|defend|help|investigate|negotiate|flee|rest",',
     '  "target": { "kind": "monster", "id": "monster-1" },',
     '  "rollChoice": { "source": "fixed", "checkType": "explore" },',
-    '  "publicSpeech": "short public in-character speech",',
+    '  "publicSpeech": "short public in-character speech with concrete target/room detail",',
     '  "intentSummary": "short private intent"',
     '}',
     '',
     'Rules:',
+    '- Return JSON only. The first non-whitespace character must be { and the last must be }.',
     '- Attack requires a legal monster target. Help requires a legal character target.',
-    '- Fixed rollChoice checkType must be one of the listed fixed checks, such as explore, investigate, arcana, or nature.',
+    '- If live monsters are visible and the GM has not instructed a nonviolent objective, prefer attack/defend/help over passive investigate.',
+    '- Scene investigation alone does not defeat monsters; use attack when trying to end the encounter.',
+    '- Fixed rollChoice checkType must be one of the listed fixed checks, such as attack, defend, help, investigate, arcana, or nature.',
     '- Contextual rollChoice must use an offered contextualCheckId; the server ignores any agent-supplied contextual label/DC/check type.',
-    '- publicSpeech is required and must be suitable for public display.',
+    '- publicSpeech is required, public-safe, and must name or clearly point to a visible target, ally, obstacle, room feature, or immediate tactic from this encounter. Avoid repeating recent opening words or generic lines such as "I strike" without specific target/room detail.',
+    '- Do not repeat your recent opening words, generic attack lines, or weak openings such as "I strike", "I hold the line", "I study the room", or "I move forward" unless you add specific target/room detail.',
     '- Do not include markdown, speaker labels, or out-of-world explanations.',
   ].filter((line): line is string => line !== null).join('\n')
+}
+
+function buildGameplayActionRepairPrompt(
+  input: GenerateGameplayActionInput,
+  diagnostics: GameplayActionRepairDiagnostics
+): string {
+  const monsters = input.visibleMonsters ?? parseGameplayMonsters(input.encounter.monsterState)
+  const legalMonsterIds = input.validation.legalMonsterIds?.length
+    ? input.validation.legalMonsterIds.join(', ')
+    : 'none'
+  const legalCharacterTokenIds = input.validation.legalCharacterTokenIds?.length
+    ? input.validation.legalCharacterTokenIds.map(String).join(', ')
+    : 'none'
+
+  return [
+    'Your previous autonomous gameplay action response could not be accepted by the server.',
+    'This is a semantic repair attempt, not a transport retry. Return a fresh legal action now.',
+    `Safe error category: ${diagnostics.category}`,
+    `Safe error message: ${sanitizeActionErrorMessage(diagnostics.message)}`,
+    `Rejected response length: ${diagnostics.responseLength}`,
+    '',
+    `You are ${input.speaker.name} (#${input.speaker.tokenId}).`,
+    `Encounter: ${input.encounter.publicTitle ?? 'Untitled encounter'}`,
+    input.encounter.publicSummary ? `Encounter summary: ${input.encounter.publicSummary}` : null,
+    '',
+    `Legal monster target ids: ${legalMonsterIds}`,
+    `Legal character token ids: ${legalCharacterTokenIds}`,
+    '',
+    'Visible monsters:',
+    formatMonsters(monsters),
+    '',
+    'Recent openings from you to avoid repeating:',
+    formatRecentSpeakerOpenings(input.recentMessages, input.speaker),
+    '',
+    'Available fixed roll checks:',
+    formatFixedChecks(),
+    '',
+    'Available contextual roll checks from this encounter:',
+    formatContextualChecks(input.encounter),
+    '',
+    'Return only JSON with this exact contract:',
+    '{',
+    '  "actionType": "attack|defend|help|investigate|negotiate|flee|rest",',
+    '  "target": { "kind": "monster", "id": "monster-1" },',
+    '  "rollChoice": { "source": "fixed", "checkType": "attack" },',
+    '  "publicSpeech": "short public in-character speech with concrete target/room detail",',
+    '  "intentSummary": "short private intent"',
+    '}',
+    '',
+    'Repair rules:',
+    '- JSON only: no markdown, prose wrapper, speaker label, or explanation.',
+    '- The first non-whitespace character must be { and the last must be }.',
+    '- actionType must be one of the listed action types.',
+    '- Attack must target one legal monster id; help must target one legal character token id.',
+    '- Fixed rollChoice checkType must be one listed fixed check.',
+    '- Contextual rollChoice must use exactly one offered contextualCheckId if you choose contextual.',
+    '- publicSpeech is required, public-safe, and must name or clearly point to a visible target, ally, obstacle, room feature, or immediate tactic from this encounter. Avoid repeating recent opening words or generic lines such as "I strike" without specific target/room detail.',
+  ].filter((line): line is string => line !== null).join('\n')
+}
+
+export function parseGameplayActionResponseStrict(
+  raw: string,
+  validation: GameplayActionValidationContext
+): { action: GameplayActionEnvelope; rawResponseLength: number } {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = extractGameMasterJsonObject(raw, 'Gameplay action response')
+  } catch (error) {
+    throw toGameplayActionSemanticError(error)
+  }
+
+  const result = validateGameplayActionEnvelope(parsed, validation)
+  if (!result.ok) {
+    throw new GameplayActionSemanticError(
+      result.error,
+      categorizeGameplayActionResponseError(new Error(result.error))
+    )
+  }
+
+  return {
+    action: result.action,
+    rawResponseLength: raw.length,
+  }
 }
 
 export function normalizeGameplayActionResponse(
   raw: string,
   validation: GameplayActionValidationContext
 ): { action: GameplayActionEnvelope; rawResponseLength: number } {
-  let parsed: Record<string, unknown> | null = null
-  try {
-    parsed = extractGameMasterJsonObject(raw, 'Gameplay action response')
-  } catch {
-    // Character agents sometimes answer in-character prose instead of the JSON
-    // action envelope. Keep gameplay moving by treating the prose as a cautious
-    // investigate action rather than failing the whole room tick.
-  }
+  return parseGameplayActionResponseStrict(raw, validation)
+}
 
-  if (parsed) {
-    const result = validateGameplayActionEnvelope(parsed, validation)
-    if (!result.ok) {
-      throw new Error(result.error)
-    }
-
-    return {
-      action: result.action,
-      rawResponseLength: raw.length,
-    }
-  }
-
-  const publicSpeechMaxLength = validation.publicSpeechMaxLength ?? elizaConfig.locationRooms.gameplay.publicSpeechMaxLength
-  const intentSummaryMaxLength = validation.intentSummaryMaxLength ?? elizaConfig.locationRooms.gameplay.actionIntentMaxLength
-  const fallbackSpeech = raw.trim().replace(/^```(?:json)?|```$/g, '').trim().slice(0, publicSpeechMaxLength)
-
+function withGameplayActionRepairMetadata(
+  action: GameplayActionEnvelope,
+  initialError: GameplayActionSemanticError
+): GameplayActionEnvelope {
   return {
-    action: {
-      actionType: 'investigate',
-      target: null,
-      rollChoice: inferGameplayRollChoice('investigate'),
-      publicSpeech: fallbackSpeech || 'I watch the room carefully and search for what changed.',
-      intentSummary: 'Fallback investigate action from non-JSON character response'.slice(0, intentSummaryMaxLength),
-      metadata: { fallbackFromNonJsonResponse: true },
+    ...action,
+    metadata: {
+      ...(action.metadata ?? {}),
+      semanticRepairAttempted: true,
+      repairedFromSemanticFailure: true,
+      initialErrorCategory: initialError.category,
     },
-    rawResponseLength: raw.length,
   }
 }
 
-function buildFallbackActionFromOfficialError(input: GenerateGameplayActionInput, error: unknown): GameplayActionEnvelope {
-  const publicSpeechMaxLength = input.validation.publicSpeechMaxLength ?? elizaConfig.locationRooms.gameplay.publicSpeechMaxLength
-  const intentSummaryMaxLength = input.validation.intentSummaryMaxLength ?? elizaConfig.locationRooms.gameplay.actionIntentMaxLength
-  const errorName = error instanceof Error ? error.name : 'UnknownError'
-
-  return {
-    actionType: 'investigate',
-    target: null,
-    rollChoice: inferGameplayRollChoice('investigate'),
-    publicSpeech: `${input.speaker.name} braces against the room's pressure and watches for the next opening.`.slice(0, publicSpeechMaxLength),
-    intentSummary: 'Fallback investigate action after official character agent stream failure'.slice(0, intentSummaryMaxLength),
-    metadata: {
-      fallbackFromOfficialError: true,
-      errorName,
-    },
+export class GameplayActionGenerationError extends Error {
+  constructor(
+    message: string,
+    readonly diagnostics: GameplayActionGenerationDiagnostics,
+    options?: { cause?: unknown }
+  ) {
+    super(message)
+    this.name = 'GameplayActionGenerationError'
+    this.cause = options?.cause
   }
 }
 
@@ -278,6 +421,8 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
 
   async generateAction(input: GenerateGameplayActionInput): Promise<GenerateGameplayActionResult> {
     let officialAgentId: string | null = null
+    let transportStage: GameplayActionGenerationDiagnostics['transportStage'] = 'resolve_character'
+    let collectedText = ''
 
     try {
       const [{ createOfficialServerClient }, { resolveCharacterByTokenId }] = await Promise.all([
@@ -295,6 +440,7 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
       })
       officialAgentId = record.id
 
+      transportStage = 'start_agent'
       await this.messaging.startAgent(record.id)
       const sessionMetadata = {
         source: 'wagdie-location-room-gameplay-action',
@@ -304,6 +450,7 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
         speakerTokenId: input.speaker.tokenId,
         officialAgentId: record.id,
       }
+      transportStage = 'initial_collect'
       const collected = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
         session: {
           agentId: record.id,
@@ -324,27 +471,106 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
         },
         logContext: sessionMetadata,
       })
-      const normalized = normalizeGameplayActionResponse(collected.text, input.validation)
+      collectedText = collected.text
 
-      return {
-        officialAgentId: record.id,
-        action: normalized.action,
-        rawResponseLength: normalized.rawResponseLength,
+      try {
+        const normalized = parseGameplayActionResponseStrict(collectedText, input.validation)
+
+        return {
+          officialAgentId: record.id,
+          action: normalized.action,
+          rawResponseLength: normalized.rawResponseLength,
+          generationDiagnostics: {
+            status: 'accepted',
+            repairAttempted: false,
+            repaired: false,
+            initialResponseLength: collectedText.length,
+          },
+        }
+      } catch (initialError) {
+        const initialSemanticError = toGameplayActionSemanticError(initialError)
+        const repairMetadata = {
+          ...sessionMetadata,
+          source: 'wagdie-location-room-gameplay-action-repair',
+          repairAttempted: true,
+          initialErrorCategory: initialSemanticError.category,
+        }
+        let repairText = ''
+
+        try {
+          transportStage = 'repair_collect'
+          const repaired = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+            session: {
+              agentId: record.id,
+              userId: input.room.officialUserId,
+              metadata: repairMetadata,
+            },
+            message: {
+              content: buildGameplayActionRepairPrompt(input, {
+                category: initialSemanticError.category,
+                message: initialSemanticError.message,
+                responseLength: collectedText.length,
+              }),
+              transport: 'http',
+              metadata: repairMetadata,
+            },
+            logContext: repairMetadata,
+          })
+          repairText = repaired.text
+          const normalized = parseGameplayActionResponseStrict(repairText, input.validation)
+
+          return {
+            officialAgentId: record.id,
+            action: withGameplayActionRepairMetadata(normalized.action, initialSemanticError),
+            rawResponseLength: normalized.rawResponseLength,
+            generationDiagnostics: {
+              status: 'repaired',
+              repairAttempted: true,
+              repaired: true,
+              initialErrorCategory: initialSemanticError.category,
+              initialResponseLength: collectedText.length,
+              repairResponseLength: repairText.length,
+            },
+          }
+        } catch (repairError) {
+          const repairErrorCategory = repairError instanceof GameplayActionSemanticError
+            ? repairError.category
+            : 'repair_transport_error'
+          throw new GameplayActionGenerationError(
+            `Gameplay action repair failed (initial: ${initialSemanticError.category}, repair: ${repairErrorCategory})`,
+            {
+              status: 'repair_failed',
+              repairAttempted: true,
+              repaired: false,
+              initialErrorCategory: initialSemanticError.category,
+              repairErrorCategory,
+              transportStage: repairErrorCategory === 'repair_transport_error' ? 'repair_collect' : undefined,
+              initialResponseLength: collectedText.length,
+              repairResponseLength: repairText.length,
+            },
+            { cause: repairError }
+          )
+        }
       }
     } catch (error) {
-      console.warn('[Eliza Location Rooms] gameplay action generation failed; using fallback action', {
-        roomId: input.room.id,
-        locationId: input.room.locationId,
-        tickId: input.tick.id,
-        speakerTokenId: input.speaker.tokenId,
-        officialAgentId,
-        error: error instanceof Error ? error.message : String(error),
-      })
-      return {
-        officialAgentId,
-        action: buildFallbackActionFromOfficialError(input, error),
-        rawResponseLength: 0,
+      if (error instanceof GameplayActionGenerationError) {
+        throw error
       }
+      const initialErrorCategory = transportStage === 'resolve_character'
+        ? 'character_resolution_error'
+        : 'transport_error'
+      throw new GameplayActionGenerationError(
+        'Gameplay action generation failed before valid model output was available',
+        {
+          status: 'repair_failed',
+          repairAttempted: false,
+          repaired: false,
+          initialErrorCategory,
+          transportStage,
+          initialResponseLength: collectedText.length,
+        },
+        { cause: error }
+      )
     }
   }
 }

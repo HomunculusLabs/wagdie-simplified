@@ -4,6 +4,7 @@
 
 jest.mock('@/lib/eliza/official/messaging', () => ({
   normalizeOfficialResponseText: (text: string) => text.trim(),
+  sendAndCollectOfficialEphemeralSessionMessage: jest.fn(),
   createOfficialElizaMessagingClient: jest.fn(() => ({
     startAgent: jest.fn(),
     createSession: jest.fn(),
@@ -13,19 +14,35 @@ jest.mock('@/lib/eliza/official/messaging', () => ({
   })),
 }))
 
+jest.mock('@/lib/eliza/client', () => ({
+  createOfficialServerClient: jest.fn(() => ({})),
+}))
+
+jest.mock('@/lib/eliza/characterResolver', () => ({
+  resolveCharacterByTokenId: jest.fn(),
+}))
+
+import { resolveCharacterByTokenId } from '@/lib/eliza/characterResolver'
 import {
   buildGameplayActionPrompt,
+  GameplayActionGenerationError,
   normalizeGameplayActionResponse,
+  parseGameplayActionResponseStrict,
+  OfficialGameplayActionGenerator,
 } from '@/lib/eliza/locationRooms/gameplay/actionGenerator'
 import {
-  buildFallbackEncounterProposal,
   buildGameplayEncounterProposalPrompt,
   buildGameplayOutcomeNarrationPrompt,
   formatPublicGameplayRollSummary,
+  GameMasterGameplayEncounterProposalGenerationError,
+  GameMasterGameplayOutcomeGenerationError,
   normalizeGameplayEncounterProposalResponse,
   normalizeGameplayOutcomeNarrationResponse,
+  OfficialGameMasterGameplayGenerator,
+  validateGameplayOutcomeNarrationQuality,
 } from '@/lib/eliza/locationRooms/gameplay/gameMasterGameplayGenerator'
 import type { LocationRoomNarrativeState } from '@/lib/eliza/locationRooms/narrativeTypes'
+import { sendAndCollectOfficialEphemeralSessionMessage } from '@/lib/eliza/official/messaging'
 
 const narrativeState: LocationRoomNarrativeState = {
   id: 'narrative-1',
@@ -39,8 +56,136 @@ const narrativeState: LocationRoomNarrativeState = {
   updatedAt: '2026-05-22T00:00:00.000Z',
 }
 
+const mockedResolveCharacterByTokenId = resolveCharacterByTokenId as jest.Mock
+const mockedSendAndCollectOfficialEphemeralSessionMessage = sendAndCollectOfficialEphemeralSessionMessage as jest.Mock
+
+function makeGameplayActionInput() {
+  return {
+    room: { id: 'room-1', locationId: 'loc-1', officialUserId: 'official-user-1' },
+    tick: { id: 'tick-1' },
+    speaker: { tokenId: 7, name: 'Ash', backgroundStory: 'Ash keeps the bell line.' },
+    participants: [{ tokenId: 7, name: 'Ash' }, { tokenId: 8, name: 'Bone' }],
+    recentMessages: [],
+    encounter: {
+      id: 'encounter-1',
+      publicTitle: 'Bell Maw',
+      publicSummary: 'A maw unfolds.',
+      monsterState: [{ id: 'monster-1', name: 'Maw', archetype: 'bell horror', hp: 4, maxHp: 12, ac: 12, attackBonus: 2, damageFormula: '1d6', status: 'alive' }],
+      mechanics: {
+        contextualChecks: [
+          { id: 'read-the-runes', label: 'Read the Runes', description: 'Interpret the bell wall.', checkType: 'arcana', dc: 13 },
+        ],
+      },
+    },
+    gameplayState: {
+      characters: {
+        '7': {
+          tokenId: 7,
+          name: 'Ash',
+          hp: 8,
+          maxHp: 10,
+          status: 'alive',
+          xp: 0,
+          temporaryBoons: [],
+          wounds: [],
+        },
+        '8': {
+          tokenId: 8,
+          name: 'Bone',
+          hp: 10,
+          maxHp: 10,
+          status: 'alive',
+          xp: 0,
+          temporaryBoons: [],
+          wounds: [],
+        },
+      },
+    },
+    characterState: {
+      tokenId: 7,
+      name: 'Ash',
+      hp: 8,
+      maxHp: 10,
+      status: 'alive',
+      xp: 0,
+      temporaryBoons: [],
+      wounds: [],
+    },
+    validation: {
+      legalMonsterIds: ['monster-1'],
+      legalCharacterTokenIds: [7, 8],
+      contextualChecks: [
+        { id: 'read-the-runes', label: 'Read the Runes', description: 'Interpret the bell wall.', checkType: 'arcana', dc: 13 },
+      ],
+    },
+  } as never
+}
+
+function makeEncounterProposalInput() {
+  return {
+    gameMasterAgentId: 'gm-1',
+    room: { id: 'room-1', locationId: 'loc-1', officialUserId: 'official-user-1' },
+    tick: { id: 'tick-1' },
+    participants: [{ tokenId: 7, name: 'Ash' }, { tokenId: 8, name: 'Bone' }],
+    recentMessages: [],
+    narrativeState,
+    gameplayState: { characters: {} },
+    encounterSeed: null,
+    requestedDifficulty: 'normal',
+    budget: {
+      partySize: 2,
+      difficulty: 'normal',
+      maxMonsterCount: 2,
+      maxTotalMonsterHp: 30,
+      maxXpPerCharacter: 5,
+      maxTemporaryBoons: 1,
+      maxNarrativeRewards: 1,
+    },
+  } as never
+}
+
+function makeGameplayOutcomeInput() {
+  return {
+    gameMasterAgentId: 'gm-1',
+    room: { id: 'room-1', locationId: 'loc-1', officialUserId: 'official-user-1' },
+    tick: { id: 'tick-1' },
+    participants: [{ tokenId: 7, name: 'Ash' }, { tokenId: 8, name: 'Bone' }],
+    recentMessages: [],
+    narrativeState,
+    gameplayStateBefore: {},
+    gameplayStateAfter: {},
+    encounterBefore: {
+      id: 'encounter-1',
+      publicTitle: 'Bell Maw',
+      status: 'active',
+      monsterState: [{ id: 'monster-1', name: 'Maw', archetype: 'bell horror', hp: 9, maxHp: 12, ac: 12, attackBonus: 2, damageFormula: '1d6', status: 'alive' }],
+    },
+    encounterAfter: {
+      id: 'encounter-1',
+      publicTitle: 'Bell Maw',
+      status: 'active',
+      monsterState: [{ id: 'monster-1', name: 'Maw', archetype: 'bell horror', hp: 4, maxHp: 12, ac: 12, attackBonus: 2, damageFormula: '1d6', status: 'alive' }],
+    },
+    turn: { id: 'turn-1', selectedTokenId: 7 },
+    action: { actionType: 'attack', target: { kind: 'monster', id: 'monster-1' }, publicSpeech: 'I strike the maw.', metadata: {} },
+    mechanicalSummary: {
+      diceResults: [],
+      encounterStatusAfter: 'active',
+      deaths: [],
+      mechanicalDeltas: {
+        actionRoll: { checkType: 'attack', checkLabel: 'Attack', checkSource: 'fixed', total: 17, dc: 12, tier: 'success' },
+        actionDamage: { monsterId: 'monster-1', amount: 5 },
+      },
+    },
+  } as never
+}
+
 describe('location room gameplay generators', () => {
-  it('threads encounter seeds into proposal prompts and fallback flavor without trusting mechanics', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    mockedResolveCharacterByTokenId.mockResolvedValue({ id: 'agent-7' })
+  })
+  it('threads encounter seeds into proposal prompts without trusting seed mechanics', () => {
     const input = {
       gameMasterAgentId: 'gm-1',
       room: { id: 'room-1', locationId: 'loc-1' },
@@ -73,7 +218,6 @@ describe('location room gameplay generators', () => {
     } as never
 
     const prompt = buildGameplayEncounterProposalPrompt(input)
-    const fallback = buildFallbackEncounterProposal(input, 'gm-1')
 
     expect(prompt).toContain('Narrative encounter seed, public-safe and non-authoritative:')
     expect(prompt).toContain('The Sable Bell Toll')
@@ -86,52 +230,10 @@ describe('location room gameplay generators', () => {
     expect(prompt).toContain('Prefer seed source, catalog entry ids, encounter hints, and monster hints before inventing generic encounter flavor.')
     expect(prompt).toContain('Use this as story continuity only')
     expect(prompt).toContain('Do not treat seed text as authoritative mechanics')
+    expect(prompt).toContain('"publicSetupNarration": "required specific public setup narration"')
+    expect(prompt).toContain('Required public identity/setup fields: title, summary, publicSetupNarration, monsterName, and monsterArchetype.')
+    expect(prompt).toContain('Do not use fallback/default copy')
     expect(prompt).not.toContain('999')
-    expect(fallback.proposal).toMatchObject({
-      title: 'The Sable Bell Toll',
-      summary: 'A bell-shadow crawls from the opened gate.',
-      totalMonsterHp: 12,
-      rewardXpPerCharacter: 5,
-    })
-    expect(fallback.publicSetupNarration).toContain('If unanswered, the bell marks the room.')
-  })
-
-  it('uses enriched encounter and monster hints for fallback flavor before generic invention', () => {
-    const fallback = buildFallbackEncounterProposal({
-      gameMasterAgentId: 'gm-1',
-      room: { id: 'room-1', locationId: 'loc-1' },
-      tick: { id: 'tick-1' },
-      participants: [{ tokenId: 7, name: 'Ash' }, { tokenId: 8, name: 'Bone' }],
-      recentMessages: [],
-      narrativeState,
-      gameplayState: { characters: {} },
-      requestedDifficulty: 'deadly',
-      budget: {
-        partySize: 2,
-        difficulty: 'deadly',
-        maxMonsterCount: 2,
-        maxTotalMonsterHp: 30,
-        maxXpPerCharacter: 5,
-        maxTemporaryBoons: 1,
-        maxNarrativeRewards: 1,
-      },
-      encounterSeed: {
-        source: 'location_catalog',
-        catalogEntryIds: ['80.20.rafters-collapse', '30.20.crow-wight'],
-        encounterHints: ['Rafters Collapse: The upper room gives way under hostile wings.'],
-        monsterHints: ['Crow Wight: A corpse-bird courtier nesting above the rafters.'],
-      },
-    } as never, 'gm-1')
-
-    expect(fallback.proposal).toMatchObject({
-      title: 'Rafters Collapse',
-      summary: 'Rafters Collapse: The upper room gives way under hostile wings.',
-      monsterName: 'Crow Wight',
-      totalMonsterHp: 12,
-      rewardXpPerCharacter: 5,
-    })
-    expect(fallback.publicSetupNarration).toContain('Rafters Collapse')
-    expect(fallback.publicSetupNarration).not.toContain('Ashen Horror')
   })
 
   it('builds gameplay action prompts with HP bands and safe stat flavor only', () => {
@@ -198,6 +300,12 @@ describe('location room gameplay generators', () => {
     expect(prompt).toContain('well-guarded')
     expect(prompt).toContain('swift-footed')
     expect(prompt).toContain('Action type is your tactical intent/effect. Roll choice is the backend mechanical check')
+    expect(prompt).toContain('Return JSON only')
+    expect(prompt).toContain('Recent openings from you to avoid repeating:')
+    expect(prompt).toContain('No recent openings from this character.')
+    expect(prompt).toContain('must name or clearly point to a visible target')
+    expect(prompt).toContain('Do not repeat your recent opening words')
+    expect(prompt).toContain('Scene investigation alone does not defeat monsters')
     expect(prompt).toContain('- explore: Explore')
     expect(prompt).toContain('- arcana: Arcana')
     expect(prompt).toContain('- nature: Nature')
@@ -272,6 +380,8 @@ describe('location room gameplay generators', () => {
     expect(prompt).not.toContain('roundsActed')
     expect(prompt).not.toContain('damageDealt')
     expect(prompt).toContain('Do not assign HP, death, XP, rewards, dice, or mechanics')
+    expect(prompt).toContain('Combat prose must be kinetic and consequence-first')
+    expect(prompt).toContain('Avoid passive filler such as "the room shifts"')
   })
 
   it('formats backend roll summaries for public chat display', () => {
@@ -346,19 +456,152 @@ describe('location room gameplay generators', () => {
     })
   })
 
-  it('falls back to a cautious investigate action when autonomous action output is prose', () => {
-    expect(normalizeGameplayActionResponse('I hold the line and study the room.', {
-      legalMonsterIds: ['monster-1'],
-      legalCharacterTokenIds: [1, 2],
-    })).toMatchObject({
-      action: {
-        actionType: 'investigate',
-        target: null,
-        rollChoice: { source: 'inferred', checkType: 'investigate', label: 'Investigate' },
-        publicSpeech: 'I hold the line and study the room.',
-        metadata: { fallbackFromNonJsonResponse: true },
+  it('rejects generic or incomplete GM encounter proposals instead of applying identity/setup fallbacks', () => {
+    expect(() => normalizeGameplayEncounterProposalResponse(JSON.stringify({
+      title: 'A dreadful encounter',
+      summary: 'A threat gathers in the room.',
+      publicSetupNarration: 'A threat emerges in the room.',
+      monsterName: 'WAGDIE horror',
+      monsterArchetype: 'lurking threat',
+    }), { gameMasterAgentId: 'gm-1' })).toThrow('generic fallback copy')
+
+    expect(() => normalizeGameplayEncounterProposalResponse(JSON.stringify({
+      title: 'Bell Maw',
+      summary: 'A maw unfolds.',
+      monsterName: 'Maw',
+      monsterArchetype: 'bell horror',
+    }), { gameMasterAgentId: 'gm-1' })).toThrow('missing publicSetupNarration')
+  })
+
+  it('accepts strict Official GM encounter proposals with diagnostics', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage.mockResolvedValueOnce({
+      text: JSON.stringify({
+        title: 'Bell Maw',
+        summary: 'A maw unfolds.',
+        publicSetupNarration: 'The bell splits open.',
+        monsterName: 'Maw',
+        monsterArchetype: 'bell horror',
+      }),
+      message: null,
+    })
+
+    const generator = new OfficialGameMasterGameplayGenerator({ startAgent: jest.fn() } as never)
+    const result = await generator.generateEncounterProposal(makeEncounterProposalInput())
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(1)
+    expect(result).toMatchObject({
+      publicSetupNarration: 'The bell splits open.',
+      proposal: { title: 'Bell Maw', monsterName: 'Maw', monsterArchetype: 'bell horror' },
+      metadata: {
+        generationDiagnostics: {
+          status: 'accepted',
+          repairAttempted: false,
+          repaired: false,
+        },
       },
     })
+  })
+
+  it('repairs generic Official GM encounter proposals once before accepting strict setup and identity', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          title: 'A dreadful encounter',
+          summary: 'A threat gathers in the room.',
+          publicSetupNarration: 'A threat emerges in the room.',
+          monsterName: 'WAGDIE horror',
+          monsterArchetype: 'lurking threat',
+        }),
+        message: null,
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          title: 'Bell Maw',
+          summary: 'A brass mouth opens under the bell rope.',
+          publicSetupNarration: 'The bell rope jerks taut as a brass maw unfolds from the rafters.',
+          monsterName: 'Rafter Maw',
+          monsterArchetype: 'bell horror',
+        }),
+        message: null,
+      })
+
+    const generator = new OfficialGameMasterGameplayGenerator({ startAgent: jest.fn() } as never)
+    const result = await generator.generateEncounterProposal(makeEncounterProposalInput())
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    const repairRequest = mockedSendAndCollectOfficialEphemeralSessionMessage.mock.calls[1][1]
+    expect(repairRequest.message.content).toContain('hidden semantic repair attempt')
+    expect(repairRequest.message.content).toContain('Safe error category: generic_public_identity')
+    expect(repairRequest.message.content).toContain('title, summary, publicSetupNarration, monsterName, and monsterArchetype are required')
+    expect(result).toMatchObject({
+      publicSetupNarration: 'The bell rope jerks taut as a brass maw unfolds from the rafters.',
+      proposal: { title: 'Bell Maw', monsterName: 'Rafter Maw' },
+      metadata: {
+        generationDiagnostics: {
+          status: 'repaired',
+          repairAttempted: true,
+          repaired: true,
+          initialErrorCategory: 'generic_public_identity',
+        },
+      },
+    })
+  })
+
+  it('throws typed GM encounter proposal failure after one failed repair', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({ text: 'not json', message: null })
+      .mockResolvedValueOnce({ text: 'still not json', message: null })
+
+    const generator = new OfficialGameMasterGameplayGenerator({ startAgent: jest.fn() } as never)
+    let thrown: unknown
+    try {
+      await generator.generateEncounterProposal(makeEncounterProposalInput())
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    expect(thrown).toBeInstanceOf(GameMasterGameplayEncounterProposalGenerationError)
+    expect((thrown as GameMasterGameplayEncounterProposalGenerationError).diagnostics).toMatchObject({
+      status: 'repair_failed',
+      repairAttempted: true,
+      repaired: false,
+      initialErrorCategory: 'missing_json_object',
+      repairErrorCategory: 'missing_json_object',
+    })
+  })
+
+  it('throws typed GM encounter proposal transport failure without repair', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage.mockRejectedValueOnce(new Error('network down'))
+
+    const generator = new OfficialGameMasterGameplayGenerator({ startAgent: jest.fn() } as never)
+    await expect(generator.generateEncounterProposal(makeEncounterProposalInput()))
+      .rejects.toMatchObject({
+        diagnostics: {
+          status: 'repair_failed',
+          repairAttempted: false,
+          repaired: false,
+          initialErrorCategory: 'transport_error',
+          transportStage: 'initial_collect',
+        },
+      })
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects autonomous combat action prose instead of synthesizing a public fallback', () => {
+    expect(() => normalizeGameplayActionResponse('I hold the line and strike the closest horror.', {
+      legalMonsterIds: ['monster-1'],
+      legalCharacterTokenIds: [1, 2],
+    })).toThrow('Gameplay action response did not contain a JSON object')
+
+    expect(() => normalizeGameplayActionResponse('I study the room and watch for a way out.', {
+      legalMonsterIds: ['monster-1'],
+      legalCharacterTokenIds: [1, 2],
+    })).toThrow('Gameplay action response did not contain a JSON object')
+
+    expect(() => normalizeGameplayActionResponse('I hold the line and study the room.', {
+      legalCharacterTokenIds: [1, 2],
+    })).toThrow('Gameplay action response did not contain a JSON object')
   })
 
   it('validates generated actions with legal targets and required public speech', () => {
@@ -387,6 +630,276 @@ describe('location room gameplay generators', () => {
         publicSpeech: 'I strike the maw.',
       },
     })
+  })
+
+  it('strict action parsing and normalization both reject prose', () => {
+    expect(() => parseGameplayActionResponseStrict('I hold the line and strike the closest horror.', {
+      legalMonsterIds: ['monster-1'],
+      legalCharacterTokenIds: [1, 2],
+    })).toThrow('Gameplay action response did not contain a JSON object')
+
+    expect(() => normalizeGameplayActionResponse('I hold the line and strike the closest horror.', {
+      legalMonsterIds: ['monster-1'],
+      legalCharacterTokenIds: [1, 2],
+    })).toThrow('Gameplay action response did not contain a JSON object')
+  })
+
+  it('repairs non-JSON Official character actions exactly once before accepting strict output', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({ text: 'I hold the line and strike the closest horror.', message: null })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          actionType: 'attack',
+          target: { kind: 'monster', id: 'monster-1' },
+          publicSpeech: 'I strike the maw.',
+          intentSummary: 'Draw its attention.',
+        }),
+        message: null,
+      })
+
+    const generator = new OfficialGameplayActionGenerator({ startAgent: jest.fn() } as never)
+    const result = await generator.generateAction(makeGameplayActionInput())
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    const repairRequest = mockedSendAndCollectOfficialEphemeralSessionMessage.mock.calls[1][1]
+    expect(repairRequest.message.content).toContain('semantic repair attempt')
+    expect(repairRequest.message.content).toContain('Safe error category: missing_json_object')
+    expect(repairRequest.message.content).toContain('Legal monster target ids: monster-1')
+    expect(repairRequest.message.content).toContain('Legal character token ids: 7, 8')
+    expect(repairRequest.message.content).toContain('- read-the-runes: Read the Runes')
+    expect(result).toMatchObject({
+      officialAgentId: 'agent-7',
+      action: {
+        actionType: 'attack',
+        target: { kind: 'monster', id: 'monster-1' },
+        publicSpeech: 'I strike the maw.',
+        metadata: {
+          semanticRepairAttempted: true,
+          repairedFromSemanticFailure: true,
+          initialErrorCategory: 'missing_json_object',
+        },
+      },
+    })
+    expect(result.action.metadata).not.toHaveProperty('fallbackFromSemanticRepairFailure')
+  })
+
+  it('repairs validation-failed Official character actions before accepting strict output', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          actionType: 'attack',
+          target: { kind: 'monster', id: 'monster-404' },
+          publicSpeech: 'I strike the wrong maw.',
+        }),
+        message: null,
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          actionType: 'attack',
+          target: { kind: 'monster', id: 'monster-1' },
+          publicSpeech: 'I correct course and strike the true maw.',
+        }),
+        message: null,
+      })
+
+    const generator = new OfficialGameplayActionGenerator({ startAgent: jest.fn() } as never)
+    const result = await generator.generateAction(makeGameplayActionInput())
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    expect(result.action).toMatchObject({
+      actionType: 'attack',
+      target: { kind: 'monster', id: 'monster-1' },
+      publicSpeech: 'I correct course and strike the true maw.',
+      metadata: {
+        semanticRepairAttempted: true,
+        repairedFromSemanticFailure: true,
+        initialErrorCategory: 'target_constraint',
+      },
+    })
+    expect(result.action.metadata).not.toHaveProperty('fallbackFromOfficialError')
+  })
+
+  it('throws typed diagnostics after one failed Official character action repair', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({ text: 'I study the bell and wait.', message: null })
+      .mockResolvedValueOnce({ text: 'Still no JSON.', message: null })
+
+    const generator = new OfficialGameplayActionGenerator({ startAgent: jest.fn() } as never)
+    let thrown: unknown
+    try {
+      await generator.generateAction(makeGameplayActionInput())
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    expect(thrown).toBeInstanceOf(GameplayActionGenerationError)
+    expect((thrown as GameplayActionGenerationError).diagnostics).toMatchObject({
+      status: 'repair_failed',
+      repairAttempted: true,
+      repaired: false,
+      initialErrorCategory: 'missing_json_object',
+      repairErrorCategory: 'missing_json_object',
+    })
+  })
+
+  it('validates GM outcome narration quality against backend consequence anchors', () => {
+    const input = makeGameplayOutcomeInput()
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash turns the opening into contact; Maw reels back and its line breaks.',
+      stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toEqual({ ok: true })
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'The backend result echoes through the room.',
+      stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toMatchObject({ ok: false })
+
+    const noDamageInput = makeGameplayOutcomeInput() as any
+    noDamageInput.mechanicalSummary.mechanicalDeltas.actionRoll.tier = 'failure'
+    noDamageInput.mechanicalSummary.mechanicalDeltas.actionDamage.amount = 0
+    noDamageInput.mechanicalSummary.encounterStatusAfter = 'active'
+    noDamageInput.encounterAfter.status = 'active'
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash kills Maw and the fight is won.',
+      stateAfter: { stateSummary: 'Maw is dead.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, noDamageInput)).toMatchObject({ ok: false })
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash wounds Maw and blood spills across the room.',
+      stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, noDamageInput)).toMatchObject({ ok: false })
+  })
+
+  it('accepts injury narration when backend retaliation dealt damage', () => {
+    const input = makeGameplayOutcomeInput() as any
+    input.mechanicalSummary.mechanicalDeltas.actionRoll.tier = 'failure'
+    input.mechanicalSummary.mechanicalDeltas.actionDamage.amount = 0
+    input.mechanicalSummary.mechanicalDeltas.monsterRetaliation = { monsterId: 'monster-1', tokenId: 7, amount: 4, hit: true }
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Maw counters Ash and wounds them, driving the line back.',
+      stateAfter: { stateSummary: 'Ash was wounded by Maw.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toEqual({ ok: true })
+  })
+
+  it('accepts strong Official GM outcome narration without repair', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage.mockResolvedValueOnce({
+      text: JSON.stringify({
+        publicNarration: 'Ash turns the opening into contact; Maw reels back and its line breaks.',
+        stateSummary: 'Maw is wounded.',
+        openThreads: [],
+      }),
+      message: null,
+    })
+
+    const generator = new OfficialGameMasterGameplayGenerator({ startAgent: jest.fn() } as never)
+    const result = await generator.generateOutcomeNarration(makeGameplayOutcomeInput())
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(1)
+    expect(result).toMatchObject({
+      publicNarration: 'Ash turns the opening into contact; Maw reels back and its line breaks.',
+      metadata: {
+        generationDiagnostics: {
+          status: 'accepted',
+          repairAttempted: false,
+          repaired: false,
+        },
+      },
+    })
+  })
+
+  it('repairs weak Official GM outcome narration once before accepting', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          publicNarration: 'The backend result echoes through the room.',
+          stateSummary: 'A turn resolved.',
+          openThreads: [],
+        }),
+        message: null,
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          publicNarration: 'Ash cuts into Maw; the horror reels back and loses the line.',
+          stateSummary: 'Maw is wounded.',
+          openThreads: [],
+        }),
+        message: null,
+      })
+
+    const generator = new OfficialGameMasterGameplayGenerator({ startAgent: jest.fn() } as never)
+    const result = await generator.generateOutcomeNarration(makeGameplayOutcomeInput())
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    const repairRequest = mockedSendAndCollectOfficialEphemeralSessionMessage.mock.calls[1][1]
+    expect(repairRequest.message.content).toContain('one semantic repair attempt')
+    expect(repairRequest.message.content).toContain('Safe error category: weak_narration')
+    expect(repairRequest.message.content).toContain('Roll card owns structured mechanics')
+    expect(repairRequest.message.content).toContain('Selected target monster: Maw')
+    expect(result).toMatchObject({
+      publicNarration: 'Ash cuts into Maw; the horror reels back and loses the line.',
+      metadata: {
+        generationDiagnostics: {
+          status: 'repaired',
+          repairAttempted: true,
+          repaired: true,
+          initialErrorCategory: 'weak_narration',
+        },
+      },
+    })
+  })
+
+  it('throws typed GM outcome failure after one failed semantic repair without static fallback', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({ text: 'not json', message: null })
+      .mockResolvedValueOnce({ text: 'still not json', message: null })
+
+    const generator = new OfficialGameMasterGameplayGenerator({ startAgent: jest.fn() } as never)
+    let thrown: unknown
+    try {
+      await generator.generateOutcomeNarration(makeGameplayOutcomeInput())
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    expect(thrown).toBeInstanceOf(GameMasterGameplayOutcomeGenerationError)
+    expect((thrown as GameMasterGameplayOutcomeGenerationError).diagnostics).toMatchObject({
+      status: 'repair_failed',
+      repairAttempted: true,
+      repaired: false,
+      initialErrorCategory: 'missing_json_object',
+      repairErrorCategory: 'missing_json_object',
+    })
+  })
+
+  it('throws typed GM outcome transport failure without semantic repair', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage.mockRejectedValueOnce(new Error('network down'))
+
+    const generator = new OfficialGameMasterGameplayGenerator({ startAgent: jest.fn() } as never)
+    await expect(generator.generateOutcomeNarration(makeGameplayOutcomeInput()))
+      .rejects.toMatchObject({
+        diagnostics: {
+          status: 'repair_failed',
+          repairAttempted: false,
+          repaired: false,
+          initialErrorCategory: 'transport_error',
+          transportStage: 'initial_collect',
+        },
+      })
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(1)
   })
 
   it('outcome narration accepts continuity updates but ignores attempted mechanical fields', () => {

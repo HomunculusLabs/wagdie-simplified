@@ -77,17 +77,18 @@ POST /api/eliza/chat
   ├─ getSession()
   ├─ requireWalletSession(session)
   ├─ requireElizaUserToken(session)
-  ├─ validate tokenId and message
+  ├─ validate canonical tokenId and message
   ├─ getCharacter(tokenId) from WAGDIE data
   ├─ getElizaClient()
-  ├─ resolveCharacterByTokenId(...)
+  ├─ getCharacterByTokenId(...) as a no-side-effect canonical persona lookup
+  ├─ return 409 AI_PERSONA_REQUIRED if no saved persona exists
   └─ serverClient.chat.sendMessageStream(..., callbacks)
         ├─ onChunk    → SSE event: token
         ├─ onComplete → SSE event: complete
         └─ onError    → SSE event: error
 ```
 
-`resolveCharacterByTokenId()` in `lib/eliza/characterResolver.ts` maps a WAGDIE token id to an Eliza `CharacterRecord` by external id and auto-creates a default record when missing. The route passes WAGDIE defaults from `getCharacter()` so chat can begin even before a custom persona exists.
+Public chat does not create personas as a side effect. `getCharacterByTokenId()` in `lib/eliza/characterResolver.ts` maps a WAGDIE token id to an existing Eliza `CharacterRecord` by canonical external id and returns `null` when missing. `PUT /api/eliza/characters/[tokenId]` is the canonical create/update path; users must save an AI persona before public chat can stream.
 
 The route uses `ReadableStream`, aborts upstream streaming when the client cancels, and normalizes gateway errors with `toStreamErrorPayload()`.
 

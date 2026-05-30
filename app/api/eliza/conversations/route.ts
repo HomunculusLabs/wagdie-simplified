@@ -18,6 +18,7 @@ import { getElizaClient, createUserClient } from '@/lib/eliza/client'
 import { elizaConfig } from '@/lib/eliza/config'
 import { requireWalletSession, requireElizaUserToken } from '@/lib/eliza/sessionAuth'
 import { getRecordIdByTokenId } from '@/lib/eliza/characterResolver'
+import { AI_PERSONA_REQUIRED_ERROR, AI_PERSONA_REQUIRED_MESSAGE } from '@/lib/eliza/chatReadiness'
 import type { Conversation, ErrorResponse } from '@/types/eliza'
 
 interface ConversationsListResponse {
@@ -70,13 +71,10 @@ export async function GET(
       if (recordId) {
         characterId = recordId
       } else {
-        return NextResponse.json({
-          conversations: [],
-          total: 0,
-          page,
-          pageSize,
-          hasMore: false,
-        })
+        return NextResponse.json(
+          { error: AI_PERSONA_REQUIRED_ERROR, message: AI_PERSONA_REQUIRED_MESSAGE },
+          { status: 409 }
+        )
       }
     }
 

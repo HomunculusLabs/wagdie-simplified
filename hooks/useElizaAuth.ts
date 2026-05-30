@@ -18,6 +18,8 @@ interface UseElizaAuthReturn {
   isAuthenticating: boolean
   /** Current step in auth flow */
   authStep: 'idle' | 'checking' | 'nonce' | 'signing' | 'verifying' | 'complete' | 'error'
+  /** Check for an existing access token without starting the signature flow */
+  checkToken: () => Promise<boolean>
   /** Get or refresh the access token */
   getToken: () => Promise<string | null>
   /** Clear authentication state */
@@ -85,6 +87,62 @@ export function useElizaAuth(): UseElizaAuthReturn {
     []
   )
 
+  const applyTokenResponse = useCallback((data: TokenResponse) => {
+    setAccessToken(data.accessToken)
+    const newExpiry = new Date(data.expiresAt).getTime()
+    setExpiresAt(newExpiry)
+    setAuthStep('complete')
+    return { accessToken: data.accessToken, expiresAt: newExpiry }
+  }, [])
+
+  const checkToken = useCallback(async (): Promise<boolean> => {
+    if (accessToken && expiresAt && expiresAt > Date.now() + 60000) {
+      return true
+    }
+
+    if (!isConnected || !address) {
+      setError('Wallet not connected')
+      return false
+    }
+
+    setIsAuthenticating(true)
+    setError(null)
+    setAuthStep('checking')
+
+    try {
+      const statusResponse = await fetch('/api/eliza/auth', {
+        method: 'GET',
+        credentials: 'include',
+      })
+
+      const data = await readApiRaw<TokenResponse>(statusResponse, 'Authentication failed')
+      applyTokenResponse(data)
+      return true
+    } catch (err) {
+      const code = err instanceof ApiError ? getErrorCode(err.data) : undefined
+      if (err instanceof ApiError && err.status === 401 && ['NO_TOKEN', 'TOKEN_EXPIRED'].includes(code ?? '')) {
+        setAuthStep('idle')
+        setError(null)
+        return false
+      }
+
+      if (err instanceof ApiError && err.status === 401 && code === 'UNAUTHORIZED') {
+        setAuthStep('error')
+        setError('Wallet session expired. Reconnect your wallet to authorize chat.')
+        return false
+      }
+
+      const message = err instanceof Error ? err.message : 'Authentication failed'
+      setError(message)
+      setAuthStep('error')
+      console.error('[useElizaAuth] Token status check failed:', err)
+      return false
+    } finally {
+      setIsAuthenticating(false)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken, expiresAt, isConnected, address, applyTokenResponse, scheduleRefresh])
+
   // Get or refresh token
   const getToken = useCallback(async (): Promise<string | null> => {
     // Return cached token if still valid
@@ -112,12 +170,9 @@ export function useElizaAuth(): UseElizaAuthReturn {
       try {
         // Token exists and is valid
         const data = await readApiRaw<TokenResponse>(statusResponse, 'Authentication failed')
-        setAccessToken(data.accessToken)
-        const newExpiry = new Date(data.expiresAt).getTime()
-        setExpiresAt(newExpiry)
-        setAuthStep('complete')
-        scheduleRefresh(newExpiry, getToken)
-        return data.accessToken
+        const applied = applyTokenResponse(data)
+        scheduleRefresh(applied.expiresAt, getToken)
+        return applied.accessToken
       } catch (statusError) {
         const shouldStartSiwe = statusError instanceof ApiError
           && statusError.status === 401
@@ -175,12 +230,9 @@ export function useElizaAuth(): UseElizaAuthReturn {
         verifyResponse,
         'Eliza verification failed'
       )
-      setAccessToken(verifyData.accessToken)
-      const newExpiry = new Date(verifyData.expiresAt).getTime()
-      setExpiresAt(newExpiry)
-      setAuthStep('complete')
-      scheduleRefresh(newExpiry, getToken)
-      return verifyData.accessToken
+      const applied = applyTokenResponse(verifyData)
+      scheduleRefresh(applied.expiresAt, getToken)
+      return applied.accessToken
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Authentication failed'
       setError(message)
@@ -190,7 +242,7 @@ export function useElizaAuth(): UseElizaAuthReturn {
     } finally {
       setIsAuthenticating(false)
     }
-  }, [accessToken, expiresAt, isConnected, address, signMessageAsync, scheduleRefresh])
+  }, [accessToken, expiresAt, isConnected, address, signMessageAsync, scheduleRefresh, applyTokenResponse])
 
   // Clear authentication
   const clearAuth = useCallback(() => {
@@ -220,6 +272,7 @@ export function useElizaAuth(): UseElizaAuthReturn {
     isAuthenticated,
     isAuthenticating,
     authStep,
+    checkToken,
     getToken,
     clearAuth,
     error,

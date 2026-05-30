@@ -504,18 +504,41 @@ function stringArray(value: unknown): string[] | undefined {
   return items && items.length > 0 ? items : undefined
 }
 
+function getWagdieSettings(record: UnknownRecord): UnknownRecord {
+  const settings = asRecord(record.settings)
+  const wagdie = asRecord(settings?.wagdie)
+  return wagdie ?? {}
+}
+
+function firstOwnedNullableString(
+  records: Array<[UnknownRecord, string]>,
+  fallback: string | null
+): string | null {
+  for (const [record, key] of records) {
+    if (!hasOwn(record, key)) continue
+    return normalizeNullableString(record[key]) ?? null
+  }
+
+  return fallback
+}
+
 export function buildCharacterSheetExport(character: AgentCharacter): ElizaCharacterExport {
   const record = character as UnknownRecord
+  const wagdieSettings = getWagdieSettings(record)
   const system = normalizeNullableString(record.system) ?? normalizeNullableString(record.systemPrompt) ?? undefined
   const templates = normalizeTemplates(record.templates)
   const settings = normalizeSafeSettings(record.settings)
+  const lore = stringArray(record.lore) ?? stringArray(wagdieSettings.lore) ?? []
 
   const exportData: ElizaCharacterExport = {
     name: typeof character.name === 'string' ? character.name : 'character',
     username: normalizeNullableString(record.username) ?? undefined,
     bio: stringArray(record.bio) ?? [],
-    lore: stringArray(record.lore) ?? [],
-    backstory: normalizeNullableString(record.backstory) ?? null,
+    lore,
+    backstory: firstOwnedNullableString(
+      [[record, 'backstory'], [wagdieSettings, 'backstory']],
+      lore[0] ?? null
+    ),
     topics: stringArray(record.topics),
     adjectives: stringArray(record.adjectives),
     style: isRecord(record.style) ? record.style as ElizaCharacterExport['style'] : undefined,

@@ -7,6 +7,8 @@ import type { GameplaySuccessTier } from './gameplay/rules'
 import {
   normalizeAdventureMemory,
   normalizeEncounterSeed,
+  normalizeNarrativeSceneCheckEscalationMetadata,
+  normalizeNarrativeTtrpgMetadata,
   normalizeThreatLevel,
 } from './narrativeTypes'
 import type {
@@ -228,6 +230,23 @@ function fallbackSeed(input: BuildCatalogPreferredEncounterSeedInput): LocationR
   })
 }
 
+function hasPriorUnresolvedDanger(
+  narrativeState: EncounterEscalationNarrativeState | null | undefined
+): boolean {
+  const metadata = narrativeState?.metadata
+  if (!metadata) return false
+
+  const ttrpg = normalizeNarrativeTtrpgMetadata(metadata)
+  if (ttrpg.combatReadiness === 'foreshadow' && (ttrpg.threatLevel ?? 0) >= 2) return true
+  if (ttrpg.combatReadiness === 'ready' && (ttrpg.threatLevel ?? 0) >= 3) return true
+
+  const sceneCheckEscalation = normalizeNarrativeSceneCheckEscalationMetadata(metadata)
+  return Object.values(sceneCheckEscalation.sceneCheckEscalations).some((escalation) =>
+    (escalation.decision === 'danger' && (escalation.threatLevel ?? 0) >= 2) ||
+    escalation.decision === 'combat_ready'
+  )
+}
+
 export function deriveSceneCheckEscalationFloor(
   rollTier: GameplaySuccessTier | string | null | undefined
 ): SceneCheckEscalationFloor {
@@ -360,6 +379,11 @@ export function normalizeSceneCheckEscalation(
   if (decision === 'none' && floor.decision === 'danger') {
     decision = 'danger'
     reason = reason ?? floor.reason
+  }
+
+  if (decision === 'danger' && seed && hasPriorUnresolvedDanger(input.narrativeState)) {
+    decision = 'combat_ready'
+    reason = reason ?? 'repeated_unresolved_danger'
   }
 
   if (decision === 'combat_ready' && !seed) {

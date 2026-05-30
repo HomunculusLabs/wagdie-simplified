@@ -124,6 +124,51 @@ describe('location room encounter escalation helpers', () => {
     expect(result.ttrpgMetadataPatch).not.toHaveProperty('lastCombatTriggerBeatId')
   })
 
+  it('promotes a repeated failed scene check against unresolved danger to combat-ready', () => {
+    const result = normalizeSceneCheckEscalation({
+      rollTier: 'failure',
+      rawEscalation: { decision: 'none', reason: 'The GM omitted escalation again.' },
+      narrativeState: {
+        ...narrativeStateWithCatalog(adventureCatalog()),
+        metadata: {
+          adventureCatalog: adventureCatalog(),
+          ttrpgPhase: 'story',
+          combatReadiness: 'none',
+          threatLevel: null,
+          sceneCheckEscalations: {
+            'scene_check:prior': {
+              decision: 'danger',
+              dangerKind: 'monster_pressure',
+              reason: 'The first failed check woke something up.',
+              threatLevel: 2,
+              encounterSeed: {
+                title: 'Bell Ambush',
+                summary: 'The rope snaps taut and the rafters answer with movement.',
+              },
+            },
+          },
+        },
+      },
+      fallbackSummary: 'Another failed search makes the hidden bell answer.',
+    })
+
+    expect(result.escalation).toMatchObject({
+      decision: 'combat_ready',
+      threatLevel: 3,
+      encounterSeed: expect.objectContaining({
+        title: 'Bell Ambush',
+        source: 'location_catalog',
+      }),
+    })
+    expect(result.ttrpgMetadataPatch).toMatchObject({
+      ttrpgPhase: 'threat',
+      combatReadiness: 'ready',
+      threatLevel: 3,
+      requestedGameplayAction: null,
+      lastEncounterSeed: expect.objectContaining({ title: 'Bell Ambush' }),
+    })
+  })
+
   it('prefers 80_encounters catalog entries over GM or monster seed titles', () => {
     const seed = buildCatalogPreferredEncounterSeed({
       narrativeState: narrativeStateWithCatalog(adventureCatalog()),

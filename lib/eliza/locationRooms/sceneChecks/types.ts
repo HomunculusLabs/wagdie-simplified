@@ -89,7 +89,8 @@ export type SceneCheckFallback = {
   difficulty?: ElizaLocationRoomGameplayDifficulty | string | null
 }
 
-export type SceneCheckAdjudicationReason = 'gm_request' | 'backend_request' | 'character_proposal' | 'backend_fallback'
+// `backend_fallback` is legacy persisted metadata only; new backend-created checks emit `backend_inferred`.
+export type SceneCheckAdjudicationReason = 'gm_request' | 'backend_request' | 'character_proposal' | 'backend_inferred' | 'backend_fallback'
 
 export type SceneCheckAdjudication =
   | {

@@ -304,14 +304,14 @@ export const elizaConfig = {
           min: 1,
           max: 200,
           integer: true,
-        }) ?? 12,
+        }) ?? 6,
       automation: {
         targetCompletedTurns:
           optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_TARGET_TURNS, {
             min: 1,
             max: 10000,
             integer: true,
-          }) ?? 100,
+          }) ?? 20,
         maxActiveRunsPerWorker:
           optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_AUTOMATION_MAX_ACTIVE_RUNS_PER_WORKER, {
             min: 1,
@@ -345,12 +345,12 @@ export const elizaConfig = {
             min: 1,
             max: 12,
             integer: true,
-          }) ?? 6,
+          }) ?? 3,
         maxTotalMonsterHp:
           optionalNumberInRange(process.env.ELIZA_LOCATION_ROOM_GAMEPLAY_MAX_TOTAL_MONSTER_HP, {
             min: 1,
             integer: true,
-          }) ?? 180,
+          }) ?? 36,
       },
       rewardBudget: {
         maxXpPerCharacter:

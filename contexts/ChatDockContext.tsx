@@ -6,7 +6,7 @@ import type { ReactNode } from 'react'
 export interface ChatDockTarget {
   tokenId: string
   characterName: string
-  characterId?: string
+  characterId: string
 }
 
 interface ChatDockContextValue {

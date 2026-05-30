@@ -44,6 +44,26 @@ function asStringMap(value: unknown): Record<string, string> | undefined {
   return entries.length > 0 ? Object.fromEntries(entries) : {}
 }
 
+function getWagdieSettings(character: AgentCharacter): UnknownRecord {
+  const settings = (character as UnknownRecord).settings
+  if (!isPlainRecord(settings)) return {}
+
+  const wagdie = settings.wagdie
+  return isPlainRecord(wagdie) ? wagdie : {}
+}
+
+function hasOwn(record: UnknownRecord, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key)
+}
+
+function extractLore(character: AgentCharacter): string[] {
+  const record = character as UnknownRecord
+  const topLevelLore = asStringArray(record.lore)
+  if (topLevelLore !== undefined) return topLevelLore
+
+  return asStringArray(getWagdieSettings(character).lore) ?? []
+}
+
 function mergeObjectsPreservingUndefined<T extends Record<string, unknown>>(
   existing: T | undefined,
   patch: T | undefined
@@ -265,7 +285,7 @@ export function applyWagdieUpdateToAgentCharacter(
   const patchRecord = patch as UnknownRecord
 
   if (update.backstory !== undefined && update.lore === undefined) {
-    const existingLore = asStringArray((existing as UnknownRecord).lore) ?? []
+    const existingLore = extractLore(existing)
     const newBackstory = normalizeNullableString(update.backstory)
 
     if (existingLore.length === 0 && isNonEmptyString(newBackstory)) {
@@ -284,13 +304,23 @@ export function applyWagdieUpdateToAgentCharacter(
  * - Otherwise fall back to the first `lore` entry if present
  */
 export function extractBackstory(character: AgentCharacter): string | null {
-  const backstory = (character as UnknownRecord).backstory
+  const record = character as UnknownRecord
+  const backstory = record.backstory
   if (typeof backstory === 'string') return backstory
   if (backstory === null) return null
 
-  const lore = (character as UnknownRecord).lore
-  const loreArr = asStringArray(lore)
-  if (loreArr && loreArr.length > 0) return loreArr[0]
+  const wagdieSettings = getWagdieSettings(character)
+  if (hasOwn(wagdieSettings, 'backstory')) {
+    const wagdieBackstory = wagdieSettings.backstory
+    if (typeof wagdieBackstory === 'string') return wagdieBackstory
+    if (wagdieBackstory === null) return null
+  }
+
+  const topLevelLore = asStringArray(record.lore)
+  if (topLevelLore && topLevelLore.length > 0) return topLevelLore[0]
+
+  const wagdieLore = asStringArray(wagdieSettings.lore)
+  if (wagdieLore && wagdieLore.length > 0) return wagdieLore[0]
 
   return null
 }
@@ -305,7 +335,7 @@ export function toAICharacterFromRecord(tokenId: string, record: CharacterRecord
   const bio = Array.isArray(c.bio) ? c.bio : []
   const topics = Array.isArray(c.topics) ? c.topics : []
 
-  const lore = asStringArray(cRecord.lore) ?? []
+  const lore = extractLore(c)
   const adjectives = asStringArray(cRecord.adjectives) ?? []
   const postExamples = asStringArray(cRecord.postExamples) ?? []
 

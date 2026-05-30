@@ -29,6 +29,15 @@ To avoid stale transcript confusion, every smoke run must inspect only fresh out
 
 Legacy stored fallback messages may remain readable in historical transcripts. Treat them as historical data only; current health should count them as `recentLegacyFallbackCount` when they fall inside the recent diagnostics window, not as successful current output.
 
+## Combat Narration Smoke Checks
+
+When a fresh run reaches combat, verify the combat public transcript and diagnostics satisfy these checks:
+
+- Failed GM repair does not publish deterministic success: after malformed/weak Official GM output plus one failed repair, no fresh public `gm_outcome` is appended, no static fallback outcome is used as `outcomeSummary`, and the existing action/mechanics/roll-card state remains available for retry.
+- Roll card owns mechanics: the fresh `roll_card` contains public dice/action/effects/status mechanics; the fresh `gm_outcome` must not carry `publicRolls`, `mechanicalDeltas`, raw dice results, or prose that restates hidden mechanics as the authority.
+- GM outcome describes visible consequence: accepted/repaired `gm_outcome` prose should name the visible result of the resolved action, such as contact, miss, damage, healing, retaliation, protection, position change, visible strain, death/victory/flee aftermath, or another backend-supported consequence. Reject generic pressure-only prose even if JSON-valid.
+- Repair failure is operator-visible and safe: failed GM repair should surface through normal failed/retry status plus safe diagnostics/metadata (for example repair status/category, repair attempted, transport stage when relevant, and response lengths), without raw prompts or raw model output.
+
 ## Smoke Path
 
 1. Open admin location-room diagnostics for location `11`.

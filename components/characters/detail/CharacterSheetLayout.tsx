@@ -17,6 +17,7 @@ import type { TabItem } from '@/components/ui'
 import { extractNFTTraits } from '@/lib/utils/nft-traits'
 import type { UseCharacterEditorReturn } from '@/hooks/useCharacterEditor'
 import type { CharacterImageDisclosure } from '@/lib/utils/image'
+import type { PublicChatReadiness } from '@/lib/eliza/chatReadiness'
 import type { Character } from '@/types/character'
 
 export type CharacterSheetTab = 'sheet' | 'ai-persona' | 'on-chain'
@@ -49,8 +50,9 @@ interface CharacterSheetLayoutProps {
   onInfect: () => void
   onCure: () => void
   onChat: () => void
-  showChatAction: boolean
-  chatCharacterId?: string
+  chatReadiness: PublicChatReadiness
+  onRetryChatReadiness?: () => void
+  onPersonaSaved?: () => Promise<void> | void
   showPersonaAssistant?: boolean
 }
 
@@ -79,12 +81,14 @@ export function CharacterSheetLayout({
   onInfect,
   onCure,
   onChat,
-  showChatAction,
-  chatCharacterId,
+  chatReadiness,
+  onRetryChatReadiness,
+  onPersonaSaved,
   showPersonaAssistant = isOwner,
 }: CharacterSheetLayoutProps) {
   const [isPersonaAssistantDockVisible, setIsPersonaAssistantDockVisible] = useState(false)
   const shouldCompactLeftRail = activeTab === 'ai-persona' && isPersonaAssistantDockVisible
+  const chatCharacterId = chatReadiness.status === 'ready' ? chatReadiness.characterId : undefined
 
   useEffect(() => {
     const handlePersonaAssistantDockVisibility = (event: Event) => {
@@ -156,6 +160,48 @@ export function CharacterSheetLayout({
     }
     onTabChange('sheet')
   }
+
+  const chatAction = (() => {
+    if (chatReadiness.status === 'ready') {
+      return (
+        <Button variant="secondary" onClick={onChat} className="gap-2 self-start lowercase">
+          <ChatIcon /> chat
+        </Button>
+      )
+    }
+
+    if (chatReadiness.status === 'loading') {
+      return (
+        <div className="self-start border border-midnight-light/40 bg-black/25 px-3 py-2 text-xs font-display lowercase tracking-wide text-mist">
+          checking ai persona...
+        </div>
+      )
+    }
+
+    const isError = chatReadiness.status === 'error'
+    const message = isError
+      ? chatReadiness.message
+      : isOwner
+        ? 'Open the AI persona tab, review or edit fields, then click Save AI Persona before chatting.'
+        : 'This character does not have a public AI persona configured yet.'
+
+    return (
+      <div className="max-w-sm self-start border border-amber-800/50 bg-amber-950/20 p-3 text-left">
+        <p className="text-xs font-display lowercase tracking-widest text-amber-300">ai persona required before chat</p>
+        <p className="mt-1 text-xs leading-relaxed text-amber-100/75">{message}</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={() => onTabChange('ai-persona')} className="lowercase">
+            open ai persona
+          </Button>
+          {isError && onRetryChatReadiness && (
+            <Button variant="secondary" size="sm" onClick={onRetryChatReadiness} className="lowercase">
+              retry
+            </Button>
+          )}
+        </div>
+      </div>
+    )
+  })()
 
   return (
     <Card className="relative !overflow-visible border-soul-accent/25 bg-[radial-gradient(circle_at_top_left,rgba(214,177,103,0.08),transparent_34%),linear-gradient(135deg,rgba(22,17,15,0.96),rgba(8,8,8,0.98))] shadow-2xl shadow-black/50">
@@ -269,11 +315,7 @@ export function CharacterSheetLayout({
                   isEditMode={isEditMode}
                   editor={editor}
                 />
-                {showChatAction && (
-                  <Button variant="secondary" onClick={onChat} className="gap-2 self-start lowercase">
-                    <ChatIcon /> chat
-                  </Button>
-                )}
+                {chatAction}
               </div>
 
               <Tabs
@@ -308,6 +350,7 @@ export function CharacterSheetLayout({
                     characterId={chatCharacterId}
                     assistantPortalId={PERSONA_ASSISTANT_DOCK_PORTAL_ID}
                     showPersonaAssistant={showPersonaAssistant}
+                    onPersonaSaved={onPersonaSaved}
                   />
                 </div>
               )}

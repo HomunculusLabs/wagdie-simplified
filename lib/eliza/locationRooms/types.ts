@@ -559,10 +559,36 @@ export type GenerateOfficialLocationRoomTurnInput = {
   narrativeContext?: LocationRoomNarrativeTurnContext
 }
 
+export type LocationRoomGenerationStatus = 'accepted' | 'repaired' | 'repair_failed'
+
+export type LocationRoomGenerationResponseFlags = {
+  empty: boolean
+  hasJsonObject: boolean
+  fencedJson: boolean
+  startsWithJsonObject: boolean
+}
+
+export type LocationRoomPublicGenerationDiagnostics = {
+  status: LocationRoomGenerationStatus
+  repairAttempted: boolean
+  repaired: boolean
+  initialErrorCategory?: string
+  repairErrorCategory?: string
+  transportStage?: string
+  initialResponseLength?: number
+  repairResponseLength?: number
+  initialResponseFlags?: LocationRoomGenerationResponseFlags
+  repairResponseFlags?: LocationRoomGenerationResponseFlags
+}
+
+export type OfficialLocationRoomDeclaredActionSource = 'structured_model' | 'unstructured_model'
+
 export type GenerateOfficialLocationRoomTurnResult = {
   officialAgentId: string
   content: string
   declaredAction?: LocationRoomDeclaredAction | null
+  declaredActionSource?: OfficialLocationRoomDeclaredActionSource | null
   sceneCheckProposal?: NormalizedSceneCheckProposal | null
   sceneCheckProposalError?: string | null
+  turnGeneration?: LocationRoomPublicGenerationDiagnostics
 }

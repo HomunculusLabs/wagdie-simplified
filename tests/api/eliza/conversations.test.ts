@@ -343,7 +343,7 @@ describe('Eliza Conversations API Routes', () => {
       expect(userClient.conversations.listForCharacter).toHaveBeenCalledWith('record-1', { page: 1, pageSize: 20 })
     })
 
-    it('list should return empty when tokenId has no record', async () => {
+    it('list should return AI_PERSONA_REQUIRED when tokenId has no record', async () => {
       ;(getSession as jest.Mock).mockResolvedValueOnce({
         address: '0xAbC',
         eliza: { tokens: { accessToken: 'user-token', expiresAt: Date.now() + 60 * 60 * 1000 } },
@@ -368,11 +368,10 @@ describe('Eliza Conversations API Routes', () => {
         createListRequest('http://localhost/api/eliza/conversations?tokenId=123&page=1&pageSize=20')
       )
 
-      expect(response.status).toBe(200)
+      expect(response.status).toBe(409)
       const data = await (response as any).json()
-      expect(data.conversations).toEqual([])
-      expect(data.total).toBe(0)
-      expect(data.hasMore).toBe(false)
+      expect(data.error).toBe('AI_PERSONA_REQUIRED')
+      expect(data.message).toContain('Save AI Persona')
 
       expect(getElizaClient).toHaveBeenCalledTimes(1)
       expect(getRecordIdByTokenId).toHaveBeenCalledWith(serverClient, '123')

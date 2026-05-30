@@ -381,8 +381,9 @@ describe('AIPersonaTab Integration', () => {
   })
 
   describe('save flow', () => {
-    it('should call saveAICharacter when save button is clicked', async () => {
+    it('should call saveAICharacter and refresh chat readiness when save button is clicked', async () => {
       const user = userEvent.setup()
+      const onPersonaSaved = jest.fn()
       mockSaveAICharacter.mockResolvedValueOnce(true)
 
       // Enable the save button by simulating unsaved changes
@@ -405,12 +406,45 @@ describe('AIPersonaTab Integration', () => {
         applyAssistantDraft: mockApplyAssistantDraft,
       })
 
-      render(<AIPersonaTab tokenId="123" isOwner={true} characterName="Test" />)
+      render(<AIPersonaTab tokenId="123" isOwner={true} characterName="Test" onPersonaSaved={onPersonaSaved} />)
 
       const saveButton = screen.getByRole('button', { name: /Save AI Persona/i })
       await user.click(saveButton)
 
       expect(mockSaveAICharacter).toHaveBeenCalled()
+      await waitFor(() => expect(onPersonaSaved).toHaveBeenCalledTimes(1))
+    })
+
+    it('should not refresh chat readiness when save fails', async () => {
+      const user = userEvent.setup()
+      const onPersonaSaved = jest.fn()
+      mockSaveAICharacter.mockResolvedValueOnce(false)
+
+      const useAIPersonaEditor = jest.requireMock('@/hooks/useAIPersonaEditor').useAIPersonaEditor
+      useAIPersonaEditor.mockReturnValue({
+        state: mockEditorState,
+        hasUnsavedChanges: true,
+        setBio: mockSetBio,
+        setLore: mockSetLore,
+        setTopics: mockSetTopics,
+        setAdjectives: mockSetAdjectives,
+        setStyle: mockSetStyle,
+        setExampleMessages: mockSetExampleMessages,
+        setPostExamples: mockSetPostExamples,
+        setSystemPrompt: mockSetSystemPrompt,
+        getUpdateInput: mockGetUpdateInput,
+        clearDraft: mockClearDraft,
+        discardDraft: mockDiscardDraft,
+        getAssistantSnapshot: mockGetAssistantSnapshot,
+        applyAssistantDraft: mockApplyAssistantDraft,
+      })
+
+      render(<AIPersonaTab tokenId="123" isOwner={true} characterName="Test" onPersonaSaved={onPersonaSaved} />)
+
+      await user.click(screen.getByRole('button', { name: /Save AI Persona/i }))
+
+      expect(mockSaveAICharacter).toHaveBeenCalled()
+      expect(onPersonaSaved).not.toHaveBeenCalled()
     })
 
     it('should disable save button when wallet not connected', () => {

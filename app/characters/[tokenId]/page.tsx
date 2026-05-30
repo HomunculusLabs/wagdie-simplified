@@ -19,6 +19,7 @@ import { Card, CardTitle, CardContent, CardDescription, Button, Spinner } from '
 import { isAdmin } from '@/lib/auth/admin'
 import { canEditCharacterForAddress, isCharacterHeldByAddress } from '@/lib/domain/character/ownership'
 import { useChatDock } from '@/contexts/ChatDockContext'
+import type { PublicChatReadiness } from '@/lib/eliza/chatReadiness'
 
 const showLoreNav = process.env.NEXT_PUBLIC_SHOW_LORE_NAV === 'true'
 
@@ -43,11 +44,24 @@ export default function CharacterDetailPage() {
   const [activeTab, setActiveTab] = useState<CharacterSheetTab>('sheet')
 
   const { character, setCharacter, isLoading, refetchCharacter } = useCharacterDetailData(tokenId)
-  const { aiCharacter } = useAICharacter(String(tokenId))
+  const {
+    aiCharacter,
+    isLoading: isAICharacterLoading,
+    error: aiCharacterError,
+    fetchAICharacter,
+  } = useAICharacter(String(tokenId))
   const editor = useCharacterEditor({ character, isLoading })
   const userIsAdmin = isAdmin(address)
   const isOwner = canEditCharacterForAddress(character, address, userIsAdmin)
   const userHoldsCharacter = isCharacterHeldByAddress(character, address)
+
+  const chatReadiness: PublicChatReadiness = isAICharacterLoading
+    ? { status: 'loading' }
+    : aiCharacter?.id
+      ? { status: 'ready', characterId: aiCharacter.id }
+      : aiCharacterError
+        ? { status: 'error', message: aiCharacterError }
+        : { status: 'missing' }
 
   const name = character?.name || character?.metadata?.name || `Character #${tokenId}`
   const { imageDisclosure, displayedImageUrl, handleImageError } = useCharacterImageDisplay({
@@ -164,9 +178,13 @@ export default function CharacterDetailPage() {
           onSear={() => setIsSearingModalOpen(true)}
           onInfect={() => setIsInfectionModalOpen(true)}
           onCure={() => setIsCureModalOpen(true)}
-          onChat={() => openChat({ tokenId: String(tokenId), characterName: name, characterId: aiCharacter?.id })}
-          showChatAction={Boolean(aiCharacter?.id)}
-          chatCharacterId={aiCharacter?.id}
+          onChat={() => {
+            if (!aiCharacter?.id) return
+            openChat({ tokenId: String(tokenId), characterName: name, characterId: aiCharacter.id })
+          }}
+          chatReadiness={chatReadiness}
+          onRetryChatReadiness={fetchAICharacter}
+          onPersonaSaved={fetchAICharacter}
           showPersonaAssistant={userHoldsCharacter}
         />
       </div>

@@ -49,6 +49,27 @@ function readTextField(value: unknown, keys: string[]): string | undefined {
   return undefined
 }
 
+function readNestedTextField(value: unknown, paths: string[][]): string | undefined {
+  for (const path of paths) {
+    let current = value
+
+    for (const key of path) {
+      if (!current || typeof current !== 'object') {
+        current = undefined
+        break
+      }
+
+      current = (current as Record<string, unknown>)[key]
+    }
+
+    if (typeof current === 'string' && current.trim()) {
+      return current
+    }
+  }
+
+  return undefined
+}
+
 function readNumberField(value: unknown, keys: string[]): number | undefined {
   if (!value || typeof value !== 'object') {
     return undefined
@@ -69,7 +90,19 @@ function readNumberField(value: unknown, keys: string[]): number | undefined {
 
 function mapCompleteMessage(data: unknown, fallbackText: string): ChatMessage {
   const record = data && typeof data === 'object' ? (data as Record<string, unknown>) : {}
-  const content = fallbackText.trim() ? fallbackText : readTextField(record, ['text', 'content', 'message']) ?? fallbackText
+  const content = fallbackText.trim()
+    ? fallbackText
+    : readTextField(record, ['text', 'content', 'message']) ??
+      readNestedTextField(record, [
+        ['content', 'text'],
+        ['data', 'text'],
+        ['data', 'content', 'text'],
+        ['response', 'text'],
+        ['response', 'content', 'text'],
+        ['agentResponse', 'text'],
+        ['agentResponse', 'content', 'text'],
+      ]) ??
+      fallbackText
 
   return {
     id: readTextField(record, ['messageId', 'id']) ?? `official-${Date.now()}`,
@@ -115,6 +148,8 @@ export async function streamOfficialElizaSse(
   while (reading) {
     const { done, value } = await reader.read()
     if (done) {
+      const tail = decoder.decode()
+      if (tail) buffer += tail
       reading = false
       break
     }
@@ -136,7 +171,15 @@ export async function streamOfficialElizaSse(
         (data && typeof data === 'object' ? String((data as Record<string, unknown>).type ?? '') : '')
 
       if (type === 'chunk') {
-        const chunk = readTextField(data, ['chunk', 'text', 'content'])
+        const chunk =
+          readTextField(data, ['chunk', 'text', 'content']) ??
+          readNestedTextField(data, [
+            ['content', 'text'],
+            ['delta', 'content'],
+            ['data', 'chunk'],
+            ['data', 'text'],
+            ['data', 'content', 'text'],
+          ])
         if (chunk) {
           fullText += chunk
           callbacks.onChunk?.(chunk)
@@ -172,6 +215,47 @@ export async function streamOfficialElizaSse(
           console.warn('[Official ElizaOS] stream error callback failed', callbackError)
         }
         throw error
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    const parsed = parseSseEvents(`${buffer}\n\n`)
+
+    for (const event of parsed.events) {
+      let data: unknown
+      try {
+        data = JSON.parse(event.data)
+      } catch {
+        data = event.data
+      }
+
+      const type =
+        event.event ??
+        (data && typeof data === 'object' ? String((data as Record<string, unknown>).type ?? '') : '')
+
+      if (type === 'chunk') {
+        const chunk =
+          readTextField(data, ['chunk', 'text', 'content']) ??
+          readNestedTextField(data, [
+            ['content', 'text'],
+            ['delta', 'content'],
+            ['data', 'chunk'],
+            ['data', 'text'],
+            ['data', 'content', 'text'],
+          ])
+        if (chunk) {
+          fullText += chunk
+          callbacks.onChunk?.(chunk)
+        }
+      } else if (type === 'done' || type === 'complete') {
+        const message = mapCompleteMessage(data, fullText)
+        if (!fullText && message.content) {
+          fullText = message.content
+          callbacks.onChunk?.(message.content)
+        }
+        await callbacks.onComplete?.(message, conversationId)
+        return
       }
     }
   }

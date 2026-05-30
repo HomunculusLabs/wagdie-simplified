@@ -38,7 +38,6 @@ jest.mock('@/lib/eliza/characterResolver', () => ({
 
 import {
   GameMasterBeatGenerationError,
-  GameMasterSceneCheckOutcomeGenerationError,
   OfficialGameMasterBeatGenerator,
   buildGameMasterBeatProgressionContext,
   buildGameMasterBeatPrompt,
@@ -47,6 +46,8 @@ import {
   normalizeGameMasterSceneCheckOutcomeResponse,
 } from '@/lib/eliza/locationRooms/gameMasterGenerator'
 import {
+  ElizaOfficialLocationRoomTurnGenerator,
+  OfficialLocationRoomTurnGenerationError,
   buildOfficialLocationRoomPrompt,
   normalizeOfficialLocationRoomTurnResponse,
 } from '@/lib/eliza/locationRooms/officialTurnGenerator'
@@ -68,6 +69,7 @@ import {
   resolveSceneCheck,
 } from '@/lib/eliza/locationRooms/sceneChecks/rules'
 import { projectPublicSceneCheckRolls } from '@/lib/eliza/locationRooms/sceneChecks/publicRolls'
+import { resolveCharacterByTokenId } from '@/lib/eliza/characterResolver'
 import {
   OFFICIAL_ELIZA_MESSAGE_MAX_BYTES,
   OFFICIAL_ELIZA_UPSTREAM_MAX_CODE_UNITS,
@@ -1184,7 +1186,7 @@ describe('game-master beat generator helpers', () => {
     expect(repairPrompt).not.toContain('not json')
   })
 
-  it('throws a diagnostic error instead of returning static fallback when model repair still fails progression validation', async () => {
+  it('throws when model beat repair still fails progression validation', async () => {
     const messaging = {
       startAgent: jest.fn(async () => undefined),
       createSession: jest.fn(async () => ({ sessionId: 'session-1' })),
@@ -1199,23 +1201,15 @@ describe('game-master beat generator helpers', () => {
     }
     const generator = new OfficialGameMasterBeatGenerator(messaging as never)
 
-    let thrown: unknown
-    try {
-      await generator.generateBeat({
-        gameMasterAgentId: 'gm-runtime-1',
-        room: room(),
-        tick: tick(),
-        participants,
-        speaker: participants[0],
-        recentMessages: [message()],
-        narrativeState: narrativeState(),
-      })
-    } catch (error) {
-      thrown = error
-    }
-
-    expect(thrown).toBeInstanceOf(GameMasterBeatGenerationError)
-    expect(thrown).toMatchObject({
+    await expect(generator.generateBeat({
+      gameMasterAgentId: 'gm-runtime-1',
+      room: room(),
+      tick: tick(),
+      participants,
+      speaker: participants[0],
+      recentMessages: [message()],
+      narrativeState: narrativeState(),
+    })).rejects.toMatchObject({
       name: 'GameMasterBeatGenerationError',
       diagnostics: expect.objectContaining({
         status: 'repair_failed',
@@ -1264,7 +1258,7 @@ describe('game-master beat generator helpers', () => {
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(1)
   })
 
-  it('prompts and normalizes optional character scene-check proposals with prose fallback', () => {
+  it('prompts and normalizes optional character scene-check proposals strictly', () => {
     const request = normalizeSceneCheckRequest({
       actionIntent: 'search',
       summary: 'Search the ash marks for a hidden route.',
@@ -1307,15 +1301,9 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Known routes: cellar stair below the seam')
     expect(prompt).toContain('ash-marks: Read the Ash Marks')
 
-    const prose = normalizeOfficialLocationRoomTurnResponse('I kneel beside the ash and listen before touching it.', {
+    expect(() => normalizeOfficialLocationRoomTurnResponse('I kneel beside the ash and listen before touching it.', {
       sceneCheckContext,
-    })
-    expect(prose).toEqual({
-      content: 'I kneel beside the ash and listen before touching it.',
-      declaredAction: { summary: 'I kneel beside the ash and listen before touching it.' },
-      sceneCheckProposal: null,
-      sceneCheckProposalError: null,
-    })
+    })).toThrow('JSON object')
 
     const valid = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
       publicSpeech: 'These marks remember a path beneath us.',
@@ -1335,10 +1323,12 @@ describe('game-master beat generator helpers', () => {
       actionIntent: 'recall_lore',
       rollChoice: expect.objectContaining({ source: 'contextual', contextualCheckId: 'ash-marks', checkType: 'history' }),
     }))
+    expect(valid.declaredActionSource).toBe('structured_model')
     expect(valid.sceneCheckProposalError).toBeNull()
 
     const invalid = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
       publicSpeech: 'I force the ash to answer.',
+      declaredAction: { summary: 'Force the ash to answer.', actionIntent: 'force' },
       sceneCheckProposal: {
         actionIntent: 'invent_spell',
         rollChoice: { source: 'fixed', checkType: 'arcana' },
@@ -1346,22 +1336,108 @@ describe('game-master beat generator helpers', () => {
     }), { sceneCheckContext })
     expect(invalid).toEqual({
       content: 'I force the ash to answer.',
-      declaredAction: { summary: 'I force the ash to answer.' },
+      declaredAction: { summary: 'Force the ash to answer.', actionIntent: 'force' },
+      declaredActionSource: 'structured_model',
       sceneCheckProposal: null,
       sceneCheckProposalError: 'Unsupported scene-check action intent',
     })
 
-    const missingSpeech = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
+    expect(() => normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
       sceneCheckProposal: {
         actionIntent: 'search',
         rollChoice: { source: 'fixed', checkType: 'perception' },
       },
-    }), { sceneCheckContext })
-    expect(missingSpeech.content).toBe('')
-    expect(missingSpeech.declaredAction).toBeNull()
-    expect(missingSpeech.sceneCheckProposal).toEqual(expect.objectContaining({
-      actionIntent: 'search',
+    }), { sceneCheckContext })).toThrow('publicSpeech')
+  })
+
+  it('repairs malformed structured Official character turns once with hidden diagnostics', async () => {
+    jest.mocked(resolveCharacterByTokenId).mockResolvedValueOnce({ id: 'agent-1' } as never)
+    const messaging = {
+      startAgent: jest.fn(async () => undefined),
+      createSession: jest.fn(async () => ({ sessionId: 'session-1' })),
+      sendSessionMessage: jest.fn(async () => ({} as Response)),
+      collectStreamedResponseText: jest.fn()
+        .mockResolvedValueOnce({ message: null, text: 'not json' })
+        .mockResolvedValueOnce({
+          message: null,
+          text: JSON.stringify({
+            publicSpeech: 'The ash points down.',
+            declaredAction: { summary: 'Ash follows the ash marks toward the stair.', actionIntent: 'navigate' },
+          }),
+        }),
+      deleteSession: jest.fn(async () => undefined),
+    }
+    const generator = new ElizaOfficialLocationRoomTurnGenerator(messaging as never)
+
+    const output = await generator.generateTurn({
+      room: room(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message()],
+      narrativeContext: {
+        stateSummary: 'Ash marks point toward a stair.',
+        currentObjective: 'Choose how to answer the marks.',
+        openThreads: ['Where do the marks lead?'],
+        speakerInstruction: 'React to the marks and choose a concrete action.',
+        publicNarration: null,
+      },
+    })
+
+    expect(output).toEqual(expect.objectContaining({
+      officialAgentId: 'agent-1',
+      content: 'The ash points down.',
+      declaredAction: { summary: 'Ash follows the ash marks toward the stair.', actionIntent: 'navigate' },
+      declaredActionSource: 'structured_model',
+      turnGeneration: expect.objectContaining({
+        status: 'repaired',
+        repairAttempted: true,
+        repaired: true,
+        initialErrorCategory: 'missing_json_object',
+      }),
     }))
+    expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
+    expect(messaging.sendSessionMessage.mock.calls[1][0].content).toContain('Repair the failed WAGDIE character turn')
+    expect(messaging.sendSessionMessage.mock.calls[1][0].content).not.toContain('not json')
+  })
+
+  it('throws a typed Official character turn error after failed hidden repair', async () => {
+    jest.mocked(resolveCharacterByTokenId).mockResolvedValueOnce({ id: 'agent-1' } as never)
+    const messaging = {
+      startAgent: jest.fn(async () => undefined),
+      createSession: jest.fn(async () => ({ sessionId: 'session-1' })),
+      sendSessionMessage: jest.fn(async () => ({} as Response)),
+      collectStreamedResponseText: jest.fn()
+        .mockResolvedValueOnce({ message: null, text: 'not json' })
+        .mockResolvedValueOnce({ message: null, text: '{"publicSpeech":"I answer."}' }),
+      deleteSession: jest.fn(async () => undefined),
+    }
+    const generator = new ElizaOfficialLocationRoomTurnGenerator(messaging as never)
+
+    const promise = generator.generateTurn({
+      room: room(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message()],
+      narrativeContext: {
+        stateSummary: 'The rope waits.',
+        currentObjective: 'Choose how to answer the rope.',
+        openThreads: ['What will the rope do?'],
+        speakerInstruction: 'Declare a concrete action.',
+        publicNarration: null,
+      },
+    })
+    await expect(promise).rejects.toBeInstanceOf(OfficialLocationRoomTurnGenerationError)
+    await expect(promise).rejects.toMatchObject({
+      name: 'OfficialLocationRoomTurnGenerationError',
+      diagnostics: expect.objectContaining({
+        status: 'repair_failed',
+        repairAttempted: true,
+        repaired: false,
+        initialErrorCategory: 'missing_json_object',
+        repairErrorCategory: 'invalid_declared_action',
+      }),
+    })
+    expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
   })
 
   it('prompts and normalizes scene-check outcome narration from backend roll facts only', () => {
@@ -1777,7 +1853,7 @@ describe('game-master beat generator helpers', () => {
     expect(repairPrompt).not.toContain('Recent public transcript')
   })
 
-  it('throws instead of returning static fallback when scene-check outcome repair fails', async () => {
+  it('throws when scene-check outcome repair fails', async () => {
     const messaging = {
       startAgent: jest.fn(async () => undefined),
       createSession: jest.fn(async () => ({ sessionId: 'session-1' })),
@@ -1797,15 +1873,7 @@ describe('game-master beat generator helpers', () => {
     }
     const generator = new OfficialGameMasterBeatGenerator(messaging as never)
 
-    let thrown: unknown
-    try {
-      await generator.generateSceneCheckOutcome(sceneCheckOutcomeInput('failure'))
-    } catch (error) {
-      thrown = error
-    }
-
-    expect(thrown).toBeInstanceOf(GameMasterSceneCheckOutcomeGenerationError)
-    expect(thrown).toMatchObject({
+    await expect(generator.generateSceneCheckOutcome(sceneCheckOutcomeInput('failure'))).rejects.toMatchObject({
       name: 'GameMasterSceneCheckOutcomeGenerationError',
       diagnostics: expect.objectContaining({
         status: 'repair_failed',
@@ -1871,25 +1939,19 @@ describe('game-master beat generator helpers', () => {
     expect(structured).toEqual({
       content: 'The rope knows my hand.',
       declaredAction: { summary: 'Pull the rope before the third toll.', chosenOptionId: 'pull-rope', chosenOptionLabel: 'Pull the rope', actionIntent: 'choose' },
+      declaredActionSource: 'structured_model',
       sceneCheckProposal: null,
       sceneCheckProposalError: null,
     })
 
-    const proseFallback = normalizeOfficialLocationRoomTurnResponse('I watch the rope but do not touch it yet.', {
+    expect(() => normalizeOfficialLocationRoomTurnResponse('I watch the rope but do not touch it yet.', {
       narrativeContext: true,
       activeDecision,
-    })
-    expect(proseFallback.declaredAction).toEqual({ summary: 'I watch the rope but do not touch it yet.' })
+    })).toThrow('JSON object')
 
-    const invalidDeclaredAction = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
+    expect(() => normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
       publicSpeech: 'I will not name the chain.',
       declaredAction: { summary: 'Track wallet 0x1234567890123456789012345678901234567890', chosenOptionId: 'secret' },
-    }), { narrativeContext: true, activeDecision })
-    expect(invalidDeclaredAction).toEqual({
-      content: 'I will not name the chain.',
-      declaredAction: { summary: 'I will not name the chain.' },
-      sceneCheckProposal: null,
-      sceneCheckProposalError: null,
-    })
+    }), { narrativeContext: true, activeDecision })).toThrow('declaredAction')
   })
 })

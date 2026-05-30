@@ -31,6 +31,7 @@ interface AIPersonaTabProps {
   characterId?: string
   assistantPortalId?: string
   showPersonaAssistant?: boolean
+  onPersonaSaved?: () => Promise<void> | void
 }
 
 type TabId = 'identity' | 'behavior' | 'examples' | 'advanced'
@@ -49,6 +50,7 @@ function AIPersonaTabComponent({
   characterId,
   assistantPortalId,
   showPersonaAssistant = isOwner,
+  onPersonaSaved,
 }: AIPersonaTabProps) {
   const { isConnected } = useAccount()
   const {
@@ -121,10 +123,20 @@ function AIPersonaTabComponent({
     if (success) {
       editor.clearDraft()
       toast.success('AI persona saved successfully!')
+
+      try {
+        await onPersonaSaved?.()
+      } catch (refreshError) {
+        console.warn('[AIPersonaTab] Chat readiness refresh failed after save:', refreshError)
+        toast('AI persona saved, but chat readiness refresh failed. Refresh the page if chat remains unavailable.', {
+          icon: '⚠️',
+          duration: 5000,
+        })
+      }
     } else {
       toast.error('Failed to save AI persona')
     }
-  }, [editor, saveAICharacter])
+  }, [editor, onPersonaSaved, saveAICharacter])
 
   // Discard changes
   const handleDiscard = useCallback(() => {

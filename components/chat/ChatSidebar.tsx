@@ -16,6 +16,7 @@ import { useCharacterChat } from '@/hooks/useCharacterChat'
 import { useConversations } from '@/hooks/useConversations'
 import { useElizaAuth } from '@/hooks/useElizaAuth'
 import { Button, Spinner } from '@/components/ui'
+import { AI_PERSONA_REQUIRED_ERROR, AI_PERSONA_REQUIRED_MESSAGE } from '@/lib/eliza/chatReadiness'
 import {
   DOCK_DEFAULT_WIDTH,
   DOCK_OVERLAY_CLASS,
@@ -27,7 +28,7 @@ import {
 interface ChatSidebarProps {
   tokenId: string
   characterName: string
-  characterId?: string // Eliza character ID (if known)
+  characterId: string // Canonical Eliza character ID
   isOpen: boolean
   onClose: () => void
 }
@@ -45,10 +46,13 @@ function ChatSidebarComponent({
 }: ChatSidebarProps) {
   const { isConnected, address } = useAccount()
   const [showHistory, setShowHistory] = useState(false)
+  const [personaReadinessError, setPersonaReadinessError] = useState<string | null>(null)
+  const isPersonaReady = Boolean(characterId)
 
-  const { getToken, isAuthenticated, isAuthenticating, error: authError, clearAuth } = useElizaAuth()
+  const { checkToken, getToken, isAuthenticated, isAuthenticating, authStep, error: authError, clearAuth } = useElizaAuth()
 
   const panelRef = useRef<HTMLDivElement | null>(null)
+  const passiveAuthCheckKeyRef = useRef<string | null>(null)
   const [visible, setVisible] = useState(false)
 
   useEffect(() => {
@@ -59,6 +63,20 @@ function ChatSidebarComponent({
     const timer = window.setTimeout(() => setVisible(false), 300)
     return () => window.clearTimeout(timer)
   }, [isOpen])
+
+  useEffect(() => {
+    if (!isOpen || !isConnected || !address || !isPersonaReady || isAuthenticated) {
+      return
+    }
+
+    const checkKey = `${tokenId}:${characterId}:${address.toLowerCase()}`
+    if (passiveAuthCheckKeyRef.current === checkKey) {
+      return
+    }
+
+    passiveAuthCheckKeyRef.current = checkKey
+    void checkToken()
+  }, [address, characterId, checkToken, isAuthenticated, isConnected, isOpen, isPersonaReady, tokenId])
 
   const {
     messages,
@@ -89,18 +107,34 @@ function ChatSidebarComponent({
   } = useConversations({
     characterId,
     tokenId,
-    autoFetch: isOpen && isConnected && isAuthenticated,
+    autoFetch: isOpen && isConnected && isAuthenticated && isPersonaReady,
     pageSize: 20,
   })
 
   // Combined error
-  const error = chatError || conversationsError || authError
-  const isPersonaRequired = chatErrorCode === 'AI_PERSONA_REQUIRED'
+  const error = (!isPersonaReady ? AI_PERSONA_REQUIRED_MESSAGE : personaReadinessError) || chatError || conversationsError || authError
+  const isPersonaRequired = !isPersonaReady
+    || Boolean(personaReadinessError)
+    || chatErrorCode === AI_PERSONA_REQUIRED_ERROR
+    || conversationsError === AI_PERSONA_REQUIRED_MESSAGE
   const clearError = useCallback(() => {
+    setPersonaReadinessError(null)
     clearChatError()
     clearConversationsError()
     clearAuth()
   }, [clearChatError, clearConversationsError, clearAuth])
+
+  useEffect(() => {
+    if (isPersonaReady) {
+      setPersonaReadinessError(null)
+    }
+  }, [isPersonaReady])
+
+  useEffect(() => {
+    if (!isConnected) {
+      passiveAuthCheckKeyRef.current = null
+    }
+  }, [isConnected])
 
   // Persist conversation ID on change
   useEffect(() => {
@@ -187,16 +221,26 @@ function ChatSidebarComponent({
 
   const handleLoadHistory = useCallback(() => {
     void (async () => {
+      if (!isPersonaReady) {
+        setPersonaReadinessError(AI_PERSONA_REQUIRED_MESSAGE)
+        return
+      }
+
       const token = await getToken()
       if (!token) {
         return
       }
       setShowHistory(true)
     })()
-  }, [getToken])
+  }, [getToken, isPersonaReady])
 
   const handleSend = useCallback(
     async (content: string): Promise<boolean> => {
+      if (!isPersonaReady) {
+        setPersonaReadinessError(AI_PERSONA_REQUIRED_MESSAGE)
+        return false
+      }
+
       const token = await getToken()
       if (!token) {
         return false
@@ -205,7 +249,7 @@ function ChatSidebarComponent({
       await sendMessage(content)
       return true
     },
-    [getToken, sendMessage]
+    [getToken, isPersonaReady, sendMessage]
   )
 
   const toggleHistory = useCallback(() => {
@@ -235,7 +279,7 @@ function ChatSidebarComponent({
           onClose={onClose}
           onToggleHistory={toggleHistory}
           onNewConversation={handleNewConversation}
-          showHistoryToggle={isConnected && (showHistory || conversations.length > 0)}
+          showHistoryToggle={isConnected && isPersonaReady && (showHistory || conversations.length > 0)}
           isHistoryOpen={showHistory}
         />
 
@@ -335,10 +379,10 @@ function ChatSidebarComponent({
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-sm text-neutral-300">
-                      Sign in to load conversation history.
+                      Authorize chat to load conversation history.
                     </p>
                     <p className="text-xs text-neutral-500">
-                      This will request a wallet signature.
+                      Your wallet is connected. Chat uses a separate short-lived authorization token, which may request a wallet signature.
                     </p>
                   </div>
                   <Button
@@ -347,7 +391,7 @@ function ChatSidebarComponent({
                     onClick={handleLoadHistory}
                     disabled={isAuthenticating}
                   >
-                    Load history
+                    {isAuthenticating && authStep === 'checking' ? 'Checking...' : 'Authorize chat'}
                   </Button>
                 </div>
               </div>
@@ -364,8 +408,8 @@ function ChatSidebarComponent({
             {/* Input */}
             <ChatInput
               onSend={handleSend}
-              disabled={(isLoadingConversations || isLoadingConversation) || isStreaming || isAuthenticating}
-              placeholder={`Message ${characterName}...`}
+              disabled={!isPersonaReady || (isLoadingConversations || isLoadingConversation) || isStreaming || isAuthenticating}
+              placeholder={isPersonaReady ? `Message ${characterName}...` : 'Save AI Persona before chatting'}
             />
           </>
         )}

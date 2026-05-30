@@ -169,7 +169,7 @@ describe('location room scene-check rules', () => {
     expect(fallback).toEqual(expect.objectContaining({
       decision: 'run',
       source: 'backend',
-      reason: 'backend_fallback',
+      reason: 'backend_inferred',
       actionIntent: 'search',
       rollChoice: expect.objectContaining({ checkType: 'perception' }),
       skippedProposalError: 'Unsupported gameplay roll check type',

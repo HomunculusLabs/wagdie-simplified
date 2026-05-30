@@ -14,6 +14,12 @@ jest.mock('@/lib/eliza/official/messaging', () => ({
 }))
 
 jest.mock('@/lib/eliza/locationRooms/officialTurnGenerator', () => ({
+  OfficialLocationRoomTurnGenerationError: class OfficialLocationRoomTurnGenerationError extends Error {
+    constructor(message: string, readonly diagnostics: unknown) {
+      super(message)
+      this.name = 'OfficialLocationRoomTurnGenerationError'
+    }
+  },
   officialLocationRoomTurnGenerator: { generateTurn: jest.fn() },
   normalizeLocationRoomGeneratedContent: (content: string) => content.trim() || null,
 }))
@@ -35,7 +41,10 @@ import type {
   LocationRoomNarrativeState,
 } from '@/lib/eliza/locationRooms/narrativeTypes'
 import type { LocationRoomRepository } from '@/lib/eliza/locationRooms/repository'
-import type { OfficialLocationRoomTurnGenerator } from '@/lib/eliza/locationRooms/officialTurnGenerator'
+import {
+  OfficialLocationRoomTurnGenerationError,
+  type OfficialLocationRoomTurnGenerator,
+} from '@/lib/eliza/locationRooms/officialTurnGenerator'
 import type { LocationRoom, LocationRoomMessage, LocationRoomParticipant, LocationRoomTick } from '@/lib/eliza/locationRooms/types'
 import {
   normalizeSceneCheckRequest,
@@ -287,7 +296,7 @@ describe('location room narrative coordinator', () => {
     const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
       generateBeat: jest.fn(async () => ({
         gameMasterAgentId: 'gm-1',
-        publicNarration: 'The bell tolls once.',
+        publicNarration: 'The bell tolls once above the bar, shaking ash from the rafters and waking a cold seam under the cellar stair. The rope keeps swaying after every hand leaves it, while three fresh scratches point toward the dark landing below. Ash can pull the rope, test the stair, or read the scratches before whatever listens in the rafters chooses first.',
         speakerInstruction: 'Answer with dread.',
         stateAfter: {
           stateSummary: 'The bell has called Ash.',
@@ -329,7 +338,7 @@ describe('location room narrative coordinator', () => {
       tick: expect.objectContaining({ id: 'tick-1' }),
     }))
     expect(narrativeRepository.storeBeatGameMasterOutput).toHaveBeenCalledWith('beat-1', expect.objectContaining({
-      publicNarration: 'The bell tolls once.',
+      publicNarration: expect.stringContaining('The bell tolls once above the bar'),
       speakerInstruction: 'Answer with dread.',
       metadata: expect.objectContaining({
         ttrpgPhase: 'threat',
@@ -342,7 +351,7 @@ describe('location room narrative coordinator', () => {
     expect(repository.appendMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
       authorKind: 'game_master',
       officialAgentId: 'gm-1',
-      content: 'The bell tolls once.',
+      content: expect.stringContaining('The bell tolls once above the bar'),
       tickId: 'tick-1',
       dedupeKey: 'narrative:beat-1:gm_beat',
       metadata: expect.objectContaining({
@@ -381,6 +390,119 @@ describe('location room narrative coordinator', () => {
       }),
     }))
     expect(narrativeRepository.markBeatCompleted).toHaveBeenCalledWith('beat-1')
+  })
+
+  it('fails Official character turn generation after a durable GM beat and retries only the missing character portion', async () => {
+    const diagnostics = {
+      status: 'repair_failed' as const,
+      repairAttempted: true,
+      repaired: false,
+      initialErrorCategory: 'missing_json_object',
+      repairErrorCategory: 'invalid_declared_action',
+      initialResponseLength: 8,
+      repairResponseLength: 24,
+    }
+    const error = new OfficialLocationRoomTurnGenerationError('official repair failed', diagnostics)
+    const repository = makeRepository()
+    const narrativeRepository = makeNarrativeRepository()
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: 'The bell tolls once above the bar, shaking ash from the rafters and waking a cold seam under the cellar stair. The rope keeps swaying after every hand leaves it, while three fresh scratches point toward the dark landing below. Ash can pull the rope, test the stair, or read the scratches before whatever listens in the rafters chooses first.',
+        speakerInstruction: 'Answer with dread.',
+        stateAfter: {
+          stateSummary: 'The bell has called Ash.',
+          currentObjective: 'Answer the toll.',
+          openThreads: ['Who rang it?'],
+        },
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: 'start_combat',
+        encounterSeed: { title: 'The Bell Horror', summary: 'A bell-born horror steps from the gate.', stakes: 'Silence the toll.' },
+        sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'Silence the toll.' },
+        metadata: { featuredTokenIds: [1] },
+      })),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => {
+        throw error
+      }),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(repository, narrativeRepository, gameMasterGenerator, turnGenerator, makeGameMasterAgentResolver('gm-1'))
+
+    await expect(coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [],
+    })).rejects.toThrow('official repair failed')
+
+    expect(repository.appendMessage).toHaveBeenCalledTimes(1)
+    expect(repository.appendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      authorKind: 'game_master',
+      dedupeKey: 'narrative:beat-1:gm_beat',
+    }))
+    expect(narrativeRepository.markBeatFailed).toHaveBeenCalledWith('beat-1', error, {
+      metadata: expect.objectContaining({ officialTurnGeneration: diagnostics }),
+    })
+    expect(narrativeRepository.markBeatCompleted).not.toHaveBeenCalled()
+
+    const retryRepository = makeRepository()
+    const retryNarrativeRepository = makeNarrativeRepository(beat({
+      status: 'failed',
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'The bell tolls once above the bar, shaking ash from the rafters and waking a cold seam under the cellar stair. The rope keeps swaying after every hand leaves it, while three fresh scratches point toward the dark landing below. Ash can pull the rope, test the stair, or read the scratches before whatever listens in the rafters chooses first.',
+      speakerInstruction: 'Answer with dread.',
+      stateAfter: {
+        stateSummary: 'The bell has called Ash.',
+        currentObjective: 'Answer the toll.',
+        openThreads: ['Who rang it?'],
+      },
+      metadata: {
+        gameMasterMessageId: 'msg-gm',
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 4,
+        requestedGameplayAction: 'start_combat',
+        encounterSeed: { title: 'The Bell Horror', summary: 'A bell-born horror steps from the gate.', stakes: 'Silence the toll.' },
+        adventurePatch: { currentStakes: 'Silence the toll.' },
+      },
+    }))
+    const retryGameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = { generateBeat: jest.fn() }
+    const retryTurnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I hear it in my bones.',
+        declaredAction: { summary: 'Ash answers the toll.', actionIntent: 'answer' },
+        declaredActionSource: 'structured_model',
+      })),
+    }
+    const retryCoordinator = new DefaultLocationRoomNarrativeCoordinator(
+      retryRepository,
+      retryNarrativeRepository,
+      retryGameMasterGenerator,
+      retryTurnGenerator,
+      makeGameMasterAgentResolver('gm-1')
+    )
+
+    const retryResult = await retryCoordinator.processTurn({
+      room: room(),
+      tick: tick({ attempts: 2 }),
+      speaker: participants[0],
+      participants,
+      recentMessages: [],
+    })
+
+    expect(retryResult).toEqual({ selectedTokenId: 1, messageId: 'msg-character' })
+    expect(retryGameMasterGenerator.generateBeat).not.toHaveBeenCalled()
+    expect(retryRepository.appendMessage).toHaveBeenCalledTimes(1)
+    expect(retryRepository.appendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      authorKind: 'agent',
+      dedupeKey: 'narrative:beat-1:character_reaction',
+    }))
   })
 
   it('stamps combat-ready source metadata for a normal ready beat without direct combat', async () => {
@@ -1303,6 +1425,7 @@ describe('location room narrative coordinator', () => {
           summary: 'Ash inspects the scratches and tries to decipher where they point.',
           actionIntent: 'inspect scratches',
         },
+        declaredActionSource: 'structured_model',
         sceneCheckProposal: null,
       })),
     }
@@ -1349,7 +1472,7 @@ describe('location room narrative coordinator', () => {
       sceneCheck: expect.objectContaining({
         sceneCheckId: 'scene_check:beat-1',
         adjudicationSource: 'backend',
-        adjudicationReason: 'backend_fallback',
+        adjudicationReason: 'backend_inferred',
       }),
       action: expect.objectContaining({
         actionType: 'recall_lore',
@@ -1360,6 +1483,141 @@ describe('location room narrative coordinator', () => {
     expect(repository.appendMessage.mock.calls[1][0].metadata).not.toHaveProperty('publicAdventure')
     expect(repository.appendMessage.mock.calls[2][0].metadata).not.toHaveProperty('publicAdventure')
     expect(gameMasterGenerator.generateSceneCheckOutcome).toHaveBeenCalled()
+  })
+
+  it('preserves invalid optional scene-check proposal errors without backend inference', async () => {
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: `msg-${repository.appendMessage.mock.calls.length}`,
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository()
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: { ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 0 },
+    })
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Let Ash search the shelf if they choose.',
+        stateAfter: {
+          stateSummary: 'A shelf may hide a route.',
+          currentObjective: 'Choose how to inspect the shelf.',
+          openThreads: ['What does the shelf conceal?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'The shelf may reveal a safer route.' },
+        metadata: {},
+      })),
+      generateSceneCheckOutcome: jest.fn(),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I search the shelf but keep my weight off the warped boards.',
+        declaredAction: { summary: 'Ash searches the shelf but avoids the warped boards.', actionIntent: 'search' },
+        declaredActionSource: 'structured_model',
+        sceneCheckProposal: null,
+        sceneCheckProposalError: 'Unsupported scene-check action intent',
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(repository, narrativeRepository, gameMasterGenerator, turnGenerator, makeGameMasterAgentResolver('gm-1'))
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })
+
+    expect(result).toEqual(expect.objectContaining({
+      selectedTokenId: 1,
+      messageId: 'msg-1',
+      sceneCheckDiagnostics: expect.objectContaining({
+        proposalErrorPresent: true,
+        selected: false,
+        skipReason: 'no_check',
+      }),
+    }))
+    expect(repository.appendMessage.mock.calls.map(([input]) => input.metadata?.messageKind)).toEqual(['character_reaction'])
+    expect(repository.appendMessage.mock.calls[0][0].metadata).toEqual(expect.objectContaining({
+      sceneCheckProposalError: 'Unsupported scene-check action intent',
+    }))
+    expect(gameMasterGenerator.generateSceneCheckOutcome).not.toHaveBeenCalled()
+  })
+
+  it('does not infer scene checks from declared actions without structured-model provenance', async () => {
+    const repository = makeRepository()
+    usePriorGameMasterMessage(repository)
+    repository.appendMessage.mockImplementation(async (input) => message({
+      id: `msg-${repository.appendMessage.mock.calls.length}`,
+      authorKind: input.authorKind,
+      tokenId: input.tokenId ?? null,
+      officialAgentId: input.officialAgentId ?? null,
+      authorName: input.authorName,
+      content: input.content,
+      metadata: input.metadata ?? {},
+    }))
+    const narrativeRepository = makeNarrativeRepository()
+    narrativeRepository.ensureStateForRoom.mockResolvedValueOnce({
+      ...narrativeState(),
+      metadata: { ttrpgPhase: 'exploration', combatReadiness: 'none', threatLevel: 0 },
+    })
+    const gameMasterGenerator: jest.Mocked<GameMasterBeatGenerator> = {
+      generateBeat: jest.fn(async () => ({
+        gameMasterAgentId: 'gm-1',
+        publicNarration: null,
+        speakerInstruction: 'Let Ash search if they choose.',
+        stateAfter: {
+          stateSummary: 'A shelf may hide a route.',
+          currentObjective: 'Choose how to inspect the shelf.',
+          openThreads: ['What does the shelf conceal?'],
+        },
+        ttrpgPhase: 'exploration',
+        combatReadiness: 'none',
+        threatLevel: 0,
+        requestedGameplayAction: null,
+        encounterSeed: null,
+        sceneCheckRequest: null,
+        adventurePatch: { currentStakes: 'The shelf may reveal a safer route.' },
+        metadata: {},
+      })),
+      generateSceneCheckOutcome: jest.fn(),
+    }
+    const turnGenerator: jest.Mocked<OfficialLocationRoomTurnGenerator> = {
+      generateTurn: jest.fn(async () => ({
+        officialAgentId: 'agent-1',
+        content: 'I search the shelf for a hidden latch.',
+        declaredAction: { summary: 'Ash searches the shelf for a hidden latch.', actionIntent: 'search' },
+        sceneCheckProposal: null,
+      })),
+    }
+    const coordinator = new DefaultLocationRoomNarrativeCoordinator(repository, narrativeRepository, gameMasterGenerator, turnGenerator, makeGameMasterAgentResolver('gm-1'))
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      speaker: participants[0],
+      participants,
+      recentMessages: [message({ authorKind: 'game_master', tokenId: null })],
+    })
+
+    expect(result).toEqual({ selectedTokenId: 1, messageId: 'msg-1' })
+    expect(repository.appendMessage.mock.calls.map(([input]) => input.metadata?.messageKind)).toEqual(['character_reaction'])
+    expect(gameMasterGenerator.generateSceneCheckOutcome).not.toHaveBeenCalled()
   })
 
   it('persists scene-check outcome escalation as combat-ready metadata without creating a combat trigger', async () => {
@@ -1670,6 +1928,7 @@ describe('location room narrative coordinator', () => {
           summary: 'Ash searches the shelf and inspects the scratches around its latch.',
           actionIntent: 'search inspect',
         },
+        declaredActionSource: 'structured_model',
         sceneCheckProposal: null,
       })),
     }
@@ -1690,7 +1949,7 @@ describe('location room narrative coordinator', () => {
     })
 
     expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
-      sceneCheck: expect.objectContaining({ adjudicationReason: 'backend_fallback' }),
+      sceneCheck: expect.objectContaining({ adjudicationReason: 'backend_inferred' }),
       action: expect.objectContaining({ checkType: 'investigate' }),
     }))
   })
@@ -1751,6 +2010,7 @@ describe('location room narrative coordinator', () => {
           summary: 'Ash inspects the marked wall and scans the scratches for a visible seam.',
           actionIntent: 'inspect wall',
         },
+        declaredActionSource: 'structured_model',
         sceneCheckProposal: null,
       })),
     }
@@ -1765,7 +2025,7 @@ describe('location room narrative coordinator', () => {
     })
 
     expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
-      sceneCheck: expect.objectContaining({ adjudicationReason: 'backend_fallback' }),
+      sceneCheck: expect.objectContaining({ adjudicationReason: 'backend_inferred' }),
       action: expect.objectContaining({ checkType: 'perception' }),
     }))
   })
@@ -1825,6 +2085,7 @@ describe('location room narrative coordinator', () => {
         officialAgentId: 'agent-1',
         content: 'I search for the hidden bell in the dust.',
         declaredAction: { summary: 'Ash searches for the hidden bell in the dust.', actionIntent: 'search' },
+        declaredActionSource: 'structured_model',
         sceneCheckProposal: null,
       })),
     }
@@ -1845,7 +2106,7 @@ describe('location room narrative coordinator', () => {
     })
 
     expect(repository.appendMessage.mock.calls[1][0].metadata?.publicRolls).toEqual(expect.objectContaining({
-      sceneCheck: expect.objectContaining({ adjudicationReason: 'backend_fallback' }),
+      sceneCheck: expect.objectContaining({ adjudicationReason: 'backend_inferred' }),
       action: expect.objectContaining({ checkType: 'perception' }),
     }))
   })

@@ -129,6 +129,55 @@ describe('Eliza SDK adapter facade', () => {
     expect(extractBackstory({ name: 'C', backstory: null, lore: ['Ignored lore'] })).toBeNull()
   })
 
+  it('reads official-mode WAGDIE backstory and lore from settings.wagdie', () => {
+    const record: CharacterRecord = {
+      id: 'official-agent-123',
+      externalId: '123',
+      character: {
+        name: 'Official Character',
+        bio: ['Official bio'],
+        settings: {
+          wagdie: {
+            externalId: '123',
+            backstory: 'Official backstory',
+            lore: ['Official lore one', 'Official lore two'],
+          },
+        },
+      } as unknown as AgentCharacter,
+      createdAt: 'created-at',
+      updatedAt: 'updated-at',
+    }
+
+    expect(extractBackstory(record.character)).toBe('Official backstory')
+    expect(toAICharacterFromRecord('123', record)).toMatchObject({
+      backstory: 'Official backstory',
+      lore: ['Official lore one', 'Official lore two'],
+    })
+  })
+
+  it('preserves official-mode WAGDIE lore when only backstory changes', () => {
+    const existing = {
+      name: 'Official Character',
+      bio: ['Official bio'],
+      settings: {
+        wagdie: {
+          externalId: '123',
+          lore: ['Existing official lore'],
+        },
+      },
+    } as unknown as AgentCharacter
+
+    const updated = applyWagdieUpdateToAgentCharacter(existing, {
+      backstory: 'New official backstory',
+    }) as AgentCharacter & { backstory?: string; lore?: string[] }
+
+    expect(updated.backstory).toBe('New official backstory')
+    expect(updated.lore).toBeUndefined()
+    expect((updated.settings as Record<string, unknown>).wagdie).toMatchObject({
+      lore: ['Existing official lore'],
+    })
+  })
+
   it('maps CharacterRecord into stable WAGDIE AICharacter DTO shape', () => {
     const record: CharacterRecord = {
       id: 'record-1',

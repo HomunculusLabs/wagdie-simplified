@@ -46,6 +46,7 @@ import {
   type LocationRoomRepository,
 } from './repository'
 import {
+  OfficialLocationRoomTurnGenerationError,
   officialLocationRoomTurnGenerator,
   normalizeLocationRoomGeneratedContent,
   type OfficialLocationRoomTurnGenerator,
@@ -66,8 +67,10 @@ import type {
   LocationRoomMessage,
   LocationRoomNarrativeTurnContext,
   LocationRoomParticipant,
+  LocationRoomPublicGenerationDiagnostics,
   LocationRoomSceneCheckEscalation,
   LocationRoomTick,
+  OfficialLocationRoomDeclaredActionSource,
   PublicLocationRoomGameplayRolls,
 } from './types'
 
@@ -178,14 +181,68 @@ function beatToOutput(
   return output
 }
 
-function toGameMasterBeatMetadata(output: GameMasterBeatOutput): Record<string, unknown> {
+function gameMasterBeatTtrpgPatch(
+  metadata: Record<string, unknown>,
+  output: GameMasterBeatOutput
+): ReturnType<typeof normalizeNarrativeTtrpgMetadata> {
+  const current = normalizeNarrativeTtrpgMetadata(metadata)
+  const sceneCheckEscalation = normalizeNarrativeSceneCheckEscalationMetadata(metadata).lastSceneCheckEscalation
+  const unresolvedEscalationSeed = sceneCheckEscalation?.decision !== 'none'
+    ? sceneCheckEscalation?.encounterSeed ?? null
+    : null
+  const lastEncounterSeed = output.encounterSeed ?? current.lastEncounterSeed ?? unresolvedEscalationSeed
+  const threatLevel = output.threatLevel == null && current.ttrpgPhase === 'threat'
+    ? current.threatLevel
+    : output.threatLevel
+  let ttrpgPhase = output.ttrpgPhase
+  let combatReadiness = output.combatReadiness
+
+  if (current.ttrpgPhase === 'threat' && output.requestedGameplayAction !== 'start_combat') {
+    ttrpgPhase = 'threat'
+    combatReadiness = current.combatReadiness === 'ready' ? 'ready' : combatReadiness
+  }
+
+  if (
+    ttrpgPhase === 'threat' &&
+    combatReadiness !== 'ready' &&
+    (threatLevel ?? 0) >= 3 &&
+    lastEncounterSeed
+  ) {
+    combatReadiness = 'ready'
+  }
+
   return {
-    ...output.metadata,
+    ttrpgPhase,
+    combatReadiness,
+    threatLevel,
+    requestedGameplayAction: output.requestedGameplayAction,
+    lastEncounterSeed,
+    lastCombatTriggerBeatId: output.requestedGameplayAction === 'start_combat'
+      ? current.lastCombatTriggerBeatId
+      : null,
+    consumedCombatTriggerBeatId: current.consumedCombatTriggerBeatId,
+  }
+}
+
+function toGameMasterBeatMetadata(
+  output: GameMasterBeatOutput,
+  ttrpg: ReturnType<typeof normalizeNarrativeTtrpgMetadata> = {
     ttrpgPhase: output.ttrpgPhase,
     combatReadiness: output.combatReadiness,
     threatLevel: output.threatLevel,
     requestedGameplayAction: output.requestedGameplayAction,
-    encounterSeed: output.encounterSeed,
+    lastEncounterSeed: output.encounterSeed,
+    lastCombatTriggerBeatId: null,
+    consumedCombatTriggerBeatId: null,
+  }
+): Record<string, unknown> {
+  return {
+    ...output.metadata,
+    ttrpgPhase: ttrpg.ttrpgPhase,
+    combatReadiness: ttrpg.combatReadiness,
+    threatLevel: ttrpg.threatLevel,
+    requestedGameplayAction: ttrpg.requestedGameplayAction,
+    encounterSeed: ttrpg.lastEncounterSeed,
     sceneCheckRequest: output.sceneCheckRequest,
     sceneCheck: {
       ...output.metadata.sceneCheck,
@@ -295,14 +352,6 @@ function sceneCheckEscalationStorageExtra(input: {
     sceneCheckEscalations: Object.fromEntries(entries),
     lastSceneCheckEscalation: input.escalation,
   }
-}
-
-function storeableDeclaredAction(
-  action: LocationRoomDeclaredAction | null | undefined,
-  content: string,
-  activeDecision: LocationRoomAdventureMemory['activeDecision']
-): LocationRoomDeclaredAction | null {
-  return normalizeDeclaredAction(action ?? { summary: content }, { activeDecision })
 }
 
 type StoredBeatCharacterAction = {
@@ -470,6 +519,78 @@ function getGameMasterGenerationDiagnostics(error: unknown): GameMasterGeneratio
   return sanitizeGameMasterGenerationDiagnostics((error as { diagnostics?: unknown }).diagnostics)
 }
 
+const SAFE_OFFICIAL_TURN_GENERATION_ERROR_CATEGORIES = new Set([
+  'empty_response',
+  'missing_json_object',
+  'invalid_json',
+  'missing_public_speech',
+  'invalid_declared_action',
+  'scene_check_proposal_invalid_optional',
+  'validation_error',
+  'transport_error',
+  'repair_transport_error',
+])
+
+const SAFE_OFFICIAL_TURN_GENERATION_TRANSPORT_STAGES = new Set([
+  'start_agent',
+  'collect_stream',
+  'repair_collect_stream',
+])
+
+function normalizeOfficialTurnDiagnosticsCategory(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  return SAFE_OFFICIAL_TURN_GENERATION_ERROR_CATEGORIES.has(value) ? value : undefined
+}
+
+function normalizeOfficialTurnDiagnosticsTransportStage(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  return SAFE_OFFICIAL_TURN_GENERATION_TRANSPORT_STAGES.has(value) ? value : undefined
+}
+
+function sanitizeOfficialTurnGenerationDiagnostics(value: unknown): LocationRoomPublicGenerationDiagnostics | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const source = value as Partial<Record<keyof LocationRoomPublicGenerationDiagnostics, unknown>>
+  const status = source.status === 'accepted' || source.status === 'repaired' || source.status === 'repair_failed'
+    ? source.status
+    : null
+  if (!status) return null
+
+  return {
+    status,
+    repairAttempted: source.repairAttempted === true,
+    repaired: source.repaired === true,
+    ...(normalizeOfficialTurnDiagnosticsCategory(source.initialErrorCategory)
+      ? { initialErrorCategory: normalizeOfficialTurnDiagnosticsCategory(source.initialErrorCategory) }
+      : {}),
+    ...(normalizeOfficialTurnDiagnosticsCategory(source.repairErrorCategory)
+      ? { repairErrorCategory: normalizeOfficialTurnDiagnosticsCategory(source.repairErrorCategory) }
+      : {}),
+    ...(normalizeOfficialTurnDiagnosticsTransportStage(source.transportStage)
+      ? { transportStage: normalizeOfficialTurnDiagnosticsTransportStage(source.transportStage) }
+      : {}),
+    ...(normalizeDiagnosticsLength(source.initialResponseLength) !== undefined
+      ? { initialResponseLength: normalizeDiagnosticsLength(source.initialResponseLength) }
+      : {}),
+    ...(normalizeDiagnosticsLength(source.repairResponseLength) !== undefined
+      ? { repairResponseLength: normalizeDiagnosticsLength(source.repairResponseLength) }
+      : {}),
+    ...(normalizeDiagnosticsFlags(source.initialResponseFlags)
+      ? { initialResponseFlags: normalizeDiagnosticsFlags(source.initialResponseFlags) }
+      : {}),
+    ...(normalizeDiagnosticsFlags(source.repairResponseFlags)
+      ? { repairResponseFlags: normalizeDiagnosticsFlags(source.repairResponseFlags) }
+      : {}),
+  }
+}
+
+function getOfficialTurnGenerationDiagnostics(error: unknown): LocationRoomPublicGenerationDiagnostics | null {
+  if (error instanceof OfficialLocationRoomTurnGenerationError) {
+    return sanitizeOfficialTurnGenerationDiagnostics(error.diagnostics)
+  }
+  if (!error || typeof error !== 'object') return null
+  return sanitizeOfficialTurnGenerationDiagnostics((error as { diagnostics?: unknown }).diagnostics)
+}
+
 function getSceneCheckOutcomeFailureDiagnostics(error: unknown): GameMasterGenerationDiagnostics {
   return getGameMasterGenerationDiagnostics(error) ?? {
     status: 'repair_failed',
@@ -477,6 +598,10 @@ function getSceneCheckOutcomeFailureDiagnostics(error: unknown): GameMasterGener
     repaired: false,
     initialErrorCategory: 'validation_error',
   }
+}
+
+function normalizeDeclaredActionSource(value: unknown): OfficialLocationRoomDeclaredActionSource | null {
+  return value === 'structured_model' || value === 'unstructured_model' ? value : null
 }
 
 function ttrpgPhaseRank(phase: GameMasterBeatOutput['ttrpgPhase']): number {
@@ -515,6 +640,7 @@ function shouldAppendGameMasterMessage(input: {
   progressionContext: GameMasterBeatProgressionContext
 }): boolean {
   if (!input.output.publicNarration) return false
+  if (typeof input.beat.metadata.gameMasterMessageId === 'string' && input.beat.metadata.gameMasterMessageId.trim()) return false
   if (['game_master_message_appended', 'character_appended', 'completed'].includes(input.beat.status)) return false
   if (input.progressionContext.requirePublicNarration) return true
   if (input.output.requestedGameplayAction === 'start_combat') return true
@@ -839,7 +965,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         throw new Error('Location room narrative beat is missing public narration')
       }
 
-      await this.repository.appendMessage({
+      const gameMasterMessage = await this.repository.appendMessage({
         roomId: input.room.id,
         locationId: input.room.locationId,
         tickId: input.tick.id,
@@ -866,7 +992,10 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           publicNarration: gameMasterOutput.publicNarration,
           speakerInstruction: gameMasterOutput.speakerInstruction,
           stateAfter: gameMasterOutput.stateAfter,
-          metadata: toGameMasterBeatMetadata(gameMasterOutput),
+          metadata: {
+            ...toGameMasterBeatMetadata(gameMasterOutput),
+            gameMasterMessageId: gameMasterMessage.id,
+          },
         })
       } catch (error) {
         console.warn('[Location Room Narrative] Failed to mark game-master message appended after public append:', error)
@@ -882,37 +1011,60 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
     let declaredAction = normalizeDeclaredAction(beat.metadata.declaredAction, {
       activeDecision: adventureAfterGameMasterPatch.activeDecision,
     })
+    let declaredActionSource = normalizeDeclaredActionSource(beat.metadata.declaredActionSource)
+    let officialTurnGeneration = sanitizeOfficialTurnGenerationDiagnostics(beat.metadata.officialTurnGeneration)
 
     if (!content) {
-      const visiblePublicNarrationForBeat = shouldAppendPublicGameMasterBeat || beat.status === 'game_master_message_appended'
+      const visiblePublicNarrationForBeat = shouldAppendPublicGameMasterBeat || beat.status === 'game_master_message_appended' || Boolean(beat.metadata.gameMasterMessageId)
         ? gameMasterOutput.publicNarration
         : null
-      const generated = await this.turnGenerator.generateTurn({
-        room: input.room,
-        speaker: input.speaker,
-        participants: input.participants,
-        recentMessages: input.recentMessages,
-        narrativeContext: toCharacterNarrativeContext(
-          gameMasterOutput,
-          adventureAfterGameMasterPatch.activeDecision,
-          visiblePublicNarrationForBeat,
-          adventureAfterGameMasterPatch
-        ),
-      })
-      content = normalizeLocationRoomGeneratedContent(generated.content)
-      officialAgentId = generated.officialAgentId
-      declaredAction = storeableDeclaredAction(generated.declaredAction, content ?? '', adventureAfterGameMasterPatch.activeDecision)
-      sceneCheckProposal = generated.sceneCheckProposal ?? null
-      sceneCheckProposalError = generated.sceneCheckProposalError ?? null
+      try {
+        const generated = await this.turnGenerator.generateTurn({
+          room: input.room,
+          speaker: input.speaker,
+          participants: input.participants,
+          recentMessages: input.recentMessages,
+          narrativeContext: toCharacterNarrativeContext(
+            gameMasterOutput,
+            adventureAfterGameMasterPatch.activeDecision,
+            visiblePublicNarrationForBeat,
+            adventureAfterGameMasterPatch
+          ),
+        })
+        content = normalizeLocationRoomGeneratedContent(generated.content)
+        officialAgentId = generated.officialAgentId
+        declaredAction = normalizeDeclaredAction(generated.declaredAction, {
+          activeDecision: adventureAfterGameMasterPatch.activeDecision,
+        })
+        declaredActionSource = normalizeDeclaredActionSource(generated.declaredActionSource)
+        officialTurnGeneration = sanitizeOfficialTurnGenerationDiagnostics(generated.turnGeneration)
+        sceneCheckProposal = generated.sceneCheckProposal ?? null
+        sceneCheckProposalError = generated.sceneCheckProposalError ?? null
+      } catch (error) {
+        const turnGeneration = getOfficialTurnGenerationDiagnostics(error)
+        await this.narrativeRepository.markBeatFailed(beat.id, error, {
+          metadata: {
+            ...beat.metadata,
+            ...(turnGeneration ? { officialTurnGeneration: turnGeneration } : {}),
+          },
+        }).catch(() => null)
+        throw error
+      }
     }
 
     if (!content) {
       throw new Error('Official ElizaOS generated an empty location-room turn')
     }
+    const effectiveTtrpg = gameMasterBeatTtrpgPatch(narrativeState.metadata, gameMasterOutput)
+    if (gameMasterOutput.requestedGameplayAction === 'start_combat') {
+      effectiveTtrpg.lastCombatTriggerBeatId = beat.id
+    }
 
-    declaredAction = declaredAction ?? storeableDeclaredAction(null, content, adventureAfterGameMasterPatch.activeDecision)
-
-    const sceneCheckFallback = !gameMasterOutput.sceneCheckRequest && !sceneCheckProposal && !storedSceneCheck.resolution
+    const sceneCheckFallback = !gameMasterOutput.sceneCheckRequest &&
+      !sceneCheckProposal &&
+      !sceneCheckProposalError &&
+      !storedSceneCheck.resolution &&
+      declaredActionSource === 'structured_model'
       ? inferSceneCheckFallbackFromDeclaredAction({
         declaredAction,
         content,
@@ -923,8 +1075,10 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
 
     let sceneCheckMetadata = (gameMasterOutput.sceneCheckRequest || sceneCheckProposal || sceneCheckProposalError || storedSceneCheck.resolution || sceneCheckFallback)
       ? mergeNarrativeSceneCheckMetadata({
-        ...toGameMasterBeatMetadata(gameMasterOutput),
+        ...toGameMasterBeatMetadata(gameMasterOutput, effectiveTtrpg),
         declaredAction,
+        declaredActionSource,
+        ...(officialTurnGeneration ? { officialTurnGeneration } : {}),
         characterAction: storeableCharacterAction({ content, officialAgentId, authorName: input.speaker.name }),
       }, {
         id: storedSceneCheck.id,
@@ -938,8 +1092,10 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         gmOutcome: storedSceneCheck.gmOutcome,
       })
       : {
-        ...toGameMasterBeatMetadata(gameMasterOutput),
+        ...toGameMasterBeatMetadata(gameMasterOutput, effectiveTtrpg),
         declaredAction,
+        declaredActionSource,
+        ...(officialTurnGeneration ? { officialTurnGeneration } : {}),
         characterAction: storeableCharacterAction({ content, officialAgentId, authorName: input.speaker.name }),
       }
 
@@ -1022,20 +1178,18 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           currentObjective: gameMasterOutput.stateAfter.currentObjective,
           openThreads: gameMasterOutput.stateAfter.openThreads,
           metadata: mergeNarrativeTtrpgMetadata(normalAdventureMetadata, {
-            ttrpgPhase: gameMasterOutput.ttrpgPhase,
-            combatReadiness: gameMasterOutput.combatReadiness,
-            threatLevel: gameMasterOutput.threatLevel,
-            requestedGameplayAction: gameMasterOutput.requestedGameplayAction,
-            lastEncounterSeed: gameMasterOutput.encounterSeed,
-            lastCombatTriggerBeatId: gameMasterOutput.requestedGameplayAction === 'start_combat'
-              ? beat.id
-              : null,
+            ttrpgPhase: effectiveTtrpg.ttrpgPhase,
+            combatReadiness: effectiveTtrpg.combatReadiness,
+            threatLevel: effectiveTtrpg.threatLevel,
+            requestedGameplayAction: effectiveTtrpg.requestedGameplayAction,
+            lastEncounterSeed: effectiveTtrpg.lastEncounterSeed,
+            lastCombatTriggerBeatId: effectiveTtrpg.lastCombatTriggerBeatId,
           }, {
             source: 'location-room-narrative-coordinator',
             lastBeatId: beat.id,
             lastTickId: input.tick.id,
             lastSelectedTokenId: input.speaker.tokenId,
-            ...(gameMasterOutput.combatReadiness === 'ready' && gameMasterOutput.requestedGameplayAction !== 'start_combat'
+            ...(effectiveTtrpg.combatReadiness === 'ready' && effectiveTtrpg.requestedGameplayAction !== 'start_combat'
               ? {
                 lastCombatReadyBeatId: beat.id,
                 lastCombatReadyAt: new Date().toISOString(),
