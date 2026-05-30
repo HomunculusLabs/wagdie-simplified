@@ -3,10 +3,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Spinner } from '@/components/ui';
 import type { UpdateAICharacterInput } from '@/types/eliza';
+import { GameMasterAgentCanonicalContentPanel } from './GameMasterAgentCanonicalContentPanel';
 import { GameMasterAgentKnowledgePanel } from './GameMasterAgentKnowledgePanel';
 import { GameMasterAgentPersonaForm } from './GameMasterAgentPersonaForm';
 import { GameMasterAgentStatusPanel } from './GameMasterAgentStatusPanel';
-import type { BusyAction, GameMasterAgentAdminState, GameMasterAgentSyncResponse } from './types';
+import type {
+  BusyAction,
+  GameMasterAgentAdminState,
+  GameMasterAgentCanonicalApplyResponse,
+  GameMasterAgentSyncResponse,
+} from './types';
 
 const API_ROOT = '/api/admin/eliza/game-master-agent';
 
@@ -22,6 +28,10 @@ function isStateResponse(value: unknown): value is GameMasterAgentAdminState {
 
 function isSyncResponse(value: unknown): value is GameMasterAgentSyncResponse {
   return Boolean(value && typeof value === 'object' && 'state' in value && 'sync' in value);
+}
+
+function isCanonicalApplyResponse(value: unknown): value is GameMasterAgentCanonicalApplyResponse {
+  return Boolean(value && typeof value === 'object' && 'state' in value && 'result' in value);
 }
 
 async function readJson(response: Response): Promise<unknown> {
@@ -47,6 +57,7 @@ function extractErrorMessage(body: unknown, fallback: string): string {
 function stateFromBody(body: unknown): GameMasterAgentAdminState | null {
   if (isStateResponse(body)) return body;
   if (isSyncResponse(body)) return body.state;
+  if (isCanonicalApplyResponse(body)) return body.state;
   return null;
 }
 
@@ -222,6 +233,30 @@ export function GameMasterAgentAdminContainer() {
     );
   };
 
+  const handleApplyCanonicalContent = async (kind: 'persona' | 'knowledge') => {
+    if (!state?.canonicalContent.reviewToken) {
+      setErrors(['Refresh canonical content preview before applying.']);
+      return;
+    }
+
+    await runStateAction(
+      kind === 'persona' ? 'apply-canonical-persona' : 'apply-canonical-knowledge',
+      () => requestState(
+        `${API_ROOT}/canonical/apply`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            expectedReviewToken: state.canonicalContent.reviewToken,
+            [kind]: true,
+          }),
+        },
+        `Failed to apply canonical game-master ${kind}`
+      ),
+      `Failed to apply canonical game-master ${kind}`
+    );
+  };
+
   if (busyAction === 'load' && !state) {
     return (
       <div className="flex min-h-64 items-center justify-center rounded-lg border border-soul-accent/20 bg-soul-shadow/70">
@@ -265,6 +300,14 @@ export function GameMasterAgentAdminContainer() {
         hasUnsavedPersonaChanges={personaDirty}
         onBootstrap={handleBootstrap}
         onClearSetting={handleClearSetting}
+      />
+
+      <GameMasterAgentCanonicalContentPanel
+        state={state}
+        busyAction={busyAction}
+        hasUnsavedPersonaChanges={personaDirty}
+        onApplyPersona={() => handleApplyCanonicalContent('persona')}
+        onApplyKnowledge={() => handleApplyCanonicalContent('knowledge')}
       />
 
       <div className="grid gap-5 2xl:grid-cols-[minmax(0,1fr)_460px]">

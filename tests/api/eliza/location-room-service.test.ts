@@ -32,318 +32,26 @@ import {
   selectLocationRoomSpeaker,
 } from '@/lib/eliza/locationRooms/service'
 import { elizaConfig } from '@/lib/eliza/config'
-import type { LocationRoom, LocationRoomMessage, LocationRoomParticipant, LocationRoomTick } from '@/lib/eliza/locationRooms/types'
-import type { LocationRoomRepository } from '@/lib/eliza/locationRooms/repository'
-import type { LocationRoomMembershipRepository } from '@/lib/eliza/locationRooms/membership'
 import type { OfficialLocationRoomTurnGenerator } from '@/lib/eliza/locationRooms/officialTurnGenerator'
 import type { LocationRoomNarrativeCoordinator } from '@/lib/eliza/locationRooms/narrativeCoordinator'
-import type { LocationRoomNarrativeRepository } from '@/lib/eliza/locationRooms/narrativeRepository'
-import type { LocationRoomNarrativeState } from '@/lib/eliza/locationRooms/narrativeTypes'
 import type { LocationRoomGameplayCoordinator } from '@/lib/eliza/locationRooms/gameplay/coordinator'
-import type { LocationRoomGameplayRepository } from '@/lib/eliza/locationRooms/gameplay/repository'
-import type { GameplayEncounter, GameplayRoomState, GameplayRun } from '@/lib/eliza/locationRooms/gameplay/types'
+import {
+  LOCATION_ROOM_SERVICE_TEST_NOW as now,
+  gameplayEncounter,
+  gameplayRun,
+  gameplayState,
+  makeGameplayRepository,
+  makeMembership,
+  makeNarrativeRepository,
+  makeRepository,
+  message,
+  narrativeState,
+  participant,
+  room,
+  tick,
+} from '../../lib/eliza/locationRooms/fixtures/builders'
+import { runLocationRoomServiceScenario } from '../../lib/eliza/locationRooms/fixtures/serviceHarness'
 
-const now = '2026-05-11T12:00:00.000Z'
-
-function room(overrides: Partial<LocationRoom> = {}): LocationRoom {
-  return {
-    id: 'room-1',
-    locationId: 'loc-1',
-    officialRoomId: 'official-room-1',
-    officialWorldId: 'official-world-1',
-    officialUserId: 'official-user-1',
-    channelId: 'wagdie-location-loc-1',
-    tickEnabled: true,
-    lastTickAt: null,
-    nextTickAt: null,
-    tickCount: 0,
-    lastError: null,
-    createdAt: now,
-    updatedAt: now,
-    ...overrides,
-  }
-}
-
-function participant(
-  tokenId: number,
-  name = `Character #${tokenId}`,
-  overrides: Partial<LocationRoomParticipant> = {}
-): LocationRoomParticipant {
-  return {
-    tokenId,
-    name,
-    imageUrl: null,
-    backgroundStory: null,
-    ownerAddress: `0x${tokenId}`,
-    stakerAddress: null,
-    locationId: 'loc-1',
-    ...overrides,
-  }
-}
-
-function message(overrides: Partial<LocationRoomMessage>): LocationRoomMessage {
-  return {
-    id: `msg-${overrides.sequence ?? 1}`,
-    roomId: 'room-1',
-    locationId: 'loc-1',
-    tickId: null,
-    sequence: 1,
-    visibility: 'public',
-    authorKind: 'agent',
-    tokenId: 1,
-    officialAgentId: 'agent-1',
-    authorName: 'Character #1',
-    content: 'hello',
-    metadata: {},
-    createdAt: now,
-    ...overrides,
-  }
-}
-
-function tick(overrides: Partial<LocationRoomTick> = {}): LocationRoomTick {
-  return {
-    id: 'tick-1',
-    roomId: 'room-1',
-    locationId: 'loc-1',
-    gameplayRunId: null,
-    turnIntent: 'auto',
-    triggerType: 'scheduled',
-    requestedByWallet: null,
-    requestedByTokenId: null,
-    status: 'processing',
-    attempts: 1,
-    nextAttemptAt: now,
-    lockedAt: now,
-    lockedBy: 'worker',
-    selectedTokenId: null,
-    startedAt: now,
-    completedAt: null,
-    lastError: null,
-    createdAt: now,
-    updatedAt: now,
-    ...overrides,
-  }
-}
-
-function gameplayRun(overrides: Partial<GameplayRun> = {}): GameplayRun {
-  return {
-    id: 'run-1',
-    roomId: 'room-1',
-    locationId: 'loc-1',
-    status: 'active',
-    targetCompletedTurns: 100,
-    completedTurns: 0,
-    startedByActor: 'admin',
-    startedByWallet: '0xadmin',
-    startedByTokenId: null,
-    lastTickId: null,
-    lastAdvancedAt: null,
-    completedAt: null,
-    stopReason: null,
-    lastError: null,
-    metadata: {},
-    createdAt: now,
-    updatedAt: now,
-    ...overrides,
-  }
-}
-
-function gameplayEncounter(overrides: Partial<GameplayEncounter> = {}): GameplayEncounter {
-  return {
-    id: 'encounter-1',
-    roomId: 'room-1',
-    locationId: 'loc-1',
-    status: 'active',
-    difficulty: 'normal',
-    roundNumber: 1,
-    publicTitle: 'Bell Maw',
-    publicSummary: 'A maw unfolds.',
-    monsterState: [],
-    rewardPlan: {},
-    mechanics: {},
-    metadata: {},
-    lastError: null,
-    createdAt: now,
-    updatedAt: now,
-    completedAt: null,
-    ...overrides,
-  }
-}
-
-function gameplayState(overrides: Partial<GameplayRoomState> = {}): GameplayRoomState {
-  return {
-    id: 'state-1',
-    roomId: 'room-1',
-    locationId: 'loc-1',
-    status: 'active_encounter',
-    activeEncounterId: 'encounter-1',
-    characters: {
-      '1': { tokenId: 1, name: 'Ash', hp: 10, maxHp: 10, status: 'alive', xp: 0, temporaryBoons: [], wounds: [] },
-      '2': { tokenId: 2, name: 'Bone', hp: 10, maxHp: 10, status: 'alive', xp: 0, temporaryBoons: [], wounds: [] },
-    },
-    rewards: {},
-    metadata: {},
-    createdAt: now,
-    updatedAt: now,
-    ...overrides,
-  }
-}
-
-function makeRepository(overrides: Partial<jest.Mocked<LocationRoomRepository>> = {}): jest.Mocked<LocationRoomRepository> {
-  const baseRoom = room()
-  const baseTick = tick()
-  const appended = message({ id: 'msg-new', sequence: 3, tokenId: 1, content: 'The room stirs.' })
-
-  return {
-    getLocation: jest.fn(async () => ({ id: 'loc-1', name: 'The Bell Gate' })),
-    getLocationDetails: jest.fn(async () => ({
-      id: 'loc-1',
-      name: 'The Bell Gate',
-      chainLocationId: null,
-      active: null,
-      metadata: {},
-      createdAt: now,
-      updatedAt: now,
-    })),
-    listLocationsByIds: jest.fn(async () => []),
-    findRoomById: jest.fn(async () => baseRoom),
-    findRoomByLocationId: jest.fn(async () => baseRoom),
-    ensureRoomForLocation: jest.fn(async () => baseRoom),
-    listDueRooms: jest.fn(async () => [baseRoom]),
-    enqueueTick: jest.fn(async (input) => ({
-      tick: tick({
-        status: 'pending',
-        attempts: 0,
-        lockedAt: null,
-        lockedBy: null,
-        startedAt: null,
-        triggerType: input.triggerType,
-        requestedByWallet: input.requestedByWallet ?? null,
-        requestedByTokenId: input.requestedByTokenId ?? null,
-        gameplayRunId: input.gameplayRunId ?? null,
-        turnIntent: input.turnIntent ?? 'auto',
-      }),
-      deduped: false,
-    })),
-    promoteOpenTickIntent: jest.fn(async (input) => tick({ id: input.tickId, roomId: input.roomId, turnIntent: input.turnIntent })),
-    attachTickToGameplayRun: jest.fn(async (input) => tick({ gameplayRunId: input.gameplayRunId })),
-    countCompletedGameplayTurnsForRun: jest.fn(async () => 0),
-    findOpenTickForRoom: jest.fn(async () => null),
-    findRecentCompletedOwnerTick: jest.fn(async () => null),
-    findOldestProcessableTickForRoom: jest.fn(async () => baseTick),
-    findNonStaleProcessingTickForRoom: jest.fn(async () => null),
-    claimTick: jest.fn(async (_tickId) => baseTick),
-    claimDueTicks: jest.fn(async () => [baseTick]),
-    listActiveTicksForRoom: jest.fn(async () => [baseTick]),
-    listRecentTicksForRoom: jest.fn(async () => [baseTick]),
-    getPublicMessageStats: jest.fn(async () => ({ messageCount: 0, latestSequence: null, latestCreatedAt: null })),
-    getPublicAuthorMessageStats: jest.fn(async () => ({
-      messageCount: 0,
-      gameMasterMessageCount: 0,
-      agentMessageCount: 0,
-      latestGameMasterMessageCreatedAt: null,
-      latestAgentMessageCreatedAt: null,
-    })),
-    markTickSelected: jest.fn(async (_tickId, tokenId) => tick({ selectedTokenId: tokenId })),
-    appendMessage: jest.fn(async () => appended),
-    markTickCompleted: jest.fn(async () => tick({ status: 'completed', completedAt: now })),
-    markTickSkipped: jest.fn(async () => tick({ status: 'skipped', completedAt: now })),
-    markTickFailed: jest.fn(async () => tick({ status: 'failed' })),
-    markTickDead: jest.fn(async () => tick({ status: 'dead', completedAt: now })),
-    updateRoomAfterProcessedTick: jest.fn(async () => room({ tickCount: 1, lastTickAt: now })),
-    recordRoomError: jest.fn(async () => undefined),
-    listPublicMessages: jest.fn(async () => ({ messages: [], total: 0, page: 1, pageSize: 20, hasMore: false })),
-    listRecentPublicMessages: jest.fn(async () => []),
-    ...overrides,
-  }
-}
-
-function makeMembership(participants = [participant(1, 'Ash'), participant(2, 'Bone')]): jest.Mocked<LocationRoomMembershipRepository> {
-  return {
-    listEligibleParticipantsByLocation: jest.fn(async () => participants),
-    listEligibleLocationIds: jest.fn(async () => ['loc-1']),
-    walletHasEligibleParticipant: jest.fn(async () => true),
-  }
-}
-
-function makeGameplayRepository(
-  overrides: Partial<jest.Mocked<LocationRoomGameplayRepository>> = {}
-): jest.Mocked<LocationRoomGameplayRepository> {
-  return {
-    findActiveRunByRoomId: jest.fn(async () => null),
-    findRunById: jest.fn(async () => null),
-    listRecentRunsByRoomId: jest.fn(async () => []),
-    listActiveRunsForWorker: jest.fn(async () => []),
-    createOrReuseActiveRun: jest.fn(async () => ({ run: gameplayRun(), reused: false })),
-    updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
-    markRunCompleted: jest.fn(async (_runId, input) => gameplayRun({ status: 'completed', completedTurns: input.completedTurns ?? 100, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null, completedAt: input.completedAt ?? now, stopReason: input.stopReason })),
-    markRunStopped: jest.fn(async (_runId, input) => gameplayRun({ status: 'stopped', completedTurns: input.completedTurns ?? 0, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null, completedAt: input.completedAt ?? now, stopReason: input.stopReason })),
-    markRunFailed: jest.fn(async (_runId, input) => gameplayRun({ status: 'failed', completedTurns: input.completedTurns ?? 0, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null, completedAt: input.completedAt ?? now, stopReason: input.stopReason, lastError: input.lastError ?? null })),
-    findStateByRoomId: jest.fn(async () => null),
-    ensureStateForRoom: jest.fn(),
-    updateState: jest.fn(),
-    updateCharacterState: jest.fn(),
-    findActiveEncounterByRoomId: jest.fn(async () => null),
-    findEncounterById: jest.fn(async () => null),
-    createActiveEncounter: jest.fn(),
-    updateEncounter: jest.fn(),
-    findTurnByTickId: jest.fn(),
-    listRecentTurnsByRoomId: jest.fn(async () => []),
-    createOrReuseTurn: jest.fn(),
-    storeTurnOutcome: jest.fn(),
-    markTurnFailed: jest.fn(),
-    markTurnDead: jest.fn(),
-    createPendingDeathReview: jest.fn(),
-    listDeathReviews: jest.fn(async () => []),
-    findDeathReviewById: jest.fn(async () => null),
-    updateDeathReview: jest.fn(),
-    createOrReuseRewardClaim: jest.fn(),
-    findRewardClaimByDeathReviewId: jest.fn(async () => null),
-    listRewardClaims: jest.fn(async () => []),
-    updateRewardClaimStatusByDeathReviewId: jest.fn(async () => null),
-    ...overrides,
-  } as jest.Mocked<LocationRoomGameplayRepository>
-}
-
-function narrativeState(overrides: Partial<LocationRoomNarrativeState> = {}): LocationRoomNarrativeState {
-  return {
-    id: 'narrative-state-1',
-    roomId: 'room-1',
-    locationId: 'loc-1',
-    stateSummary: 'The room waits.',
-    currentObjective: null,
-    openThreads: [],
-    metadata: {},
-    createdAt: now,
-    updatedAt: now,
-    ...overrides,
-  }
-}
-
-function makeNarrativeRepository(
-  state = narrativeState()
-): jest.Mocked<LocationRoomNarrativeRepository> {
-  return {
-    findStateByRoomId: jest.fn(async () => state),
-    ensureStateForRoom: jest.fn(async () => state),
-    updateState: jest.fn(async (_room, input) => ({
-      ...state,
-      stateSummary: input.stateSummary ?? state.stateSummary,
-      currentObjective: input.currentObjective ?? state.currentObjective,
-      openThreads: input.openThreads ?? state.openThreads,
-      metadata: input.metadata ?? state.metadata,
-    })),
-    findBeatByTickId: jest.fn(async () => null),
-    listRecentBeatsByRoomId: jest.fn(async () => []),
-    createOrReuseBeat: jest.fn(),
-    storeBeatGameMasterOutput: jest.fn(),
-    markBeatGameMasterMessageAppended: jest.fn(),
-    markBeatCharacterAppended: jest.fn(),
-    markBeatCompleted: jest.fn(),
-    markBeatFailed: jest.fn(),
-    markBeatDead: jest.fn(),
-  }
-}
 
 describe('location room domain service', () => {
   const originalMode = elizaConfig.mode
@@ -3205,5 +2913,146 @@ describe('location room domain service', () => {
     expect(result).toMatchObject({ processed: 1, completed: 1, failed: 0, dead: 0 })
     expect(repository.appendMessage).toHaveBeenCalledTimes(1)
     expect(repository.markTickFailed).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('location room service scenario harness routing coverage', () => {
+  beforeEach(() => {
+    jest.clearAllMocks()
+    jest.spyOn(console, 'info').mockImplementation(() => undefined)
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it('routes story intent through narrative without consuming combat-ready trigger metadata', async () => {
+    const harness = await runLocationRoomServiceScenario({
+      intent: 'story',
+      narrativeMetadata: {
+        ttrpgPhase: 'threat',
+        combatReadiness: 'ready',
+        threatLevel: 5,
+        requestedGameplayAction: 'start_combat',
+        lastCombatTriggerBeatId: 'beat-combat-trigger',
+        consumedCombatTriggerBeatId: null,
+        lastEncounterSeed: { title: 'Bell Horror', summary: 'The explicit trigger is ready.', stakes: 'Survive only if combat is chosen.' },
+      },
+    })
+
+    expect(harness.result.processing).toMatchObject({ attempted: true, status: 'completed' })
+    expect(harness.snapshots.gameplayProcessCalls).toBe(0)
+    expect(harness.snapshots.messages.at(-1)?.metadata?.messageDomain).toBe('narrative')
+    expect(harness.gameplayCoordinator.processCalls).toEqual([])
+  })
+
+  it('promotes safe combat-ready metadata for auto intent and routes through gameplay', async () => {
+    const harness = await runLocationRoomServiceScenario({
+      intent: 'auto',
+      combatReadyPromotion: true,
+    })
+
+    expect(harness.result.processing).toMatchObject({ attempted: true, status: 'completed' })
+    expect(harness.snapshots.gameplayProcessCalls).toBe(1)
+    expect(harness.snapshots.gameplay.createRunCalls).toBe(1)
+    expect(harness.snapshots.narrativeState.metadata).toMatchObject({
+      requestedGameplayAction: 'start_combat',
+      lastCombatReadyPromotionTickId: expect.any(String),
+    })
+  })
+
+  it('routes story intent through gameplay when an encounter is already active', async () => {
+    const harness = await runLocationRoomServiceScenario({
+      intent: 'story',
+      activeEncounter: true,
+    })
+
+    expect(harness.result.processing).toMatchObject({ attempted: true, status: 'completed' })
+    expect(harness.snapshots.gameplayProcessCalls).toBe(1)
+    expect(harness.gameplayCoordinator.processCalls[0].gameplayRun).toMatchObject({ id: expect.any(String) })
+  })
+
+  it('continues an active gameplay run through gameplay when its tick has an active encounter', async () => {
+    const harness = await runLocationRoomServiceScenario({
+      intent: 'combat',
+      activeRun: true,
+      activeEncounter: true,
+      gameplayRunTick: true,
+      preexistingTick: 'pending',
+    })
+
+    expect(harness.result.processing).toMatchObject({ attempted: true, status: 'completed' })
+    expect(harness.snapshots.gameplayProcessCalls).toBe(1)
+    expect(harness.gameplayCoordinator.processCalls[0].tick.gameplayRunId).toBe('run-1')
+    expect(harness.snapshots.gameplay.run).toMatchObject({ id: 'run-1', status: 'active' })
+  })
+
+  it.each(['request', 'proposal'] as const)('keeps narrative scene-check %s metadata on the narrative route', async (sceneCheckMetadata) => {
+    const harness = await runLocationRoomServiceScenario({
+      intent: 'auto',
+      sceneCheckMetadata,
+    })
+
+    expect(harness.result.processing).toMatchObject({ attempted: true, status: 'completed' })
+    expect(harness.snapshots.gameplayProcessCalls).toBe(0)
+    expect(harness.snapshots.messages.at(-1)?.metadata?.messageDomain).toBe('narrative')
+    expect(harness.gameplayCoordinator.processCalls).toEqual([])
+  })
+
+  it('creates deterministic admin combat trigger metadata for combat intent', async () => {
+    const harness = await runLocationRoomServiceScenario({ intent: 'combat' })
+
+    expect(harness.result.processing).toMatchObject({ attempted: true, status: 'completed' })
+    expect(harness.snapshots.gameplayProcessCalls).toBe(1)
+    expect(harness.gameplayCoordinator.processCalls[0].encounterTrigger).toMatchObject({
+      source: 'admin',
+      triggerId: expect.stringMatching(/^manual:tick-/),
+    })
+    expect(harness.snapshots.narrativeState.metadata).toMatchObject({
+      requestedGameplayAction: 'start_combat',
+      lastManualIntent: 'combat',
+      lastManualIntentActor: 'admin',
+    })
+  })
+
+  it('skips scheduled ticks with insufficient participants and advances room cadence', async () => {
+    const oneParticipantHarness = await runLocationRoomServiceScenario({
+      drive: 'scheduled',
+      gameplayEnabled: false,
+      participants: [participant(1, 'Ash')],
+    })
+
+    expect(oneParticipantHarness.result).toMatchObject({ processed: 1, skipped: 1, failed: 0, dead: 0 })
+    expect(oneParticipantHarness.snapshots.ticks.at(-1)).toMatchObject({ status: 'skipped' })
+    expect(oneParticipantHarness.snapshots.room.nextTickAt).toEqual(expect.any(String))
+  })
+
+  it('marks failed narrative ticks retryable and gameplay-run ticks dead at exhaustion', async () => {
+    const retryHarness = await runLocationRoomServiceScenario({
+      intent: 'story',
+      gameplayEnabled: false,
+      preexistingTick: 'pending',
+      tickAttempts: 1,
+      narrativeCoordinatorThrows: new Error('bad gm json'),
+    })
+
+    expect(retryHarness.result.processing).toMatchObject({ attempted: true, status: 'failed', result: { reason: 'retry_scheduled' } })
+    expect(retryHarness.snapshots.ticks.at(-1)).toMatchObject({ status: 'failed', lastError: 'bad gm json' })
+    expect(retryHarness.snapshots.gameplayFailureMarks).toEqual([])
+
+    const deadHarness = await runLocationRoomServiceScenario({
+      intent: 'combat',
+      activeRun: true,
+      activeEncounter: true,
+      gameplayRunTick: true,
+      preexistingTick: 'pending',
+      tickAttempts: 3,
+      gameplayCoordinatorThrows: new Error('permanent gameplay outage'),
+    })
+
+    expect(deadHarness.result.processing).toMatchObject({ attempted: true, status: 'dead', result: { reason: 'attempts_exhausted' } })
+    expect(deadHarness.snapshots.gameplayFailureMarks).toEqual([{ tickId: expect.any(String), dead: true }])
+    expect(deadHarness.snapshots.gameplay.run).toMatchObject({ status: 'failed', stopReason: 'tick_dead' })
   })
 })

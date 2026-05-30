@@ -6,7 +6,6 @@ import type { CharacterRecord, WagdieElizaClient } from '@/lib/eliza/gateway/typ
 import {
   applyWagdieUpdateToAgentCharacter,
   toAICharacterFromRecord,
-  toAgentCharacterFromAICharacter,
 } from '@/lib/eliza/agent-character-mapper'
 import { validatePutCharacterSheetUpdate } from '@/lib/eliza/character-sheet-policy'
 import {
@@ -27,12 +26,21 @@ import {
 } from '@/lib/eliza/official/knowledge-client'
 import { FIELD_LIMITS, type AICharacter, type UpdateAICharacterInput } from '@/types/eliza'
 import {
-  GAME_MASTER_AGENT_DEFAULT_NAME,
   GAME_MASTER_AGENT_EXTERNAL_ID,
   GAME_MASTER_AGENT_KNOWLEDGE_ALLOWED_EXTENSIONS,
   GAME_MASTER_AGENT_KNOWLEDGE_ALLOWED_TYPES,
   GAME_MASTER_AGENT_SETTING_KEY,
 } from './constants'
+import {
+  buildCanonicalGameMasterAgentCharacter,
+  GAME_MASTER_CANONICAL_CONTENT,
+  toStoredCanonicalKnowledgeDocument,
+} from './canonicalContent'
+import {
+  buildGameMasterCanonicalContentReview,
+  getCanonicalPersonaHash,
+  type GameMasterCanonicalContentReview,
+} from './canonicalReview'
 import {
   gameMasterAgentSettingsRepository,
   serviceAgentKnowledgeSyncStateRepository,
@@ -77,6 +85,7 @@ export interface GameMasterAgentAdminState {
   }
   aiCharacter: AICharacter | null
   knowledge: GameMasterKnowledgeDocumentWithSync[]
+  canonicalContent: GameMasterCanonicalContentReview
 }
 
 export interface ServiceKnowledgeSyncResult {
@@ -90,6 +99,32 @@ export interface UploadGameMasterKnowledgeInput {
   filename: string
   content: string
   mimeType?: string
+}
+
+export interface ApplyCanonicalGameMasterContentInput {
+  persona?: boolean
+  knowledge?: boolean
+  expectedReviewToken: string
+}
+
+export interface ApplyCanonicalGameMasterContentResult {
+  reviewBefore: GameMasterCanonicalContentReview
+  reviewAfter: GameMasterCanonicalContentReview
+  persona?: {
+    applied: boolean
+    changedFields: GameMasterCanonicalContentReview['persona']['changedFields']
+    hash: string
+  }
+  knowledge?: {
+    applied: boolean
+    documentLimit: GameMasterCanonicalContentReview['knowledge']['documentLimit']
+    documents: Array<{
+      id: string
+      path: string
+      action: 'synced' | 'failed' | 'skipped'
+      sync: ServiceKnowledgeSyncResult | null
+    }>
+  }
 }
 
 interface GameMasterAgentServiceDeps {
@@ -142,36 +177,7 @@ function normalizeErrorMessage(error: unknown, fallback: string): string {
 }
 
 function buildDefaultGameMasterCharacter() {
-  return toAgentCharacterFromAICharacter({
-    name: GAME_MASTER_AGENT_DEFAULT_NAME,
-    username: 'wagdie-game-master',
-    bio: [
-      'The official WAGDIE location-room game master that plans private narrative beats for public character conversations.',
-    ],
-    lore: [
-      'Guide location-room scenes with dread, restraint, and continuity while avoiding direct canon creation.',
-    ],
-    topics: ['WAGDIE', 'location rooms', 'narrative continuity', 'character prompts'],
-    adjectives: ['ominous', 'restrained', 'fair', 'continuity-minded'],
-    system: [
-      'You are the private game master for WAGDIE location-room narrative ticks.',
-      'Return one strict JSON object matching the requested field names when asked for narrative beats; never wrap JSON in markdown.',
-      'Never expose private speaker instructions publicly, and do not invent combat handoff unless the requested schema explicitly asks for structured combat fields.',
-      'Do not directly create canon lore; preserve uncertainty and character agency.',
-    ].join('\n'),
-    systemPrompt: [
-      'You are the private game master for WAGDIE location-room narrative ticks.',
-      'Return one strict JSON object matching the requested field names when asked for narrative beats; never wrap JSON in markdown.',
-      'Never expose private speaker instructions publicly, and do not invent combat handoff unless the requested schema explicitly asks for structured combat fields.',
-      'Do not directly create canon lore; preserve uncertainty and character agency.',
-    ].join('\n'),
-    exampleMessages: [
-      {
-        userMessage: 'Create a narrative beat for selected speaker #123 in the Ash Orchard.',
-        assistantMessage: '{"publicNarration":"The buried reliquary exhales warm ash before anyone touches it. A familiar voice murmurs from behind the lid while fresh claw marks score the soil around the hinges. The characters can listen, ward the lid, or search for what made the marks before choosing whether to open it.","speakerInstruction":"Respond in your own voice to the reliquary, choosing whether to listen, ward it, or look for another sign without resolving the mystery.","stateSummary":"The Ash Orchard party has found a warm reliquary that speaks and bears fresh claw marks.","currentObjective":"Decide how to examine or contain the reliquary before opening it.","openThreads":["What voice is speaking from inside the reliquary?","What made the fresh claw marks around the lid?"],"ttrpgPhase":"exploration","combatReadiness":"foreshadow","threatLevel":1,"requestedGameplayAction":null,"encounterSeed":null,"sceneCheckRequest":null,"adventurePatch":{"currentStakes":"The reliquary may reveal a guide or release whatever made the marks."},"featuredTokenIds":[123],"selectedSpeakerTokenId":123}',
-      },
-    ],
-  })
+  return buildCanonicalGameMasterAgentCharacter()
 }
 
 function validateKnowledgeFile(input: UploadGameMasterKnowledgeInput): void {
@@ -212,6 +218,12 @@ function buildServiceKnowledgeSourcePointer(input: {
   document: StoredKnowledgeDocument
   officialAgentId: string
   contentHash: string
+  canonical?: {
+    bundleId: string
+    contentVersion: string
+    schemaVersion: number
+    documentTitle?: string
+  }
 }): OfficialKnowledgeSourcePointer {
   return {
     serviceAgentKey: GAME_MASTER_AGENT_SETTING_KEY,
@@ -219,7 +231,65 @@ function buildServiceKnowledgeSourcePointer(input: {
     officialAgentId: input.officialAgentId,
     path: input.document.path,
     contentHash: input.contentHash,
-    version: `sha256:${input.contentHash}`,
+    version: input.canonical
+      ? `${input.canonical.bundleId}@${input.canonical.contentVersion}:sha256:${input.contentHash}`
+      : `sha256:${input.contentHash}`,
+    ...(input.canonical
+      ? {
+          canonical: {
+            ...input.canonical,
+            documentId: input.document.id,
+          },
+        }
+      : {}),
+  }
+}
+
+function buildCanonicalApplyMetadata(input: {
+  existing: Record<string, unknown>
+  personaHash?: string
+  knowledgeDocumentHashes?: Record<string, string>
+  appliedAt: string
+  actor?: string | null
+}): Record<string, unknown> {
+  const existingCanonical =
+    input.existing.canonicalContent && typeof input.existing.canonicalContent === 'object' && !Array.isArray(input.existing.canonicalContent)
+      ? input.existing.canonicalContent as Record<string, unknown>
+      : {}
+
+  return {
+    ...input.existing,
+    canonicalContent: {
+      ...existingCanonical,
+      schemaVersion: GAME_MASTER_CANONICAL_CONTENT.schemaVersion,
+      bundleId: GAME_MASTER_CANONICAL_CONTENT.bundleId,
+      contentVersion: GAME_MASTER_CANONICAL_CONTENT.contentVersion,
+      ...(input.personaHash
+        ? {
+            persona: {
+              hash: input.personaHash,
+              appliedAt: input.appliedAt,
+              appliedBy: input.actor ?? null,
+            },
+          }
+        : {}),
+      ...(input.knowledgeDocumentHashes
+        ? {
+            knowledge: {
+              appliedAt: input.appliedAt,
+              appliedBy: input.actor ?? null,
+              documentHashes: input.knowledgeDocumentHashes,
+            },
+          }
+        : {}),
+    },
+  }
+}
+
+export class GameMasterCanonicalReviewConflictError extends Error {
+  constructor() {
+    super('Canonical game-master content preview is stale; refresh and try again')
+    this.name = 'GameMasterCanonicalReviewConflictError'
   }
 }
 
@@ -343,6 +413,11 @@ export class GameMasterAgentService {
       },
       aiCharacter: null,
       knowledge: [],
+      canonicalContent: buildGameMasterCanonicalContentReview({
+        setting: resolution.setting,
+        record: null,
+        syncStates: [],
+      }),
     }
 
     if (!resolution.officialAgentId) {
@@ -366,9 +441,11 @@ export class GameMasterAgentService {
     const externalId = record.externalId ?? resolution.setting?.externalId ?? GAME_MASTER_AGENT_EXTERNAL_ID
     const documents = getKnowledgeDocuments(record.character as Record<string, unknown>)
     let syncStates: ServiceAgentKnowledgeSyncState[] = []
+    let syncStateLookupFailed = false
     try {
       syncStates = await this.knowledgeSyncRepository.listByServiceAgent(GAME_MASTER_AGENT_SETTING_KEY)
     } catch (error) {
+      syncStateLookupFailed = true
       console.warn('[Game Master Agent] Failed to fetch knowledge sync state for admin state:', error)
     }
 
@@ -380,6 +457,12 @@ export class GameMasterAgentService {
       },
       aiCharacter: toAICharacterFromRecord(externalId, record),
       knowledge: mergeKnowledgeWithSyncStates(documents, syncStates),
+      canonicalContent: buildGameMasterCanonicalContentReview({
+        setting: resolution.setting,
+        record,
+        syncStates,
+        syncStateLookupFailed,
+      }),
     }
   }
 
@@ -472,6 +555,205 @@ export class GameMasterAgentService {
 
     const record = await this.createClient().characters.getRecord(setting.officialAgentId)
     return { setting, record }
+  }
+
+  async getCanonicalGameMasterContentReview(): Promise<GameMasterCanonicalContentReview> {
+    const setting = await this.settingsRepository.findActive()
+    let record: CharacterRecord | null = null
+    if (setting) {
+      try {
+        record = await this.createClient().characters.getRecord(setting.officialAgentId)
+      } catch (error) {
+        console.warn('[Game Master Agent] Failed to fetch official record for canonical content review:', error)
+      }
+    }
+
+    let syncStates: ServiceAgentKnowledgeSyncState[] = []
+    let syncStateLookupFailed = false
+    try {
+      syncStates = await this.knowledgeSyncRepository.listByServiceAgent(GAME_MASTER_AGENT_SETTING_KEY)
+    } catch (error) {
+      syncStateLookupFailed = true
+      console.warn('[Game Master Agent] Failed to fetch knowledge sync state for canonical content review:', error)
+    }
+
+    return buildGameMasterCanonicalContentReview({
+      setting,
+      record,
+      syncStates,
+      syncStateLookupFailed,
+    })
+  }
+
+  async applyCanonicalGameMasterContent(
+    input: ApplyCanonicalGameMasterContentInput,
+    actor?: string | null
+  ): Promise<ApplyCanonicalGameMasterContentResult> {
+    if (!input.persona && !input.knowledge) {
+      throw new GameMasterKnowledgeValidationError('Choose canonical persona, knowledge, or both to apply')
+    }
+
+    const { setting, record } = await this.getActiveGameMasterRecord()
+    const syncStates = await this.knowledgeSyncRepository
+      .listByServiceAgent(GAME_MASTER_AGENT_SETTING_KEY)
+      .catch((error) => {
+        console.warn('[Game Master Agent] Failed to fetch knowledge sync state before canonical apply:', error)
+        return [] as ServiceAgentKnowledgeSyncState[]
+      })
+    const reviewBefore = buildGameMasterCanonicalContentReview({
+      setting,
+      record,
+      syncStates,
+    })
+
+    if (!input.expectedReviewToken || input.expectedReviewToken !== reviewBefore.reviewToken) {
+      throw new GameMasterCanonicalReviewConflictError()
+    }
+
+    let currentSetting = setting
+    let currentRecord = record
+    const appliedAt = new Date().toISOString()
+    const result: Omit<ApplyCanonicalGameMasterContentResult, 'reviewAfter'> = {
+      reviewBefore,
+    }
+
+    if (input.persona) {
+      const policyResult = validatePutCharacterSheetUpdate(GAME_MASTER_CANONICAL_CONTENT.persona)
+      if (!policyResult.ok) {
+        const error = new GameMasterKnowledgeValidationError('Canonical game-master persona failed validation')
+        ;(error as Error & { issues?: unknown }).issues = policyResult.issues
+        throw error
+      }
+
+      const update = policyResult.update as UpdateAICharacterInput
+      const merged = applyWagdieUpdateToAgentCharacter(currentRecord.character, update)
+      const mergedRecord = merged as Record<string, unknown>
+      if (update.systemPrompt !== undefined) {
+        if (update.systemPrompt === null) {
+          delete mergedRecord.systemPrompt
+        } else {
+          mergedRecord.systemPrompt = update.systemPrompt
+        }
+      }
+      currentRecord = await this.createClient().characters.replaceRecord(currentRecord.id, { character: merged })
+      const personaHash = getCanonicalPersonaHash(GAME_MASTER_CANONICAL_CONTENT)
+      currentSetting = await this.settingsRepository.upsertActive({
+        officialAgentId: currentRecord.id,
+        externalId: currentRecord.externalId ?? currentSetting.externalId,
+        source: 'admin',
+        createdBy: currentSetting.createdBy,
+        updatedBy: actor ?? currentSetting.updatedBy,
+        lastValidatedAt: appliedAt,
+        validationError: null,
+        validationErrorAt: null,
+        metadata: buildCanonicalApplyMetadata({
+          existing: currentSetting.metadata,
+          personaHash,
+          appliedAt,
+          actor,
+        }),
+      })
+      result.persona = {
+        applied: true,
+        changedFields: reviewBefore.persona.changedFields,
+        hash: personaHash,
+      }
+    }
+
+    if (input.knowledge) {
+      if (reviewBefore.knowledge.documentLimit.conflict) {
+        throw new GameMasterKnowledgeValidationError(`Canonical knowledge would exceed maximum ${FIELD_LIMITS.maxKnowledgeDocs} documents`)
+      }
+
+      const canonicalById = new Map(GAME_MASTER_CANONICAL_CONTENT.knowledge.map((document) => [document.id, document]))
+      const currentKnowledge = getKnowledgeDocuments(currentRecord.character as Record<string, unknown>)
+      const preservedKnowledge = currentKnowledge.filter((document) => !canonicalById.has(document.id))
+      const canonicalKnowledge = GAME_MASTER_CANONICAL_CONTENT.knowledge.map(toStoredCanonicalKnowledgeDocument)
+      const updatedKnowledge = [...preservedKnowledge, ...canonicalKnowledge]
+      if (updatedKnowledge.length > FIELD_LIMITS.maxKnowledgeDocs) {
+        throw new GameMasterKnowledgeValidationError(`Canonical knowledge would exceed maximum ${FIELD_LIMITS.maxKnowledgeDocs} documents`)
+      }
+
+      currentRecord = await replaceKnowledgeDocuments(
+        currentRecord,
+        updatedKnowledge,
+        this.createClient()
+      )
+
+      const reviewById = new Map(reviewBefore.knowledge.documents.map((document) => [document.id, document]))
+      const syncResults: NonNullable<ApplyCanonicalGameMasterContentResult['knowledge']>['documents'] = []
+      for (const canonicalDocument of GAME_MASTER_CANONICAL_CONTENT.knowledge) {
+        const document = toStoredCanonicalKnowledgeDocument(canonicalDocument)
+        const reviewDocument = reviewById.get(canonicalDocument.id)
+        if (!reviewDocument?.shouldSync) {
+          syncResults.push({
+            id: canonicalDocument.id,
+            path: canonicalDocument.path,
+            action: 'skipped',
+            sync: null,
+          })
+          continue
+        }
+
+        const sync = await this.syncGameMasterKnowledgeDocumentToOfficial(currentRecord, document, {
+          canonical: {
+            bundleId: GAME_MASTER_CANONICAL_CONTENT.bundleId,
+            contentVersion: GAME_MASTER_CANONICAL_CONTENT.contentVersion,
+            schemaVersion: GAME_MASTER_CANONICAL_CONTENT.schemaVersion,
+            documentTitle: canonicalDocument.title,
+          },
+        })
+        syncResults.push({
+          id: canonicalDocument.id,
+          path: canonicalDocument.path,
+          action: sync.ok ? 'synced' : 'failed',
+          sync,
+        })
+      }
+
+      const documentHashes = Object.fromEntries(
+        GAME_MASTER_CANONICAL_CONTENT.knowledge.map((document) => [
+          document.id,
+          hashKnowledgeContent(document.content),
+        ])
+      )
+      currentSetting = await this.settingsRepository.upsertActive({
+        officialAgentId: currentRecord.id,
+        externalId: currentRecord.externalId ?? currentSetting.externalId,
+        source: 'admin',
+        createdBy: currentSetting.createdBy,
+        updatedBy: actor ?? currentSetting.updatedBy,
+        lastValidatedAt: appliedAt,
+        validationError: null,
+        validationErrorAt: null,
+        metadata: buildCanonicalApplyMetadata({
+          existing: currentSetting.metadata,
+          knowledgeDocumentHashes: documentHashes,
+          appliedAt,
+          actor,
+        }),
+      })
+
+      result.knowledge = {
+        applied: true,
+        documentLimit: reviewBefore.knowledge.documentLimit,
+        documents: syncResults,
+      }
+    }
+
+    const reviewAfterSyncStates = await this.knowledgeSyncRepository
+      .listByServiceAgent(GAME_MASTER_AGENT_SETTING_KEY)
+      .catch(() => [] as ServiceAgentKnowledgeSyncState[])
+    const reviewAfter = buildGameMasterCanonicalContentReview({
+      setting: currentSetting,
+      record: currentRecord,
+      syncStates: reviewAfterSyncStates,
+    })
+
+    return {
+      ...result,
+      reviewAfter,
+    }
   }
 
   async updateActiveGameMasterPersona(
@@ -582,7 +864,15 @@ export class GameMasterAgentService {
 
   async syncGameMasterKnowledgeDocumentToOfficial(
     record: CharacterRecord,
-    document: StoredKnowledgeDocument
+    document: StoredKnowledgeDocument,
+    options: {
+      canonical?: {
+        bundleId: string
+        contentVersion: string
+        schemaVersion: number
+        documentTitle?: string
+      }
+    } = {}
   ): Promise<ServiceKnowledgeSyncResult> {
     const content = document.content ?? ''
     const contentHash = hashKnowledgeContent(content)
@@ -596,6 +886,7 @@ export class GameMasterAgentService {
         document,
         officialAgentId: record.id,
         contentHash,
+        canonical: options.canonical,
       })
 
       await this.knowledgeSyncRepository.upsert({

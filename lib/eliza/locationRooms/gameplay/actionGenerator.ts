@@ -4,7 +4,7 @@ import {
   sendAndCollectOfficialEphemeralSessionMessage,
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
-import { extractGameMasterJsonObject } from '../gameMasterGenerator'
+import { extractGenerationJsonObject } from '../generation/json'
 import type {
   LocationRoom,
   LocationRoomMessage,
@@ -357,7 +357,7 @@ export function parseGameplayActionResponseStrict(
 ): { action: GameplayActionEnvelope; rawResponseLength: number } {
   let parsed: Record<string, unknown>
   try {
-    parsed = extractGameMasterJsonObject(raw, 'Gameplay action response')
+    parsed = extractGenerationJsonObject(raw, 'Gameplay action response')
   } catch (error) {
     throw toGameplayActionSemanticError(error)
   }

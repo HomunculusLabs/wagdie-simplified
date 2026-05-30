@@ -41,6 +41,71 @@ export interface GameMasterKnowledgeDocument {
   syncState: SafeKnowledgeSyncState | null;
 }
 
+export type GameMasterCanonicalPersonaStatus = 'unavailable' | 'in_sync' | 'drifted';
+export type GameMasterCanonicalKnowledgeLiveStatus = 'missing' | 'in_sync' | 'changed';
+export type GameMasterCanonicalKnowledgeSyncStatus = ServiceAgentKnowledgeSyncStatus | 'unsynced' | 'unknown';
+
+export interface GameMasterCanonicalContentReview {
+  schemaVersion: 1;
+  bundleId: string;
+  contentVersion: string;
+  reviewToken: string;
+  canApply: boolean;
+  unavailableReason: string | null;
+  persona: {
+    status: GameMasterCanonicalPersonaStatus;
+    canonicalHash: string;
+    liveHash: string | null;
+    changedFields: string[];
+    lastApplied: {
+      hash?: string;
+      appliedAt?: string;
+      appliedBy?: string | null;
+    } | null;
+  };
+  knowledge: {
+    status: 'unavailable' | 'in_sync' | 'drifted' | 'conflict';
+    documentLimit: {
+      max: number;
+      liveCount: number;
+      canonicalCount: number;
+      preservedLiveCount: number;
+      resultingCount: number;
+      conflict: boolean;
+    };
+    documents: Array<{
+      id: string;
+      title: string;
+      path: string;
+      mimeType: 'text/plain' | 'text/markdown';
+      preview: string;
+      size: number;
+      canonicalHash: string;
+      liveHash: string | null;
+      livePath: string | null;
+      liveStatus: GameMasterCanonicalKnowledgeLiveStatus;
+      syncStatus: GameMasterCanonicalKnowledgeSyncStatus;
+      lastSyncedAt: string | null;
+      hasSyncError: boolean;
+      shouldSync: boolean;
+    }>;
+    obsoletePreservedDocuments: Array<{
+      id: string;
+      path: string;
+      liveHash: string | null;
+      previousBundleId: string | null;
+      previousContentVersion: string | null;
+      syncStatus: GameMasterCanonicalKnowledgeSyncStatus;
+    }>;
+    syncStateLookupFailed: boolean;
+    lastApplied: {
+      appliedAt?: string;
+      appliedBy?: string | null;
+      documentHashes?: Record<string, string>;
+    } | null;
+  };
+}
+
 export interface GameMasterAgentAdminState {
   effectiveSource: GameMasterAgentEffectiveSource;
   envFallback: {
@@ -55,6 +120,7 @@ export interface GameMasterAgentAdminState {
   };
   aiCharacter: AICharacter | null;
   knowledge: GameMasterKnowledgeDocument[];
+  canonicalContent: GameMasterCanonicalContentReview;
 }
 
 export interface GameMasterAgentSyncResponse {
@@ -67,12 +133,37 @@ export interface GameMasterAgentSyncResponse {
   };
 }
 
+export interface GameMasterAgentCanonicalApplyResponse {
+  state: GameMasterAgentAdminState;
+  result: {
+    reviewBefore: GameMasterCanonicalContentReview;
+    reviewAfter: GameMasterCanonicalContentReview;
+    persona?: {
+      applied: boolean;
+      changedFields: string[];
+      hash: string;
+    };
+    knowledge?: {
+      applied: boolean;
+      documentLimit: GameMasterCanonicalContentReview['knowledge']['documentLimit'];
+      documents: Array<{
+        id: string;
+        path: string;
+        action: 'synced' | 'failed' | 'skipped';
+        sync: GameMasterAgentSyncResponse['sync'] | null;
+      }>;
+    };
+  };
+}
+
 export type BusyAction =
   | 'load'
   | 'bootstrap'
   | 'save-persona'
   | 'clear-setting'
   | 'upload-knowledge'
+  | 'apply-canonical-persona'
+  | 'apply-canonical-knowledge'
   | `delete-knowledge:${string}`
   | `retry-knowledge:${string}`
   | null;

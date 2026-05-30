@@ -3,8 +3,10 @@ import { isAuthError, requireAdmin, type AuthResult } from '@/lib/api/auth'
 import { jsonNoStore, jsonNoStoreError } from '@/lib/api/responses'
 import {
   GameMasterAgentNotBootstrappedError,
+  GameMasterCanonicalReviewConflictError,
   GameMasterKnowledgeValidationError,
   gameMasterAgentService,
+  type ApplyCanonicalGameMasterContentResult,
   type GameMasterAgentAdminState,
   type GameMasterKnowledgeDocumentWithSync,
   type ServiceKnowledgeSyncResult,
@@ -33,6 +35,17 @@ export type AdminGameMasterAgentSyncResponse = {
     ok: boolean
     state?: SafeKnowledgeSyncState
     error: string | null
+  }
+}
+
+export type AdminGameMasterAgentCanonicalApplyResponse = {
+  state: AdminGameMasterAgentStateResponse
+  result: Omit<ApplyCanonicalGameMasterContentResult, 'knowledge'> & {
+    knowledge?: Omit<NonNullable<ApplyCanonicalGameMasterContentResult['knowledge']>, 'documents'> & {
+      documents: Array<Omit<NonNullable<ApplyCanonicalGameMasterContentResult['knowledge']>['documents'][number], 'sync'> & {
+        sync: AdminGameMasterAgentSyncResponse['sync'] | null
+      }>
+    }
   }
 }
 
@@ -84,6 +97,23 @@ export function sanitizeSyncResult(sync: ServiceKnowledgeSyncResult): AdminGameM
   }
 }
 
+export function sanitizeCanonicalApplyResult(
+  result: ApplyCanonicalGameMasterContentResult
+): AdminGameMasterAgentCanonicalApplyResponse['result'] {
+  return {
+    ...result,
+    knowledge: result.knowledge
+      ? {
+          ...result.knowledge,
+          documents: result.knowledge.documents.map((document) => ({
+            ...document,
+            sync: document.sync ? sanitizeSyncResult(document.sync) : null,
+          })),
+        }
+      : undefined,
+  }
+}
+
 export async function gameMasterAgentStateResponse(status = 200): Promise<NextResponse<AdminGameMasterAgentStateResponse>> {
   const state = await gameMasterAgentService.getAdminGameMasterAgentState()
   return jsonNoStore(serializeGameMasterAgentState(state), { status })
@@ -106,6 +136,10 @@ export async function gameMasterAgentSyncResponse(
 export function gameMasterAgentErrorResponse(error: unknown, fallback = SAFE_SERVER_ERROR_MESSAGE): NextResponse {
   if (error instanceof GameMasterAgentNotBootstrappedError) {
     return jsonNoStoreError('Create or adopt a game-master agent before editing persona or knowledge', 409)
+  }
+
+  if (error instanceof GameMasterCanonicalReviewConflictError) {
+    return jsonNoStoreError('Canonical game-master content preview is stale. Refresh and try again.', 409)
   }
 
   if (error instanceof GameMasterKnowledgeValidationError) {

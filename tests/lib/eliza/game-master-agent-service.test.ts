@@ -10,12 +10,18 @@ import { elizaConfig } from '@/lib/eliza/config'
 import {
   GameMasterAgentConfigError,
   GameMasterAgentService,
+  GameMasterCanonicalReviewConflictError,
   GameMasterKnowledgeValidationError,
 } from '@/lib/eliza/gameMasterAgent/service'
 import {
   GAME_MASTER_AGENT_EXTERNAL_ID,
   GAME_MASTER_AGENT_SETTING_KEY,
 } from '@/lib/eliza/gameMasterAgent/constants'
+import {
+  GAME_MASTER_CANONICAL_CONTENT,
+  buildCanonicalGameMasterAgentCharacter,
+  toStoredCanonicalKnowledgeDocument,
+} from '@/lib/eliza/gameMasterAgent/canonicalContent'
 import type {
   GameMasterAgentSetting,
   GameMasterAgentSettingsRepository,
@@ -24,6 +30,7 @@ import type {
 } from '@/lib/eliza/gameMasterAgent/repository'
 import type { CharacterRecord, WagdieElizaClient } from '@/lib/eliza/gateway/types'
 import type { OfficialKnowledgeClient } from '@/lib/eliza/official/knowledge-client'
+import { FIELD_LIMITS } from '@/types/eliza'
 
 const originalGameMasterAgentId = elizaConfig.locationRooms.narrative.gameMasterAgentId
 
@@ -257,10 +264,275 @@ describe('GameMasterAgentService', () => {
     expect(state.knowledge).toEqual([
       expect.objectContaining({ id: 'doc-1', path: 'notes.md', syncState: null }),
     ])
+    expect(state.canonicalContent.knowledge.syncStateLookupFailed).toBe(true)
+    expect(state.canonicalContent.knowledge.documents).toHaveLength(GAME_MASTER_CANONICAL_CONTENT.knowledge.length)
+    expect(state.canonicalContent.knowledge.documents).toEqual(expect.arrayContaining(
+      GAME_MASTER_CANONICAL_CONTENT.knowledge.map((document) => expect.objectContaining({
+        id: document.id,
+        syncStatus: 'unknown',
+      }))
+    ))
     expect(warnSpy).toHaveBeenCalledWith(
       '[Game Master Agent] Failed to fetch knowledge sync state for admin state:',
       expect.any(Error)
     )
+  })
+
+  it('detects persona drift when live system is stale even if systemPrompt is canonical', async () => {
+    const service = new GameMasterAgentService({
+      settingsRepository: makeSettingsRepository(setting({ officialAgentId: 'gm-db-1' })),
+      knowledgeSyncRepository: makeKnowledgeRepository(),
+      createClient: () => makeClient({
+        getRecord: jest.fn(async () => record({
+          id: 'gm-db-1',
+          character: {
+            ...buildCanonicalGameMasterAgentCharacter(),
+            system: 'Old instructions',
+            systemPrompt: GAME_MASTER_CANONICAL_CONTENT.persona.systemPrompt,
+            knowledge: [],
+          },
+        })),
+      }),
+    })
+
+    const review = await service.getCanonicalGameMasterContentReview()
+
+    expect(review.persona.status).toBe('drifted')
+    expect(review.persona.changedFields).toContain('system')
+    expect(review.persona.changedFields).not.toContain('systemPrompt')
+  })
+
+  it('computes canonical content review drift for the active official record', async () => {
+    const service = new GameMasterAgentService({
+      settingsRepository: makeSettingsRepository(setting({ officialAgentId: 'gm-db-1' })),
+      knowledgeSyncRepository: makeKnowledgeRepository(),
+      createClient: () => makeClient({
+        getRecord: jest.fn(async () => record({
+          id: 'gm-db-1',
+          character: {
+            name: 'Legacy GM',
+            system: 'Old instructions',
+            knowledge: [],
+          },
+        })),
+      }),
+    })
+
+    const review = await service.getCanonicalGameMasterContentReview()
+
+    expect(review.bundleId).toBe(GAME_MASTER_CANONICAL_CONTENT.bundleId)
+    expect(review.reviewToken).toEqual(expect.any(String))
+    expect(review.persona.status).toBe('drifted')
+    expect(review.persona.changedFields).toContain('name')
+    expect(review.knowledge.documents).toHaveLength(GAME_MASTER_CANONICAL_CONTENT.knowledge.length)
+    expect(review.knowledge.documents).toEqual(expect.arrayContaining(
+      GAME_MASTER_CANONICAL_CONTENT.knowledge.map((document) => expect.objectContaining({
+        id: document.id,
+        liveStatus: 'missing',
+        shouldSync: true,
+      }))
+    ))
+  })
+
+  it('applies canonical persona through the existing replace-record flow and records metadata', async () => {
+    const settingsRepository = makeSettingsRepository(setting({ officialAgentId: 'gm-db-1' }))
+    const client = makeClient({
+      getRecord: jest.fn(async () => record({
+        id: 'gm-db-1',
+        character: { name: 'Legacy GM', system: 'Old instructions', knowledge: [] },
+      })),
+      replaceRecord: jest.fn(async (id, input) => record({ id, character: input.character })),
+    })
+    const service = new GameMasterAgentService({
+      settingsRepository,
+      knowledgeSyncRepository: makeKnowledgeRepository(),
+      createClient: () => client,
+    })
+    const review = await service.getCanonicalGameMasterContentReview()
+
+    await expect(service.applyCanonicalGameMasterContent({
+      persona: true,
+      expectedReviewToken: 'stale-token',
+    }, '0xadmin')).rejects.toBeInstanceOf(GameMasterCanonicalReviewConflictError)
+
+    const result = await service.applyCanonicalGameMasterContent({
+      persona: true,
+      expectedReviewToken: review.reviewToken,
+    }, '0xadmin')
+
+    expect(result.persona).toMatchObject({ applied: true, hash: expect.any(String) })
+    expect(client.characters.replaceRecord).toHaveBeenCalledWith('gm-db-1', {
+      character: expect.objectContaining({
+        name: GAME_MASTER_CANONICAL_CONTENT.persona.name,
+        system: GAME_MASTER_CANONICAL_CONTENT.persona.systemPrompt,
+        bio: GAME_MASTER_CANONICAL_CONTENT.persona.bio,
+      }),
+    })
+    expect(settingsRepository.upsertActive).toHaveBeenLastCalledWith(expect.objectContaining({
+      source: 'admin',
+      updatedBy: '0xadmin',
+      metadata: expect.objectContaining({
+        canonicalContent: expect.objectContaining({
+          bundleId: GAME_MASTER_CANONICAL_CONTENT.bundleId,
+          contentVersion: GAME_MASTER_CANONICAL_CONTENT.contentVersion,
+          persona: expect.objectContaining({ appliedBy: '0xadmin' }),
+        }),
+      }),
+    }))
+  })
+
+  it('upserts canonical knowledge by deterministic id, preserves admin docs, and syncs with canonical source metadata', async () => {
+    const extraDoc = { id: 'admin-doc', path: 'admin-notes.md', content: 'Admin notes remain.' }
+    const settingsRepository = makeSettingsRepository(setting({ officialAgentId: 'gm-db-1' }))
+    const knowledgeSyncRepository = makeKnowledgeRepository()
+    const client = makeClient({
+      getRecord: jest.fn(async () => record({
+        id: 'gm-db-1',
+        character: {
+          ...buildCanonicalGameMasterAgentCharacter(),
+          knowledge: [extraDoc],
+        },
+      })),
+      replaceRecord: jest.fn(async (id, input) => record({ id, character: input.character })),
+    })
+    const officialKnowledgeClient: jest.Mocked<OfficialKnowledgeClient> = {
+      indexDocument: jest.fn(async () => ({ memoryId: 'memory-1', status: 'indexed' })),
+      deleteDocument: jest.fn(),
+    }
+    const service = new GameMasterAgentService({
+      settingsRepository,
+      knowledgeSyncRepository,
+      createClient: () => client,
+      officialKnowledgeClient,
+    })
+    const review = await service.getCanonicalGameMasterContentReview()
+
+    const result = await service.applyCanonicalGameMasterContent({
+      knowledge: true,
+      expectedReviewToken: review.reviewToken,
+    }, '0xadmin')
+
+    const canonicalDocs = GAME_MASTER_CANONICAL_CONTENT.knowledge.map(toStoredCanonicalKnowledgeDocument)
+    expect(result.knowledge?.documents).toHaveLength(canonicalDocs.length)
+    expect(result.knowledge?.documents).toEqual(expect.arrayContaining(
+      canonicalDocs.map((document) => expect.objectContaining({ id: document.id, action: 'synced' }))
+    ))
+    expect(client.characters.replaceRecord).toHaveBeenCalledWith('gm-db-1', {
+      character: expect.objectContaining({
+        knowledge: [extraDoc, ...canonicalDocs],
+      }),
+    })
+    expect(officialKnowledgeClient.indexDocument).toHaveBeenCalledTimes(canonicalDocs.length)
+    for (const canonicalDoc of canonicalDocs) {
+      expect(officialKnowledgeClient.indexDocument).toHaveBeenCalledWith(expect.objectContaining({
+        documentId: canonicalDoc.id,
+        path: canonicalDoc.path,
+        sourcePointer: expect.objectContaining({
+          canonical: expect.objectContaining({
+            bundleId: GAME_MASTER_CANONICAL_CONTENT.bundleId,
+            contentVersion: GAME_MASTER_CANONICAL_CONTENT.contentVersion,
+            documentId: canonicalDoc.id,
+          }),
+        }),
+      }))
+    }
+  })
+
+  it('rejects canonical knowledge before writing when preserved docs would exceed the document limit', async () => {
+    const preservedDocCount = FIELD_LIMITS.maxKnowledgeDocs - GAME_MASTER_CANONICAL_CONTENT.knowledge.length + 1
+    const liveDocs = Array.from({ length: preservedDocCount }, (_, index) => ({
+      id: `admin-doc-${index}`,
+      path: `admin-${index}.md`,
+      content: `Admin doc ${index}`,
+    }))
+    const client = makeClient({
+      getRecord: jest.fn(async () => record({
+        id: 'gm-db-1',
+        character: {
+          ...buildCanonicalGameMasterAgentCharacter(),
+          knowledge: liveDocs,
+        },
+      })),
+      replaceRecord: jest.fn(async (id, input) => record({ id, character: input.character })),
+    })
+    const service = new GameMasterAgentService({
+      settingsRepository: makeSettingsRepository(setting({ officialAgentId: 'gm-db-1' })),
+      knowledgeSyncRepository: makeKnowledgeRepository(),
+      createClient: () => client,
+    })
+    const review = await service.getCanonicalGameMasterContentReview()
+
+    expect(review.knowledge.documentLimit.conflict).toBe(true)
+    await expect(service.applyCanonicalGameMasterContent({
+      knowledge: true,
+      expectedReviewToken: review.reviewToken,
+    })).rejects.toBeInstanceOf(GameMasterKnowledgeValidationError)
+    expect(client.characters.replaceRecord).not.toHaveBeenCalled()
+  })
+
+  it('preserves embedded canonical knowledge when Official indexing fails and records canonical error state', async () => {
+    const settingsRepository = makeSettingsRepository(setting({ officialAgentId: 'gm-db-1' }))
+    const knowledgeSyncRepository = makeKnowledgeRepository()
+    const client = makeClient({
+      getRecord: jest.fn(async () => record({ id: 'gm-db-1', character: { name: 'GM', knowledge: [] } })),
+      replaceRecord: jest.fn(async (id, input) => record({ id, character: input.character })),
+    })
+    const officialKnowledgeClient: jest.Mocked<OfficialKnowledgeClient> = {
+      indexDocument: jest.fn(async () => {
+        throw new Error('canonical upstream unavailable')
+      }),
+      deleteDocument: jest.fn(),
+    }
+    const service = new GameMasterAgentService({
+      settingsRepository,
+      knowledgeSyncRepository,
+      createClient: () => client,
+      officialKnowledgeClient,
+    })
+    const review = await service.getCanonicalGameMasterContentReview()
+
+    const result = await service.applyCanonicalGameMasterContent({
+      knowledge: true,
+      expectedReviewToken: review.reviewToken,
+    }, '0xadmin')
+
+    const canonicalDocs = GAME_MASTER_CANONICAL_CONTENT.knowledge.map(toStoredCanonicalKnowledgeDocument)
+    expect(client.characters.replaceRecord).toHaveBeenCalledWith('gm-db-1', {
+      character: expect.objectContaining({ knowledge: canonicalDocs }),
+    })
+    expect(result.knowledge?.documents).toHaveLength(canonicalDocs.length)
+    expect(result.knowledge?.documents).toEqual(expect.arrayContaining(
+      canonicalDocs.map((canonicalDoc) => expect.objectContaining({
+        id: canonicalDoc.id,
+        path: canonicalDoc.path,
+        action: 'failed',
+        sync: expect.objectContaining({ attempted: true, ok: false, error: 'canonical upstream unavailable' }),
+      }))
+    ))
+    expect(result.reviewAfter.knowledge.documents).toHaveLength(canonicalDocs.length)
+    expect(result.reviewAfter.knowledge.documents).toEqual(expect.arrayContaining(
+      canonicalDocs.map((canonicalDoc) => expect.objectContaining({
+        id: canonicalDoc.id,
+        liveStatus: 'in_sync',
+        syncStatus: 'error',
+        hasSyncError: true,
+        shouldSync: true,
+      }))
+    ))
+    for (const canonicalDoc of canonicalDocs) {
+      expect(knowledgeSyncRepository.upsert).toHaveBeenCalledWith(expect.objectContaining({
+        serviceAgentKey: GAME_MASTER_AGENT_SETTING_KEY,
+        documentId: canonicalDoc.id,
+        status: 'error',
+        sourcePointer: expect.objectContaining({
+          canonical: expect.objectContaining({
+            bundleId: GAME_MASTER_CANONICAL_CONTENT.bundleId,
+            contentVersion: GAME_MASTER_CANONICAL_CONTENT.contentVersion,
+            documentId: canonicalDoc.id,
+          }),
+        }),
+      }))
+    }
   })
 
   it('keeps embedded knowledge when official service-agent indexing fails and records error state', async () => {

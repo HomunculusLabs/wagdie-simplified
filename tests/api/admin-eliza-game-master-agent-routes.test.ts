@@ -34,8 +34,16 @@ jest.mock('@/lib/eliza/gameMasterAgent/service', () => {
     }
   }
 
+  class GameMasterCanonicalReviewConflictError extends Error {
+    constructor() {
+      super('Canonical game-master content preview is stale; refresh and try again')
+      this.name = 'GameMasterCanonicalReviewConflictError'
+    }
+  }
+
   return {
     GameMasterAgentNotBootstrappedError,
+    GameMasterCanonicalReviewConflictError,
     GameMasterKnowledgeValidationError,
     gameMasterAgentService: {
       getAdminGameMasterAgentState: jest.fn(),
@@ -45,6 +53,7 @@ jest.mock('@/lib/eliza/gameMasterAgent/service', () => {
       uploadGameMasterKnowledgeDocument: jest.fn(),
       deleteGameMasterKnowledgeDocument: jest.fn(),
       retryGameMasterKnowledgeSync: jest.fn(),
+      applyCanonicalGameMasterContent: jest.fn(),
     },
   }
 })
@@ -53,9 +62,11 @@ const { GET, POST, PATCH, DELETE } = require('@/app/api/admin/eliza/game-master-
 const { POST: POST_KNOWLEDGE } = require('@/app/api/admin/eliza/game-master-agent/knowledge/route')
 const { DELETE: DELETE_KNOWLEDGE } = require('@/app/api/admin/eliza/game-master-agent/knowledge/[documentId]/route')
 const { POST: RETRY_KNOWLEDGE_SYNC } = require('@/app/api/admin/eliza/game-master-agent/knowledge/[documentId]/sync/route')
+const { POST: APPLY_CANONICAL } = require('@/app/api/admin/eliza/game-master-agent/canonical/apply/route')
 const { requireAdmin } = require('@/lib/api/auth')
 const {
   GameMasterAgentNotBootstrappedError,
+  GameMasterCanonicalReviewConflictError,
   GameMasterKnowledgeValidationError,
   gameMasterAgentService,
 } = require('@/lib/eliza/gameMasterAgent/service')
@@ -120,6 +131,36 @@ function adminState(overrides: Record<string, unknown> = {}) {
         },
       },
     ],
+    canonicalContent: {
+      schemaVersion: 1,
+      bundleId: 'wagdie-location-room-game-master',
+      contentVersion: '2026-05-30.1',
+      reviewToken: 'review-token',
+      canApply: true,
+      unavailableReason: null,
+      persona: {
+        status: 'drifted',
+        canonicalHash: 'persona-hash-new',
+        liveHash: 'persona-hash-old',
+        changedFields: ['systemPrompt'],
+        lastApplied: null,
+      },
+      knowledge: {
+        status: 'drifted',
+        documentLimit: {
+          max: 5,
+          liveCount: 1,
+          canonicalCount: 1,
+          preservedLiveCount: 0,
+          resultingCount: 1,
+          conflict: false,
+        },
+        documents: [],
+        obsoletePreservedDocuments: [],
+        syncStateLookupFailed: false,
+        lastApplied: null,
+      },
+    },
     ...overrides,
   }
 }
@@ -300,5 +341,190 @@ describe('admin game-master agent routes', () => {
         error: 'Knowledge sync failed. Retry after checking ElizaOS availability.',
       },
     })
+  })
+
+  it('requires admin and adds no-store for canonical apply auth failures', async () => {
+    ;(requireAdmin as jest.Mock).mockResolvedValueOnce(
+      NextResponse.json({ error: 'Not authenticated' }, { status: 401 })
+    )
+
+    const response = await APPLY_CANONICAL(request(
+      'http://localhost/api/admin/eliza/game-master-agent/canonical/apply',
+      {
+        method: 'POST',
+        body: JSON.stringify({ expectedReviewToken: 'review-token', persona: true }),
+      }
+    ))
+
+    expect(response.status).toBe(401)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    expect(mockedService.applyCanonicalGameMasterContent).not.toHaveBeenCalled()
+  })
+
+  it('applies canonical persona or knowledge with the expected review token', async () => {
+    mockedService.applyCanonicalGameMasterContent.mockResolvedValueOnce({
+      reviewBefore: adminState().canonicalContent,
+      reviewAfter: adminState().canonicalContent,
+      persona: {
+        applied: true,
+        changedFields: ['systemPrompt'],
+        hash: 'persona-hash-new',
+      },
+    })
+
+    const response = await APPLY_CANONICAL(request(
+      'http://localhost/api/admin/eliza/game-master-agent/canonical/apply',
+      {
+        method: 'POST',
+        body: JSON.stringify({ expectedReviewToken: 'review-token', persona: true }),
+      }
+    ))
+
+    expect(mockedService.applyCanonicalGameMasterContent).toHaveBeenCalledWith(
+      { expectedReviewToken: 'review-token', persona: true },
+      '0xAdmin'
+    )
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    const body = await response.json()
+    expect(body).toMatchObject({
+      state: { effectiveSource: 'admin' },
+      result: { persona: { applied: true, hash: 'persona-hash-new' } },
+    })
+    expect(body.state.knowledge[0].syncState.lastError).toBe('Knowledge sync failed. Retry after checking ElizaOS availability.')
+    expect(body.state.knowledge[0].syncState.sourcePointer).toBeUndefined()
+  })
+
+  it('validates canonical apply body before calling the service', async () => {
+    const invalidJsonResponse = await APPLY_CANONICAL(request(
+      'http://localhost/api/admin/eliza/game-master-agent/canonical/apply',
+      {
+        method: 'POST',
+        body: 'not valid json',
+      }
+    ))
+    const missingTokenResponse = await APPLY_CANONICAL(request(
+      'http://localhost/api/admin/eliza/game-master-agent/canonical/apply',
+      {
+        method: 'POST',
+        body: JSON.stringify({ persona: true }),
+      }
+    ))
+    const missingSelectionResponse = await APPLY_CANONICAL(request(
+      'http://localhost/api/admin/eliza/game-master-agent/canonical/apply',
+      {
+        method: 'POST',
+        body: JSON.stringify({ expectedReviewToken: 'review-token' }),
+      }
+    ))
+
+    expect(invalidJsonResponse.status).toBe(400)
+    expect(invalidJsonResponse.headers.get('Cache-Control')).toBe('no-store')
+    await expect(invalidJsonResponse.json()).resolves.toEqual({ error: 'Invalid JSON in request body' })
+    expect(missingTokenResponse.status).toBe(400)
+    expect(missingTokenResponse.headers.get('Cache-Control')).toBe('no-store')
+    await expect(missingTokenResponse.json()).resolves.toEqual({ error: 'expectedReviewToken is required' })
+    expect(missingSelectionResponse.status).toBe(400)
+    expect(missingSelectionResponse.headers.get('Cache-Control')).toBe('no-store')
+    await expect(missingSelectionResponse.json()).resolves.toEqual({
+      error: 'Choose canonical persona, knowledge, or both to apply',
+    })
+    expect(mockedService.applyCanonicalGameMasterContent).not.toHaveBeenCalled()
+  })
+
+  it('maps not-bootstrapped canonical applies to 409', async () => {
+    mockedService.applyCanonicalGameMasterContent.mockRejectedValueOnce(new GameMasterAgentNotBootstrappedError())
+
+    const response = await APPLY_CANONICAL(request(
+      'http://localhost/api/admin/eliza/game-master-agent/canonical/apply',
+      {
+        method: 'POST',
+        body: JSON.stringify({ expectedReviewToken: 'review-token', persona: true }),
+      }
+    ))
+
+    expect(response.status).toBe(409)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    await expect(response.json()).resolves.toEqual({
+      error: 'Create or adopt a game-master agent before editing persona or knowledge',
+    })
+  })
+
+  it('maps stale canonical previews to 409', async () => {
+    mockedService.applyCanonicalGameMasterContent.mockRejectedValueOnce(new GameMasterCanonicalReviewConflictError())
+
+    const response = await APPLY_CANONICAL(request(
+      'http://localhost/api/admin/eliza/game-master-agent/canonical/apply',
+      {
+        method: 'POST',
+        body: JSON.stringify({ expectedReviewToken: 'stale-token', knowledge: true }),
+      }
+    ))
+
+    expect(response.status).toBe(409)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    await expect(response.json()).resolves.toEqual({
+      error: 'Canonical game-master content preview is stale. Refresh and try again.',
+    })
+  })
+
+  it('sanitizes canonical knowledge apply sync failures', async () => {
+    mockedService.applyCanonicalGameMasterContent.mockResolvedValueOnce({
+      reviewBefore: adminState().canonicalContent,
+      reviewAfter: adminState().canonicalContent,
+      knowledge: {
+        applied: true,
+        documentLimit: adminState().canonicalContent.knowledge.documentLimit,
+        documents: [
+          {
+            id: 'canonical-doc',
+            path: 'canonical.md',
+            action: 'failed',
+            sync: {
+              attempted: true,
+              ok: false,
+              error: 'raw upstream provider detail',
+            },
+          },
+        ],
+      },
+    })
+
+    const response = await APPLY_CANONICAL(request(
+      'http://localhost/api/admin/eliza/game-master-agent/canonical/apply',
+      {
+        method: 'POST',
+        body: JSON.stringify({ expectedReviewToken: 'review-token', knowledge: true }),
+      }
+    ))
+
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body).toMatchObject({
+      state: {
+        knowledge: [
+          {
+            syncState: {
+              lastError: 'Knowledge sync failed. Retry after checking ElizaOS availability.',
+            },
+          },
+        ],
+      },
+      result: {
+        knowledge: {
+          documents: [
+            {
+              id: 'canonical-doc',
+              sync: {
+                attempted: true,
+                ok: false,
+                error: 'Knowledge sync failed. Retry after checking ElizaOS availability.',
+              },
+            },
+          ],
+        },
+      },
+    })
+    expect(body.state.knowledge[0].syncState.sourcePointer).toBeUndefined()
   })
 })
