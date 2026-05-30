@@ -10,7 +10,7 @@ export const runtime = 'nodejs'
 
 export async function GET(): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   try {
     return await gameMasterAgentStateResponse()
@@ -21,7 +21,7 @@ export async function GET(): Promise<NextResponse> {
 
 export async function POST(): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   try {
     await gameMasterAgentService.bootstrapGameMasterAgent(auth.address)
@@ -33,7 +33,7 @@ export async function POST(): Promise<NextResponse> {
 
 export async function PATCH(request: NextRequest): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   let body: unknown
   try {
@@ -58,7 +58,7 @@ export async function PATCH(request: NextRequest): Promise<NextResponse> {
 
 export async function DELETE(): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   try {
     await gameMasterAgentService.clearActiveGameMasterAgentSetting()

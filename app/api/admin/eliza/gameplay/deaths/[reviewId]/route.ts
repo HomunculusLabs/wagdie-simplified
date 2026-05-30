@@ -22,7 +22,7 @@ type UpdateDeathReviewBody = {
 
 export async function PATCH(request: NextRequest, context: RouteContext): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   const parsed = await parseJsonBodyResult<UpdateDeathReviewBody>(request)
   if (!parsed.ok) {

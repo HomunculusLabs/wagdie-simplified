@@ -55,7 +55,7 @@ function parseCanonicalApplyBody(body: unknown): CanonicalApplyBody | { error: s
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   let rawBody: unknown
   try {

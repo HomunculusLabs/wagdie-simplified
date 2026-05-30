@@ -30,7 +30,7 @@ function parseReviewStatus(value: string | null): GameplayDeathReviewStatus | 'a
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   const reviewStatus = parseReviewStatus(request.nextUrl.searchParams.get('status'))
   if (request.nextUrl.searchParams.has('status') && !reviewStatus) {

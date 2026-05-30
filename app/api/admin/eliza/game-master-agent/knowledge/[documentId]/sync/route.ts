@@ -15,7 +15,7 @@ type RouteContext = {
 
 export async function POST(_request: Request, context: RouteContext): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   const { documentId } = await context.params
   if (!documentId) {

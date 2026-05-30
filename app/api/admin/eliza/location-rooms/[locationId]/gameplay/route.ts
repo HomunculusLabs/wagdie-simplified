@@ -25,7 +25,7 @@ function parseLimit(value: string | null): number {
 
 export async function GET(request: NextRequest, context: RouteContext): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   const { locationId } = await context.params
   const limit = parseLimit(request.nextUrl.searchParams.get('limit'))

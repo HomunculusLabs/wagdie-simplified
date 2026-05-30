@@ -13,7 +13,7 @@ export const runtime = 'nodejs'
 
 export async function GET(): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   try {
     return await gameMasterAgentStateResponse()
@@ -24,7 +24,7 @@ export async function GET(): Promise<NextResponse> {
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const auth = await requireAdminNoStore()
-  if (auth instanceof NextResponse) return auth
+  if (!('address' in auth)) return auth
 
   try {
     let formData: FormData

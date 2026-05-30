@@ -50,5 +50,5 @@ export async function requireAdmin(): Promise<AuthResult | AuthError> {
  * Type guard to check if result is an error response
  */
 export function isAuthError(result: AuthResult | AuthError): result is AuthError {
-  return result instanceof NextResponse
+  return !result || typeof result !== 'object' || !('address' in result)
 }
