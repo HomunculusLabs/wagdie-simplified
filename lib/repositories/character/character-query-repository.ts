@@ -137,12 +137,7 @@ function applyHasSheetFilter(query: CharacterQueryBuilder, filters: CharacterFil
     return query
   }
 
-  return query.or(
-    'name.not.is.null,' +
-    'str.not.is.null,' +
-    'level.gt.1,' +
-    'background_story.not.is.null'
-  )
+  return query.not('metadata->sheet', 'is', null)
 }
 
 function applyMetadataTraitFilters(query: CharacterQueryBuilder, filters: CharacterFilters): CharacterQueryBuilder {

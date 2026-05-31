@@ -114,6 +114,23 @@ describe('Characters API Route', () => {
     }))
   })
 
+  it('forwards the has sheet filter to the character service', async () => {
+    const result = {
+      characters: [],
+      hasMore: false,
+      totalCount: 0,
+    }
+    ;(getCharacters as jest.Mock).mockResolvedValueOnce(result)
+
+    const response = await GET_PLURAL(createRequest('?hasSheet=true'))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual(result)
+    expect(getCharacters).toHaveBeenCalledWith(expect.objectContaining({
+      hasSheet: true,
+    }))
+  })
+
   it('returns an empty raw response for singular owned tab without wallet', async () => {
     const response = await GET_SINGULAR(createRequest('?tab=owned', '/api/character'))
 

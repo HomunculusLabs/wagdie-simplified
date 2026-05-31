@@ -22,7 +22,7 @@ export function SheetToggle({
   onChange,
   disabled = false,
   label = 'Has Sheet',
-  title = 'Show only characters with custom name, stats, level, or backstory',
+  title = 'Show only characters with imported character sheet data',
   className = ''
 }: SheetToggleProps) {
   return (
