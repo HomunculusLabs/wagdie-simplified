@@ -13,12 +13,21 @@ import {
   getEffectiveRelatedEntitiesForEvent,
   getEffectiveSourcesByEventId,
   getEffectiveSourcesForEvent,
+  getEffectiveTokenCharacterLore,
 } from '@/lib/lore/effective-query';
 import { createLoreBaseDataset, getStaticLoreBaseDataset } from '@/lib/lore/base-dataset';
 import { loreEvents } from '@/lib/lore/data/events';
 import { loreSubmissionRepository } from '@/lib/repositories/lore-submission-repository';
 import type { LoreCanonizationOverride } from '@/lib/lore/canonization-overrides';
-import type { Canonization, LoreEvent } from '@/lib/lore/types';
+import type {
+  Canonization,
+  LoreCharacter,
+  LoreEvent,
+  LoreLocation,
+  LoreSeason,
+  SourceRecord,
+} from '@/lib/lore/types';
+import type { LoreSubmissionDetailDto } from '@/types/lore-submission';
 
 jest.mock('@/lib/lore/base-query', () => ({
   getActiveLoreBaseDataset: jest.fn(),
@@ -97,6 +106,111 @@ const makeOverride = (
   updatedAt: '2026-05-09T00:00:00.000Z',
   createdAt: '2026-05-09T00:00:00.000Z',
 });
+
+const makeCharacter = (overrides: Partial<LoreCharacter>): LoreCharacter => ({
+  id: 'character-test',
+  slug: 'character-test',
+  name: 'Test Character',
+  aliases: [],
+  summary: 'A test character.',
+  tags: [],
+  ...overrides,
+});
+
+const makeLocation = (overrides: Partial<LoreLocation>): LoreLocation => ({
+  id: 'location-test',
+  slug: 'location-test',
+  name: 'Test Location',
+  aliases: [],
+  summary: 'A test location.',
+  tags: [],
+  ...overrides,
+});
+
+const makeSeason = (overrides: Partial<LoreSeason>): LoreSeason => ({
+  id: 'season-test',
+  slug: 'season-test',
+  title: 'Test Season',
+  summary: 'A test season.',
+  order: 0,
+  ...overrides,
+});
+
+const makeSource = (overrides: Partial<SourceRecord>): SourceRecord => ({
+  id: 'source-test',
+  kind: 'website',
+  title: 'Test Source',
+  attribution: 'Test archive.',
+  ...overrides,
+});
+
+const makeEvent = (overrides: Partial<LoreEvent>): LoreEvent => ({
+  ...staticEvent,
+  id: 'event-test',
+  slug: 'event-test',
+  title: 'Test Event',
+  summary: 'A test event.',
+  body: 'A test event body.',
+  seasonId: undefined,
+  locationIds: [],
+  characterIds: [],
+  entityRefs: [],
+  timelineOrder: 0,
+  sourceIds: [],
+  mediaIds: [],
+  tags: [],
+  keywords: [],
+  ...overrides,
+});
+
+const makeSubmissionDetail = (
+  overrides: Partial<LoreSubmissionDetailDto['submission']> = {},
+  links: LoreSubmissionDetailDto['links'] = [],
+): LoreSubmissionDetailDto => {
+  const id = overrides.id ?? 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const timestamp = '2026-05-09T16:00:00.000Z';
+
+  return {
+    submission: {
+      id,
+      submitter_address: '0xsubmitter',
+      token_id: '42',
+      title: 'Community Token Tale',
+      summary: 'A public community submission tied to a token owner.',
+      body_markdown: 'The token appeared in a community story.',
+      tags: ['community'],
+      curated_title: null,
+      curated_summary: null,
+      curated_body_markdown: null,
+      curated_tags: null,
+      season_id: 'season-community-chronicles',
+      character_ids: [],
+      location_ids: [],
+      status: 'public',
+      review_note: null,
+      status_reason: null,
+      last_admin_address: null,
+      published_slug: 'community-token-tale',
+      visibility: 'public',
+      published_kind: 'community',
+      canon_status: 'community',
+      canon_stage_id: 'community_recorded',
+      canon_note: null,
+      canon_path: [{ stageId: 'community_recorded', status: 'current' }],
+      publication_snapshot: null,
+      created_at: timestamp,
+      updated_at: timestamp,
+      submitted_at: timestamp,
+      reviewed_at: timestamp,
+      published_at: timestamp,
+      canonized_at: null,
+      closed_at: null,
+      ...overrides,
+    },
+    links: links.map((link) => ({ ...link, submission_id: id })),
+    reviews: [],
+  };
+};
 
 describe('published lore effective query', () => {
   beforeEach(() => {
@@ -343,5 +457,232 @@ describe('published lore effective query', () => {
       url: 'https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ',
       archivedUrl: 'https://archive.example/bell',
     });
+  });
+
+  it('returns undefined for invalid or unmatched token ids', async () => {
+    await expect(getEffectiveTokenCharacterLore(0)).resolves.toBeUndefined();
+    expect(getActiveLoreBaseDataset).not.toHaveBeenCalled();
+
+    await expect(getEffectiveTokenCharacterLore(987654321)).resolves.toBeUndefined();
+    expect(getActiveLoreBaseDataset).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves token lore with deterministic match and appearance ordering plus first-seen dedupe', async () => {
+    const tokenId = 777;
+    const characters = [
+      makeCharacter({
+        id: 'beta-token-match',
+        slug: 'beta-token-match',
+        name: 'Beta Token Match',
+        tokenId,
+      }),
+      makeCharacter({
+        id: `character-${tokenId}`,
+        slug: `character-${tokenId}`,
+        name: 'Synthetic Token Match',
+      }),
+      makeCharacter({
+        id: 'alpha-token-match',
+        slug: 'alpha-token-match',
+        name: 'Alpha Token Match',
+        tokenId,
+        firstAppearanceEventId: 'event-missing-first-appearance',
+      }),
+    ];
+    const locations = [
+      makeLocation({ id: 'location-a', slug: 'location-a', name: 'A First Location' }),
+      makeLocation({ id: 'location-b', slug: 'location-b', name: 'B Second Location' }),
+    ];
+    const seasons = [
+      makeSeason({ id: 'season-late', slug: 'season-late', title: 'Late Season', order: 20 }),
+      makeSeason({ id: 'season-early', slug: 'season-early', title: 'Early Season', order: 10 }),
+    ];
+    const sources = [
+      makeSource({ id: 'source-a', title: 'A First Source' }),
+      makeSource({ id: 'source-b', title: 'B Second Source' }),
+    ];
+    const events = [
+      makeEvent({
+        id: 'event-late',
+        slug: 'event-late',
+        title: 'Late Witness',
+        timelineOrder: 20,
+        seasonId: 'season-late',
+        characterIds: ['beta-token-match'],
+        locationIds: ['location-b'],
+        sourceIds: ['source-b'],
+      }),
+      makeEvent({
+        id: 'event-zulu',
+        slug: 'event-zulu',
+        title: 'Zulu Witness',
+        timelineOrder: 10,
+        seasonId: 'season-late',
+        characterIds: ['alpha-token-match'],
+        locationIds: ['location-b'],
+        sourceIds: ['source-b'],
+      }),
+      makeEvent({
+        id: 'event-ashen',
+        slug: 'event-ashen',
+        title: 'Ashen Arrival',
+        timelineOrder: 10,
+        seasonId: 'season-early',
+        characterIds: [`character-${tokenId}`],
+        locationIds: ['location-a', 'location-b'],
+        sourceIds: ['source-a', 'source-b'],
+      }),
+      makeEvent({
+        id: 'event-unmatched',
+        slug: 'event-unmatched',
+        title: 'Unmatched Event',
+        timelineOrder: 1,
+        characterIds: ['someone-else'],
+        locationIds: ['location-a'],
+        sourceIds: ['source-a'],
+      }),
+    ];
+
+    (getActiveLoreBaseDataset as jest.Mock).mockResolvedValue(createLoreBaseDataset({
+      source: 'database',
+      events,
+      characters,
+      locations,
+      seasons,
+      sources,
+      media: [],
+    }));
+
+    const lore = await getEffectiveTokenCharacterLore(tokenId);
+
+    expect(lore).toBeDefined();
+    expect(lore!.character.id).toBe('alpha-token-match');
+    expect(lore!.matchedCharacterIds).toEqual([
+      'alpha-token-match',
+      'beta-token-match',
+      `character-${tokenId}`,
+    ]);
+    expect(lore!.appearances.map((appearance) => appearance.id)).toEqual([
+      'event-ashen',
+      'event-zulu',
+      'event-late',
+    ]);
+    expect(lore!.firstAppearance?.id).toBe('event-ashen');
+    expect(lore!.locations.map((location) => location.id)).toEqual(['location-a', 'location-b']);
+    expect(lore!.sources.map((source) => source.id)).toEqual(['source-a', 'source-b']);
+    expect(lore!.sourceCount).toBe(2);
+    expect(lore!.seasons.map((season) => season.id)).toEqual(['season-early', 'season-late']);
+  });
+
+  it('uses a matched firstAppearanceEventId before falling back to ordered appearances', async () => {
+    const tokenId = 778;
+    const character = makeCharacter({
+      id: 'direct-first-appearance',
+      slug: 'direct-first-appearance',
+      name: 'Direct First Appearance',
+      tokenId,
+      firstAppearanceEventId: 'event-second',
+    });
+    const events = [
+      makeEvent({
+        id: 'event-first',
+        slug: 'event-first',
+        title: 'First Ordered Event',
+        timelineOrder: 1,
+        characterIds: [character.id],
+      }),
+      makeEvent({
+        id: 'event-second',
+        slug: 'event-second',
+        title: 'Declared First Appearance',
+        timelineOrder: 2,
+        characterIds: [character.id],
+      }),
+    ];
+
+    (getActiveLoreBaseDataset as jest.Mock).mockResolvedValue(createLoreBaseDataset({
+      source: 'database',
+      events,
+      characters: [character],
+      locations: [],
+      seasons: [],
+      sources: [],
+      media: [],
+    }));
+
+    const lore = await getEffectiveTokenCharacterLore(tokenId);
+
+    expect(lore?.appearances.map((appearance) => appearance.id)).toEqual(['event-first', 'event-second']);
+    expect(lore?.firstAppearance?.id).toBe('event-second');
+  });
+
+  it('resolves token-only published submissions through synthesized character records', async () => {
+    const tokenId = 8888;
+    (loreSubmissionRepository.listPublishedForEffectiveLore as jest.Mock).mockResolvedValue([
+      makeSubmissionDetail({
+        id: 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff',
+        token_id: String(tokenId),
+        title: 'Published Token Only Tale',
+        summary: 'A token-only published tale.',
+        body_markdown: 'Only the token id links this tale to a character.',
+        published_slug: 'published-token-only-tale',
+        character_ids: [],
+        location_ids: ['location-ashen-road'],
+      }, [
+        {
+          id: 'link-token-only',
+          submission_id: 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff',
+          role: 'source',
+          link_type: 'generic',
+          original_url: 'https://example.com/token-only',
+          normalized_url: 'https://example.com/token-only',
+          display_title: 'Token only source',
+          platform: 'Example',
+          author: null,
+          published_at: '2026-05-09T15:00:00.000Z',
+          archived_url: null,
+          attribution: 'Submitted source.',
+          preservation_note: null,
+          metadata: {},
+          sort_order: 0,
+          created_at: '2026-05-09T16:00:00.000Z',
+          updated_at: '2026-05-09T16:00:00.000Z',
+        },
+      ]),
+    ]);
+
+    const lore = await getEffectiveTokenCharacterLore(tokenId);
+
+    expect(lore?.character).toMatchObject({
+      id: `character-${tokenId}`,
+      slug: `character-${tokenId}`,
+      name: `WAGDIE #${tokenId}`,
+      tokenId,
+      externalUrl: `/characters/${tokenId}`,
+    });
+    expect(lore?.matchedCharacterIds).toEqual([`character-${tokenId}`]);
+    expect(lore?.appearances.map((appearance) => appearance.slug)).toEqual(['published-token-only-tale']);
+    expect(lore?.locations.map((location) => location.id)).toEqual(['location-ashen-road']);
+    expect(lore?.sources).toEqual([expect.objectContaining({
+      title: 'Token only source',
+      url: 'https://example.com/token-only',
+    })]);
+    expect(lore?.sourceCount).toBe(1);
+  });
+
+  it('ignores unpublished or non-public submissions when resolving token lore', async () => {
+    const tokenId = 9999;
+    (loreSubmissionRepository.listPublishedForEffectiveLore as jest.Mock).mockResolvedValue([
+      makeSubmissionDetail({
+        id: 'cccccccc-dddd-eeee-ffff-000000000000',
+        token_id: String(tokenId),
+        status: 'submitted',
+        visibility: 'pending',
+        published_slug: 'draft-token-tale',
+        character_ids: [],
+      }),
+    ]);
+
+    await expect(getEffectiveTokenCharacterLore(tokenId)).resolves.toBeUndefined();
   });
 });

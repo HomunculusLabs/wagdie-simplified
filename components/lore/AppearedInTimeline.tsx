@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { CanonStatusBadge } from './CanonStatusBadge';
+import { getLoreEventHref } from '@/lib/lore/navigation';
 import type { LoreEvent, LoreLocation, LoreSeason } from '@/lib/lore/types';
 
 interface AppearedInTimelineProps {
@@ -7,12 +8,6 @@ interface AppearedInTimelineProps {
   seasons: LoreSeason[];
   locations: LoreLocation[];
 }
-
-const eventHref = (event: LoreEvent) => {
-  return event.kind === 'official'
-    ? `/lore/events/${event.slug}`
-    : `/lore/community/${event.slug}`;
-};
 
 const formatDate = (dateString?: string) => {
   if (!dateString) {
@@ -68,7 +63,7 @@ export function AppearedInTimeline({ events, seasons, locations }: AppearedInTim
                 <CanonStatusBadge status={event.canon.status} />
               </div>
 
-              <Link href={eventHref(event)} className="mt-3 block group">
+              <Link href={getLoreEventHref(event)} className="mt-3 block group">
                 <h3 className="font-display text-2xl lowercase tracking-widest text-neutral-50 transition-colors group-hover:text-soul-accent">
                   {event.title}
                 </h3>

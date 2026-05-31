@@ -162,6 +162,82 @@ export interface LoreEvent {
   keywords: string[];
 }
 
+export interface EffectiveTokenCharacterSummary {
+  id: string;
+  slug: string;
+  name: string;
+  aliases: string[];
+  summary: string;
+  tokenId?: number;
+  imageUrl?: string;
+  externalUrl?: string;
+  origin?: string;
+  characterClass?: string;
+  alignment?: string;
+  level?: number;
+  tags: string[];
+}
+
+export interface EffectiveTokenAppearanceSummary {
+  id: string;
+  slug: string;
+  kind: LoreEventKind;
+  title: string;
+  summary: string;
+  seasonId?: string;
+  locationIds: string[];
+  characterIds: string[];
+  occurredAt?: string;
+  publishedAt?: string;
+  timelineOrder: number;
+  canon: Canonization;
+  sourceIds: string[];
+  sourceCount: number;
+  tags: string[];
+}
+
+export interface EffectiveTokenLocationSummary {
+  id: string;
+  slug: string;
+  name: string;
+  summary: string;
+  imageId?: string;
+  tags: string[];
+}
+
+export interface EffectiveTokenSeasonSummary {
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  order: number;
+}
+
+export interface EffectiveTokenSourceSummary {
+  id: string;
+  kind: SourceKind;
+  title: string;
+  url?: string;
+  archivedUrl?: string;
+  author?: string;
+  platform?: string;
+  publishedAt?: string;
+  capturedAt?: string;
+  attribution: string;
+  preservationNote?: string;
+}
+
+export interface EffectiveTokenCharacterLore {
+  character: EffectiveTokenCharacterSummary;
+  matchedCharacterIds: string[];
+  appearances: EffectiveTokenAppearanceSummary[];
+  firstAppearance?: EffectiveTokenAppearanceSummary;
+  locations: EffectiveTokenLocationSummary[];
+  seasons: EffectiveTokenSeasonSummary[];
+  sources: EffectiveTokenSourceSummary[];
+  sourceCount: number;
+}
+
 export interface LoreArchiveFilters {
   season?: string;
   location?: string;

@@ -7,6 +7,7 @@ import { CharacterActions } from '@/components/characters/detail/CharacterAction
 import { CharacterArtworkCard } from '@/components/characters/detail/CharacterArtworkCard'
 import { CharacterEquipmentSection } from '@/components/characters/detail/CharacterEquipmentSection'
 import { CharacterIdentityStatsPanel } from '@/components/characters/detail/CharacterIdentityStatsPanel'
+import { CharacterLoreAppearancesSection } from '@/components/characters/detail/CharacterLoreAppearancesSection'
 import { CharacterStorySection } from '@/components/characters/detail/CharacterStorySection'
 import { CharacterWalletTab } from '@/components/characters/detail/CharacterWalletTab'
 import { CoreStatsEditor } from '@/components/characters/CoreStatsEditor'
@@ -18,6 +19,7 @@ import { extractNFTTraits } from '@/lib/utils/nft-traits'
 import type { UseCharacterEditorReturn } from '@/hooks/useCharacterEditor'
 import type { CharacterImageDisclosure } from '@/lib/utils/image'
 import type { PublicChatReadiness } from '@/lib/eliza/chatReadiness'
+import type { EffectiveTokenCharacterLore } from '@/lib/lore/types'
 import type { Character } from '@/types/character'
 
 export type CharacterSheetTab = 'sheet' | 'ai-persona' | 'on-chain'
@@ -43,6 +45,9 @@ interface CharacterSheetLayoutProps {
   imageUrl: string
   imageDisclosure: CharacterImageDisclosure
   showLoreNav: boolean
+  canSubmitCommunityStory: boolean
+  lore?: EffectiveTokenCharacterLore | null
+  loreError?: string
   onImageError: () => void
   onAddCommunityStory: () => void
   onEnterEditMode: () => void
@@ -74,6 +79,9 @@ export function CharacterSheetLayout({
   imageUrl,
   imageDisclosure,
   showLoreNav,
+  canSubmitCommunityStory,
+  lore,
+  loreError,
   onImageError,
   onAddCommunityStory,
   onEnterEditMode,
@@ -89,6 +97,7 @@ export function CharacterSheetLayout({
   const [isPersonaAssistantDockVisible, setIsPersonaAssistantDockVisible] = useState(false)
   const shouldCompactLeftRail = activeTab === 'ai-persona' && isPersonaAssistantDockVisible
   const chatCharacterId = chatReadiness.status === 'ready' ? chatReadiness.characterId : undefined
+  const shouldShowLoreAppearances = activeTab === 'sheet' && showLoreNav && !isEditMode
 
   useEffect(() => {
     const handlePersonaAssistantDockVisibility = (event: Event) => {
@@ -332,9 +341,20 @@ export function CharacterSheetLayout({
                     isEditMode={isEditMode}
                     isOwner={isOwner}
                     showLoreNav={showLoreNav}
+                    canSubmitCommunityStory={canSubmitCommunityStory}
                     onChange={editor.setStory}
                     onAddCommunityStory={onAddCommunityStory}
                   />
+                  {shouldShowLoreAppearances && lore && (
+                    <CharacterLoreAppearancesSection lore={lore} />
+                  )}
+                  {shouldShowLoreAppearances && !lore && loreError && (
+                    <section aria-label="Lore archive status" className="border-t border-midnight-light/40 pt-6">
+                      <div className="border border-amber-800/45 bg-amber-950/15 p-4 text-sm font-eskapade leading-relaxed text-amber-100/80">
+                        {loreError}
+                      </div>
+                    </section>
+                  )}
                   <CharacterEquipmentSection character={character} isEditMode={isEditMode} />
                   {isOwner && <div className="lg:hidden">{ownerActions}</div>}
                 </div>

@@ -6,6 +6,7 @@ import { CharacterPortrait } from './CharacterPortrait';
 import { EntityChips } from './EntityChips';
 import { MediaGallery } from './MediaGallery';
 import { SourceList } from './SourceList';
+import { getLoreEventHref, getLoreCharacterHref } from '@/lib/lore/navigation';
 import type {
   LoreCharacterConnection,
   LoreCharacter,
@@ -27,12 +28,6 @@ interface CharacterProfileProps {
   allLocations: LoreLocation[];
   sources: SourceRecord[];
 }
-
-const eventHref = (event: LoreEvent) => {
-  return event.kind === 'official'
-    ? `/lore/events/${event.slug}`
-    : `/lore/community/${event.slug}`;
-};
 
 export function CharacterProfile({
   character,
@@ -129,7 +124,7 @@ export function CharacterProfile({
                   <p className="text-sm font-serif uppercase tracking-[0.22em] text-neutral-300">
                     First appearance
                   </p>
-                  <Link href={eventHref(firstAppearance)} className="mt-2 block font-display text-2xl lowercase tracking-widest text-neutral-50 transition-colors hover:text-soul-accent">
+                  <Link href={getLoreEventHref(firstAppearance)} className="mt-2 block font-display text-2xl lowercase tracking-widest text-neutral-50 transition-colors hover:text-soul-accent">
                     {firstAppearance.title}
                   </Link>
                   <p className="mt-2 text-sm font-eskapade leading-relaxed text-neutral-300">
@@ -170,7 +165,7 @@ export function CharacterProfile({
                 <div key={connection.character.id} className="space-y-2">
                   <CharacterPortrait
                     character={connection.character}
-                    href={`/lore/characters/${connection.character.slug}`}
+                    href={getLoreCharacterHref(connection.character)}
                     size="sm"
                   />
                   <p className="pl-1 font-serif text-sm text-neutral-200">

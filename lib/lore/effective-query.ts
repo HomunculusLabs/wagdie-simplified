@@ -16,6 +16,12 @@ import type {
   LoreCanonizationOverrideSet,
 } from './canonization-overrides';
 import type {
+  EffectiveTokenAppearanceSummary,
+  EffectiveTokenCharacterLore,
+  EffectiveTokenCharacterSummary,
+  EffectiveTokenLocationSummary,
+  EffectiveTokenSeasonSummary,
+  EffectiveTokenSourceSummary,
   LoreArchiveFilters,
   LoreCharacter,
   LoreCharacterConnection,
@@ -366,6 +372,169 @@ const resolveSourcesForEvent = (
     const source = context.sourcesById.get(sourceId);
     return source ? [source] : [];
   });
+};
+
+const summarizeEffectiveTokenCharacter = (
+  character: LoreCharacter,
+): EffectiveTokenCharacterSummary => ({
+  id: character.id,
+  slug: character.slug,
+  name: character.name,
+  aliases: [...character.aliases],
+  summary: character.summary,
+  tokenId: character.tokenId,
+  imageUrl: character.imageUrl,
+  externalUrl: character.externalUrl,
+  origin: character.origin,
+  characterClass: character.characterClass,
+  alignment: character.alignment,
+  level: character.level,
+  tags: [...character.tags],
+});
+
+const summarizeEffectiveTokenAppearance = (
+  event: LoreEvent,
+  context: EffectiveLoreContext,
+): EffectiveTokenAppearanceSummary => ({
+  id: event.id,
+  slug: event.slug,
+  kind: event.kind,
+  title: event.title,
+  summary: event.summary,
+  seasonId: event.seasonId,
+  locationIds: [...event.locationIds],
+  characterIds: [...event.characterIds],
+  occurredAt: event.occurredAt,
+  publishedAt: event.publishedAt,
+  timelineOrder: event.timelineOrder,
+  canon: {
+    ...event.canon,
+    path: event.canon.path.map((step) => ({
+      ...step,
+      sourceIds: step.sourceIds ? [...step.sourceIds] : undefined,
+    })),
+  },
+  sourceIds: [...event.sourceIds],
+  sourceCount: resolveSourcesForEvent(event, context).length,
+  tags: [...event.tags],
+});
+
+const summarizeEffectiveTokenLocation = (
+  location: LoreLocation,
+): EffectiveTokenLocationSummary => ({
+  id: location.id,
+  slug: location.slug,
+  name: location.name,
+  summary: location.summary,
+  imageId: location.imageId,
+  tags: [...location.tags],
+});
+
+const summarizeEffectiveTokenSeason = (
+  season: LoreSeason,
+): EffectiveTokenSeasonSummary => ({
+  id: season.id,
+  slug: season.slug,
+  title: season.title,
+  summary: season.summary,
+  order: season.order,
+});
+
+const summarizeEffectiveTokenSource = (
+  source: SourceRecord,
+): EffectiveTokenSourceSummary => ({
+  id: source.id,
+  kind: source.kind,
+  title: source.title,
+  url: source.url,
+  archivedUrl: source.archivedUrl,
+  author: source.author,
+  platform: source.platform,
+  publishedAt: source.publishedAt,
+  capturedAt: source.capturedAt,
+  attribution: source.attribution,
+  preservationNote: source.preservationNote,
+});
+
+const compareEffectiveTokenCharacterMatches = (
+  tokenId: number,
+  syntheticCharacterId: string,
+) => (a: LoreCharacter, b: LoreCharacter): number => {
+  const rank = (character: LoreCharacter): number => {
+    if (character.tokenId === tokenId && character.id !== syntheticCharacterId) return 0;
+    if (character.id === syntheticCharacterId) return 1;
+    return 2;
+  };
+
+  return rank(a) - rank(b) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+};
+
+export const getEffectiveTokenCharacterLore = async (
+  tokenId: number,
+): Promise<EffectiveTokenCharacterLore | undefined> => {
+  if (!Number.isSafeInteger(tokenId) || tokenId <= 0) return undefined;
+
+  const context = await buildEffectiveLoreContext();
+  const syntheticCharacterId = `character-${tokenId}`;
+  const matchedCharacters = context.baseDataset.characters
+    .filter((character) => character.tokenId === tokenId || character.id === syntheticCharacterId)
+    .sort(compareEffectiveTokenCharacterMatches(tokenId, syntheticCharacterId));
+
+  if (matchedCharacters.length === 0) return undefined;
+
+  const primaryCharacter = matchedCharacters[0];
+  const matchedCharacterIds = matchedCharacters.map((character) => character.id);
+  const matchedCharacterIdSet = new Set(matchedCharacterIds);
+  const appearances = context.events
+    .filter((event) => event.characterIds.some((characterId) => matchedCharacterIdSet.has(characterId)))
+    .sort(sortLoreEvents);
+  const appearanceSummaries = appearances.map((event) => summarizeEffectiveTokenAppearance(event, context));
+  const firstAppearance = primaryCharacter.firstAppearanceEventId
+    ? appearanceSummaries.find((appearance) => appearance.id === primaryCharacter.firstAppearanceEventId)
+    : undefined;
+
+  const locationsByFirstSeen = new Map<string, LoreLocation>();
+  const sourceByFirstSeen = new Map<string, SourceRecord>();
+  const seasonIds = new Set<string>();
+
+  appearances.forEach((event) => {
+    if (event.seasonId) {
+      seasonIds.add(event.seasonId);
+    }
+
+    event.locationIds.forEach((locationId) => {
+      const location = context.baseDataset.indexes.locationsById.get(locationId);
+      if (location && !locationsByFirstSeen.has(location.id)) {
+        locationsByFirstSeen.set(location.id, location);
+      }
+    });
+
+    resolveSourcesForEvent(event, context).forEach((source) => {
+      if (!sourceByFirstSeen.has(source.id)) {
+        sourceByFirstSeen.set(source.id, source);
+      }
+    });
+  });
+
+  const seasons = [...seasonIds]
+    .flatMap((seasonId) => {
+      const season = context.baseDataset.indexes.seasonsById.get(seasonId);
+      return season ? [season] : [];
+    })
+    .sort(sortLoreSeasons)
+    .map(summarizeEffectiveTokenSeason);
+  const sources = [...sourceByFirstSeen.values()].map(summarizeEffectiveTokenSource);
+
+  return {
+    character: summarizeEffectiveTokenCharacter(primaryCharacter),
+    matchedCharacterIds,
+    appearances: appearanceSummaries,
+    firstAppearance: firstAppearance ?? appearanceSummaries[0],
+    locations: [...locationsByFirstSeen.values()].map(summarizeEffectiveTokenLocation),
+    seasons,
+    sources,
+    sourceCount: sources.length,
+  };
 };
 
 export const getEffectiveSourcesForEvent = async (event: LoreEvent): Promise<SourceRecord[]> => {

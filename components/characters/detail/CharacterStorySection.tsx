@@ -8,6 +8,7 @@ interface CharacterStorySectionProps {
   isEditMode: boolean
   isOwner: boolean
   showLoreNav: boolean
+  canSubmitCommunityStory: boolean
   onChange: (story: string) => void
   onAddCommunityStory: () => void
 }
@@ -17,6 +18,7 @@ export function CharacterStorySection({
   isEditMode,
   isOwner,
   showLoreNav,
+  canSubmitCommunityStory,
   onChange,
   onAddCommunityStory,
 }: CharacterStorySectionProps) {
@@ -31,7 +33,7 @@ export function CharacterStorySection({
             remembered words, origin, and unfinished vows.
           </p>
         </div>
-        {showLoreNav && !isEditMode && (
+        {showLoreNav && canSubmitCommunityStory && !isEditMode && (
           <Button
             type="button"
             variant="secondary"
