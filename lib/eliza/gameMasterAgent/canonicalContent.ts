@@ -1,3 +1,4 @@
+import { DARK_FANTASY_CAMPAIGN_GUIDE_DOCUMENT } from '@/lib/content/campaign/gmKnowledge'
 import { toAgentCharacterFromAICharacter } from '@/lib/eliza/agent-character-mapper'
 import { validatePutCharacterSheetUpdate } from '@/lib/eliza/character-sheet-policy'
 import type { StoredKnowledgeDocument } from '@/lib/eliza/knowledge'
@@ -247,7 +248,7 @@ export function validateGameMasterCanonicalContentBundle(
 export const GAME_MASTER_CANONICAL_CONTENT = validateGameMasterCanonicalContentBundle({
   schemaVersion: 1,
   bundleId: 'wagdie-location-room-game-master',
-  contentVersion: '2026-05-30.1',
+  contentVersion: '2026-05-31.1',
   persona: canonicalPersona,
   knowledge: [
     {
@@ -257,6 +258,7 @@ export const GAME_MASTER_CANONICAL_CONTENT = validateGameMasterCanonicalContentB
       mimeType: 'text/markdown',
       content: operatingPrinciplesKnowledge,
     },
+    DARK_FANTASY_CAMPAIGN_GUIDE_DOCUMENT,
   ],
 })
 

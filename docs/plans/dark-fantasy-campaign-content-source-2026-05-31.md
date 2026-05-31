@@ -27,28 +27,21 @@ Build a repo-authored, original WAGDIE dark-fantasy campaign content source that
 1. **Global GM guidance** through the repo-canonical Official GM knowledge workflow.
 2. **Concrete per-location story anchors** through `locations.metadata.adventureCatalog`.
 
-This is a content-source and export pipeline, not a runtime generation refactor. Runtime ticks should continue using live Official ElizaOS GM state plus normalized location metadata. The first production target should be Crow’s Den/location `11`, because existing plans and runtime seams already exercise `30_monsters`, `80_encounters`, catalog refresh, scene-check escalation, and combat-ready promotion there.
+This is a content-source and export pipeline, not a runtime generation refactor. Runtime ticks should continue using live Official ElizaOS GM state plus normalized location metadata. The first production target should be Crow’s Den/location `11`, while the package should also include manifest/scaffold slots for future map locations so the pattern can expand without redesign.
 
 ### Design decisions
 - Add a source-only campaign package under `lib/content/campaign/`.
 - Author richer source objects than runtime accepts, then compile them down to the existing `adventureCatalog` shape.
 - Use global canonical GM knowledge for reusable guidance: how to read JD sections, monster/NPC/faction/hazard behavior, scenario patterns, public-safety rules, and IP constraints.
 - Use per-location catalog content for concrete runtime anchors: location-specific monsters, NPCs, places, factions, encounters, clocks, decisions, and scenario prompts.
-- Keep mechanics downstream. Campaign source may describe monster identity, signs, tactics, lairs, fears, and encounter pressure, but should not store raw HP/DC/reward/finality text in location catalog entries.
-- Use Crow’s Den as the first flagship location and validation target; generalize only after the source model, compiler, and validation prove useful there.
+- Keep public catalog content narrative-first, but allow source-only private gameplay templates for encounter proposals. The compiler must strip those templates from `adventureCatalog`; tests should prove they stay behind the gameplay boundary.
+- Make content WAGDIE-native rather than generic gothic: monsters, NPCs, factions, and locations should feel specific to WAGDIE’s tone and map while still using reusable source structure.
+- Use Crow’s Den as the first flagship location and validation target, with empty or minimal scaffold registrations for future locations.
 
 ### New campaign source package
-Add:
+Add a source-only campaign package under `lib/content/campaign/`. A reasonable split is `types`, `validation`, `compiler`, `darkFantasyCampaign`, `gmKnowledge`, optional `gameplayTemplates`, and `locations/*`, but implementation can adjust module boundaries if the public contracts below remain clear.
 
-```text
-lib/content/campaign/
-  types.ts
-  validation.ts
-  compiler.ts
-  darkFantasyCampaign.ts
-  gmKnowledge.ts
-  locations/crowsDen.ts
-```
+The package should include Crow’s Den production content plus future-location scaffold **capability**. Do not register concrete future location IDs/slugs unless they are already approved; instead, make the manifest/registry shape ready to add future locations without redesign.
 
 The source model should represent a versioned `CampaignPack` with one or more `CampaignLocationSource` entries. Source entry kinds should include `setting`, `plot`, `scenario_prompt`, `npc`, `monster`, `place`, `item`, `service`, `faction`, `hazard`, `encounter`, and `rules_guidance`.
 
@@ -69,40 +62,54 @@ Each source kind compiles deterministically into one JD runtime section:
 
 Monster source entries should carry authoring-only detail such as sensory signs, behavior, lair/haunt, hunger/desire, tactics, fears/limits, encounter roles, and related IDs. Compiler output should collapse that into public-safe `summary`, `tags`, and `relatedEntryIds`.
 
-Encounter and hazard entries should describe visible trigger, immediate pressure, player-facing choice, consequence direction, related monster/faction/place, and non-mechanical escalation hints. They should not describe fixed dice DCs, guaranteed outcomes, loot drops, or permanent finality.
+Encounter and hazard entries should describe visible trigger, immediate pressure, player-facing choice, consequence direction, related monster/faction/place, and non-mechanical escalation hints. Public compiled catalog entries should not describe fixed dice DCs, guaranteed outcomes, loot drops, or permanent finality.
+
+Private gameplay templates are V1 authoring/test data only. They should be structured separately from public `summary` text and target the existing `GameplayEncounterProposal` vocabulary (`lib/eliza/locationRooms/gameplay/rules.ts:59-75`) for validation, but no runtime gameplay code should import or consume them in V1. They exist to keep future mechanics-aware work aligned while proving the compiler strips private fields from `locations.metadata.adventureCatalog`.
 
 Each production-ready flagship location should include `arcSummary`, `currentStakes`, an `openingDecision` with 2–4 options, at least two clocks where appropriate, and initial discoveries.
 
 ### Campaign compiler and validation
-Add a compiler that converts `CampaignLocationSource` into raw `adventureCatalog` JSON accepted by `normalizeLocationAdventureCatalog()`. It should also emit an informational metadata marker outside the catalog:
+Add a compiler that converts `CampaignLocationSource` into a metadata patch object:
 
 ```ts
-campaignContentSource: {
-  packId: string
-  version: string
-  locationSlug: string
+{
+  adventureCatalog: <raw catalog accepted by normalizeLocationAdventureCatalog()>,
+  campaignContentSource: {
+    packId: string
+    version: string
+    locationSlug: string
+  }
 }
 ```
 
-Runtime story logic should continue reading only `adventureCatalog`.
+The render/check script and Supabase migration should consume this patch shape directly. Runtime story logic should continue reading only `metadata.adventureCatalog`; `metadata.campaignContentSource` is informational provenance for operators/tests.
 
 Validation should run before content reaches migrations or canonical GM knowledge. It must prove:
 - compiled catalogs survive `normalizeLocationAdventureCatalog()` without dropping required entries;
 - title, summary, tag, section, and count limits are respected;
 - every `relatedEntryIds` target exists in the same location source;
 - reveal-gated entries do not count toward visible encounter/monster minimums;
-- unsafe public text, mechanics terms, and known D&D/Wizards protected identity terms are rejected;
+- unsafe public text, mechanics terms, and known D&D/Wizards protected identity terms are rejected from public catalog output;
+- private gameplay templates validate against a local source shape and do not compile into `adventureCatalog`;
 - Crow’s Den meets compelling-location density targets from prior planning.
 
 The IP/originality lint is a guardrail, not a substitute for narrative/product review.
 
 ### Canonical GM knowledge export
-Add a deterministic campaign guide knowledge document, e.g. `canonical/dark-fantasy-campaign-source-guide.md`, with a stable ID such as `canonical:dark-fantasy-campaign-source-guide`. It should explain how the GM should use the campaign source and JD sections without copying protected D&D/Wizards material.
+Add a deterministic campaign guide knowledge document generated/exported from `gmKnowledge.ts` and imported by `lib/eliza/gameMasterAgent/canonicalContent.ts`; do not manually duplicate the same markdown in both places. Use stable identity:
 
-`lib/eliza/gameMasterAgent/canonicalContent.ts` should append this document to `GAME_MASTER_CANONICAL_CONTENT.knowledge` and bump `contentVersion` to the next approved value. Runtime impact still requires admin review/apply in `/admin/game-master-agent`.
+```text
+id: canonical:dark-fantasy-campaign-source-guide
+path: canonical/dark-fantasy-campaign-source-guide.md
+title: Dark Fantasy Campaign Source Guide
+```
+
+The document should explain how the GM should use the campaign source and JD sections without copying protected D&D/Wizards material, and it should emphasize WAGDIE-native monsters, NPCs, factions, omens, and locations rather than generic gothic placeholders.
+
+`lib/eliza/gameMasterAgent/canonicalContent.ts` should append this document to `GAME_MASTER_CANONICAL_CONTENT.knowledge` and bump `contentVersion` using the existing date-based convention, e.g. `YYYY-MM-DD.N` for the next approved content revision. Runtime impact still requires admin review/apply in `/admin/game-master-agent`.
 
 ### Crow’s Den pilot and migration path
-Author `lib/content/campaign/locations/crowsDen.ts` as the first production content module for `locations.id = '11'`. It should include original tavern/rookery/threshold setting anchors, NPCs with motives and secrets, monsters with signs/lairs/tactics/limits, factions with conflicting agendas, hazards, 8–12 reusable `80_encounters`, 3–6 reusable `30_monsters`, defaults, clocks, and `90_rules_guidance`.
+Author `lib/content/campaign/locations/crowsDen.ts` as the first production content module for `locations.id = '11'`. It should include WAGDIE-native tavern/rookery/threshold setting anchors, NPCs with motives and secrets, monsters with signs/lairs/tactics/limits, factions with conflicting agendas, hazards, 8–12 reusable `80_encounters`, 3–6 reusable `30_monsters`, defaults, clocks, and `90_rules_guidance`. Register future map-location scaffold slots separately, but do not require production-ready content for them in V1.
 
 Add a render/check script under `scripts/campaign/render-location-catalog.ts` to validate and print compiled catalog JSON for a location. Use that output for a Supabase data migration that targets `locations.id = '11'`, preserves existing metadata, and replaces only `metadata.adventureCatalog` plus `metadata.campaignContentSource`.
 
@@ -112,14 +119,14 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 **Goal:** Create a source-only TypeScript model for original WAGDIE dark-fantasy campaign content that can represent monsters, NPCs, factions, places, items, hazards, encounters, decisions, clocks, scenario prompts, and GM guidance.
 
 **Done when:**
-- `lib/content/campaign/types.ts` defines campaign pack, location source, entry variants, defaults/decision/clock source types, and IP policy metadata.
+- Campaign source types define campaign pack, location source, entry variants, defaults/decision/clock source types, future-location registry/scaffold capability, private gameplay template types, and IP policy metadata.
 - Each source entry variant has a deterministic mapping to one JD section.
 - Type docs explicitly state that source files are not read by runtime ticks.
-- Source types include enough fields for rich authoring but compile down to current catalog fields.
+- Source types include enough fields for rich WAGDIE-native authoring but compile down to current catalog fields.
+- Private gameplay template fields are source-only authoring/test data, are not imported by runtime gameplay code in V1, and are explicitly excluded from public `adventureCatalog` output.
 
 **Key files:**
-- New `lib/content/campaign/types.ts`
-- New `lib/content/campaign/darkFantasyCampaign.ts`
+- New `lib/content/campaign/*` source model modules, likely including `types.ts`, `darkFantasyCampaign.ts`, optional `gameplayTemplates.ts`, and a location registry module.
 
 **Dependencies:** None.
 
@@ -129,16 +136,18 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 **Goal:** Prevent invalid, unsafe, mechanics-heavy, or non-original content from entering canonical knowledge or location metadata.
 
 **Done when:**
-- `lib/content/campaign/validation.ts` validates section density, ID uniqueness, related-entry references, visible encounter/monster counts, public unsafe terms, mechanics terms, and known D&D/Wizards protected identity or trade-dress terms.
+- Campaign validation checks section density, ID uniqueness, related-entry references, visible encounter/monster counts, public unsafe terms, public mechanics terms, private gameplay template shape, and obvious D&D/Wizards protected identity or trade-dress terms.
 - Validation runs compiled catalogs through `normalizeLocationAdventureCatalog()`.
 - Tests prove invalid entries are rejected before normalization silently drops them.
+- Tests prove private gameplay template fields are allowed only in source data and never in compiled public catalog output.
 - Validation output identifies exact location/entry/field failures.
+- IP lint remains an obvious-term guardrail; human originality review is still required.
 
 **Key files:**
-- New `lib/content/campaign/validation.ts`
+- New campaign validation module(s) under `lib/content/campaign/`
 - `lib/domain/location/metadata.ts`
 - `lib/domain/location/metadata-types.ts`
-- New `tests/lib/content/campaign/validation.test.ts`
+- New focused validation tests under `tests/lib/content/campaign/`
 
 **Dependencies:** Item 1.
 
@@ -148,17 +157,17 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 **Goal:** Compile rich source entries into the existing runtime `locations.metadata.adventureCatalog` shape without changing runtime schema.
 
 **Done when:**
-- `lib/content/campaign/compiler.ts` converts source locations into `sections`, `defaults`, and a top-level `campaignContentSource` metadata marker.
+- Campaign compiler converts a source location into a metadata patch containing `adventureCatalog` and `campaignContentSource`.
 - Compiler output respects all current normalization limits.
 - Compiler preserves enough tags and related IDs for `retrieveAdventureCatalogEntries()` and `encounterEscalation.ts` ranking.
-- Compiler never emits source-only author notes or mechanics.
-- Tests confirm compiled output round-trips through `normalizeLocationAdventureCatalog()` with expected counts.
+- Compiler never emits source-only author notes, private gameplay templates, or mechanics into `adventureCatalog`.
+- Tests confirm compiled output round-trips through `normalizeLocationAdventureCatalog()` with expected counts and without private gameplay template leakage.
 
 **Key files:**
-- New `lib/content/campaign/compiler.ts`
+- New campaign compiler module(s) under `lib/content/campaign/`
 - `lib/domain/location/metadata.ts`
 - `lib/domain/location/metadata-types.ts`
-- New `tests/lib/content/campaign/compiler.test.ts`
+- New focused compiler tests under `tests/lib/content/campaign/`
 
 **Dependencies:** Items 1–2.
 
@@ -169,7 +178,7 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 
 **Done when:**
 - `lib/content/campaign/gmKnowledge.ts` exports markdown content for a canonical GM knowledge document.
-- The document covers WAGDIE dark-fantasy tone, JD section usage, monster/NPC/faction/hazard/clock/scenario guidance, public-safe non-mechanical output rules, and explicit no-D&D/Wizards-copying guidance.
+- The document covers WAGDIE-native dark-fantasy tone, JD section usage, monster/NPC/faction/hazard/clock/scenario guidance, public-safe non-mechanical output rules, private gameplay-template boundaries, and explicit no-D&D/Wizards-copying guidance.
 - `lib/eliza/gameMasterAgent/canonicalContent.ts` includes the new document in `GAME_MASTER_CANONICAL_CONTENT.knowledge`.
 - `contentVersion` is bumped.
 - Canonical content validation passes.
@@ -182,7 +191,7 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 - `lib/eliza/gameMasterAgent/service.ts`
 - New or updated `tests/lib/eliza/game-master-agent-canonical-content.test.ts`
 
-**Dependencies:** Items 1–3.
+**Dependencies:** Items 1–2 for authoring the global guide; Item 3 before asserting compiler-linked validation or generated metadata references.
 
 **Size:** Medium.
 
@@ -190,18 +199,22 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 **Goal:** Create the first production-ready location module for Crow’s Den/location `11`, using original WAGDIE content and the compelling-location density standard.
 
 **Done when:**
-- `lib/content/campaign/locations/crowsDen.ts` defines full source coverage for setting entries, plot/scenario prompts, NPCs, monsters, places, items, optional services/rumors/favors, factions, hazards/encounters, rules guidance, and defaults with opening decision and clocks.
+- Crow’s Den source defines full WAGDIE-native coverage for setting entries, plot/scenario prompts, NPCs, monsters, places, items, optional services/rumors/favors, factions, hazards/encounters, rules guidance, private gameplay templates where useful, and defaults with opening decision and clocks.
+- The campaign registry supports adding future locations, but concrete future slots are only registered when approved IDs/slugs are known.
 - Visible `80_encounters` count is at least 8.
 - Visible `30_monsters` count is at least 3.
 - No entry uses protected D&D/Wizards identity, lore, prose, logos, or trade dress.
 - No entry is dropped by catalog normalization.
-- Narrative/product owner approval is recorded before production migration lands.
+- Private gameplay templates do not appear in compiled `adventureCatalog` JSON.
+- Narrative/product owner approval is recorded in a lightweight approval artifact or doc note before production migration lands.
 
 **Key files:**
-- New `lib/content/campaign/locations/crowsDen.ts`
+- New Crow’s Den source module under `lib/content/campaign/locations/`
+- Campaign location registry module under `lib/content/campaign/`
+- Optional gameplay-template source module under `lib/content/campaign/`
 - `docs/plans/compelling-narratives-roadmap-2026-05-30.md`
 - `docs/plans/crows-den-mob-spawning-2026-05-27.md`
-- New `tests/lib/content/campaign/crows-den.test.ts`
+- New focused Crow’s Den tests under `tests/lib/content/campaign/`
 
 **Dependencies:** Items 1–3. Product/narrative approval is required before production data merge.
 
@@ -211,7 +224,7 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 **Goal:** Make generated location catalog JSON reproducible and prevent migration/source drift.
 
 **Done when:**
-- `scripts/campaign/render-location-catalog.ts` can render compiled catalog JSON for a location, validate the selected location, and optionally check a committed migration JSON payload against source output.
+- A render/check script can render the compiler’s metadata patch for a location, validate the selected location, and optionally check a committed migration JSON payload against source output.
 - Script supports Crow’s Den/location `11`.
 - CI or a focused test command can fail when source and generated migration diverge.
 - Script does not run during runtime ticks.
@@ -229,9 +242,9 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 **Goal:** Write the compiled Crow’s Den catalog into `locations.metadata` through the approved Supabase migration/seed path.
 
 **Done when:**
-- A Supabase data migration updates `locations.id = '11'`.
+- A Supabase data migration updates `locations.id = '11'` after the approval artifact/doc note exists.
 - The migration preserves existing metadata fields.
-- The migration writes `metadata.adventureCatalog` and `metadata.campaignContentSource`.
+- The migration writes the compiler’s `metadata.adventureCatalog` and `metadata.campaignContentSource` patch.
 - `GET /api/locations/11` exposes normalized catalog metadata.
 - Admin diagnostics show nonzero visible `80_encounters` and `30_monsters` counts.
 - Existing runtime catalog refresh in `tickProcessor.ts` copies the catalog into narrative state without further code changes.
@@ -250,7 +263,7 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 **Goal:** Prove the campaign source reaches the existing runtime seams without runtime direct-file reads.
 
 **Done when:**
-- Tests confirm the campaign source validates, Crow’s Den compiled catalog meets density requirements, compiled catalog survives `normalizeLocationAdventureCatalog()`, `retrieveAdventureCatalogEntries()` can retrieve anchors, `buildCatalogPreferredEncounterSeed()` prefers Crow’s Den `80_encounters` and includes related `30_monsters` hints, and reveal-gated entries are not counted as visible escalation candidates.
+- Tests confirm the campaign source validates, Crow’s Den compiled catalog meets density requirements, compiled catalog survives `normalizeLocationAdventureCatalog()`, `retrieveAdventureCatalogEntries()` can retrieve anchors, `buildCatalogPreferredEncounterSeed()` prefers Crow’s Den `80_encounters` and includes related `30_monsters` hints, reveal-gated entries are not counted as visible escalation candidates, and private gameplay templates are available to source tests while absent from public catalog output.
 - Tests do not require Official ElizaOS network access.
 - Existing location-room runtime tests continue passing.
 
@@ -272,7 +285,8 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 - Documentation explains: edit campaign source, validate/render catalog, generate/update migration, update canonical GM knowledge if global guidance changes, deploy, open `/admin/game-master-agent`, review/apply canonical GM knowledge, verify Crow’s Den catalog counts and runtime diagnostics, and run smoke/eval commands.
 - Documentation states runtime does not read campaign source files directly.
 - Documentation states location catalog is public-safe and non-mechanical.
-- Documentation records the unresolved approval-owner question.
+- Documentation states private gameplay templates are V1 source/test data and are not runtime-consumed.
+- Documentation records the approval artifact/doc-note requirement and the unresolved approval-owner question.
 
 **Key files:**
 - `docs/plans/dark-fantasy-campaign-content-source-2026-05-31.md`
@@ -283,17 +297,24 @@ Add a render/check script under `scripts/campaign/render-location-catalog.ts` to
 
 **Size:** Small.
 
+## Implementation note — 2026-05-31 rp-build pass
+
+- Added source-only campaign package modules under `lib/content/campaign/` for types, validation, compiler, Crow's Den source, registry, and generated GM guide knowledge.
+- Added reusable render/check tooling via `bun run campaign:render-location -- --location 11`.
+- Integrated the generated campaign guide into repo-canonical GM knowledge as `canonical:dark-fantasy-campaign-source-guide` and bumped the canonical content version.
+- Added focused tests proving Crow's Den density, normalization, private gameplay-template stripping, canonical GM knowledge integration, retrieval/escalation seams, and the invariant that location-room runtime does not import campaign source files.
+- Deferred Item 7 production Supabase migration for `locations.id='11'` because final narrative/product approval ownership is still unresolved. A future migration must include or reference a lightweight approval artifact/doc note with approver and date before merge.
+
 ## Risks and Migration
-- **IP/originality risk:** Automated banned-term lint reduces risk but cannot prove originality. Final production copy needs narrative/product owner review before migration merge.
+- **IP/originality risk:** Automated banned-term lint catches only obvious terms. Final production copy should be WAGDIE-native and needs narrative/product owner review before migration merge.
 - **Catalog safety-filter risk:** `normalizeLocationAdventureCatalog()` may drop unsafe entries. Validation/tests must assert normalized counts match expected output counts.
 - **Runtime apply risk:** Canonical GM knowledge changes do not affect runtime until applied through `/admin/game-master-agent`.
 - **Data migration risk:** Crow’s Den migration changes production location metadata. It should preserve existing metadata keys and only replace `adventureCatalog` plus `campaignContentSource`.
 - **Rollback:** GM knowledge rollback uses existing admin knowledge delete/reapply flow or a later canonical content version. Location metadata rollback requires a follow-up Supabase migration restoring the previous `adventureCatalog` payload or removing the seeded catalog.
 
 ## Open Questions
-- Should the first implementation be strictly Crow’s Den/location `11`, or should it include empty source scaffolding for multiple future map locations?
-- Should campaign entries remain fully narrative-facing in V1, or should source-only monster entries include optional mechanics hints that the compiler strips from `adventureCatalog` but tests against gameplay proposal boundaries?
-- Who owns final narrative/product approval for production Crow’s Den content before the data migration lands?
+- Who owns final narrative/product approval for production Crow’s Den content before the data migration lands? Until that owner is named, the implementation should require a lightweight approval artifact/doc note before Item 7.
+- Which future map locations should receive concrete scaffold slots after Crow’s Den? Until approved IDs/slugs are known, implement only the registry/scaffold mechanism and do not invent location entries.
 
 ## References
 - `docs/plans/game-master-jd-content-update-2026-05-30.md`

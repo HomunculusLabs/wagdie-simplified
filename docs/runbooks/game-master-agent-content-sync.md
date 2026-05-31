@@ -23,6 +23,21 @@ Use this workflow for future JD/persona/knowledge revisions to the WAGDIE locati
    - Persona rollback: edit/save the live persona in `/admin/game-master-agent`, or deploy the prior canonical bundle and apply it.
    - Knowledge rollback: delete unwanted knowledge documents from the admin knowledge panel. Canonical apply preserves non-canonical admin docs and does not auto-delete repo-removed canonical docs in V1.
 
+## Campaign source workflow
+
+Use this workflow when changing the repo-authored dark-fantasy campaign source under `lib/content/campaign/`:
+
+1. Edit campaign source files and, when global guidance changes, `lib/content/campaign/gmKnowledge.ts`.
+2. Validate/render a location catalog locally:
+   `bun run campaign:render-location -- --location 11`.
+3. Run focused tests:
+   `bun run test tests/lib/content/campaign/campaign-source.test.ts tests/lib/eliza/location-room-encounter-escalation.test.ts tests/lib/eliza/game-master-agent-service.test.ts --runInBand`.
+4. If global GM guidance changed, deploy and apply canonical knowledge through `/admin/game-master-agent` using the workflow above.
+5. If location metadata should change, generate a migration payload from the render command and compare future committed payloads with `--check <payload.json>`.
+6. Do **not** merge a production Supabase migration for Crow's Den `locations.id='11'` until the narrative/product approval artifact names the approver and date. Approval ownership is currently unresolved.
+
+Campaign source authoring may include private gameplay templates for future mechanics-aware work. Those templates are V1 source/test data only; they must not compile into public `locations.metadata.adventureCatalog` and runtime gameplay code must not import them.
+
 ## Runtime note
 
-Location-room runtime generation uses the active Official ElizaOS live game-master agent state. Runtime ticks do **not** read repo canonical files directly; repo content only affects runtime after an admin applies persona and/or syncs knowledge into Official live state.
+Location-room runtime generation uses the active Official ElizaOS live game-master agent state plus normalized `locations.metadata.adventureCatalog`. Runtime ticks do **not** read repo canonical files or `lib/content/campaign/` source files directly; repo content only affects runtime after an admin applies persona/knowledge into Official live state and after an approved metadata migration/seed writes rendered catalog data.

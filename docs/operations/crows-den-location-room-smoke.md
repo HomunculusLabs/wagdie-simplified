@@ -9,7 +9,8 @@ Canonical Crow's Den location is `locations.id='11'`. Do not smoke against legac
 - Confirm at least two eligible participants are staked/synced at location `11`.
 - Confirm official ElizaOS and the game-master agent resolve successfully in admin diagnostics.
 - Confirm `GET /api/locations/11` returns `metadata.adventureCatalog.sections['80_encounters']` and `['30_monsters']` with non-empty visible entries.
-- Confirm diagnostics show a visible Crow's Den combat catalog: `adventureCatalog.hasVisibleCombatCatalog=true`, with non-zero visible `80_encounters` and/or `30_monsters` counts. If this reports `missing_location_adventure_catalog`, do not proceed with story/combat smoke until the catalog migration has been applied.
+- Confirm diagnostics show a visible Crow's Den combat catalog: `adventureCatalog.hasVisibleCombatCatalog=true`, with non-zero visible `80_encounters` and/or `30_monsters` counts. If this reports `missing_location_adventure_catalog`, do not proceed with story/combat smoke until the approved catalog migration has been applied.
+- Before any future Crow's Den catalog migration, render and validate the source payload with `bun run campaign:render-location -- --location 11`. Production seeding for `locations.id='11'` requires a narrative/product approval artifact naming approver and date; until ownership is known, treat the migration as deferred.
 
 ## Smoke Policy: Fresh Transcript Delta Only
 
@@ -33,7 +34,7 @@ Legacy stored fallback messages may remain readable in historical transcripts. T
 
 Treat these checks as the release validation loop for Crow's Den/location `11`. They report live quality and readiness without adding runtime behavior.
 
-- Catalog coverage: confirm `adventureCatalog.sectionCounts` meets the approved Crow's Den minimums and that visible `80_encounters` and `30_monsters` counts are nonzero. `60_shops_services` may be empty for Crow's Den if that remains the approved content decision.
+- Catalog coverage: confirm `adventureCatalog.sectionCounts` meets the approved Crow's Den minimums and that visible `80_encounters` and `30_monsters` counts are nonzero. Current source targets are at least 8 visible `80_encounters` and at least 3 visible `30_monsters`; `60_shops_services` may be sparse if that remains the approved content decision.
 - Persona completeness: review `personaQuality` in diagnostics for missing persisted personas, default neutral personas, missing examples/style/lore/topics, and per-token warnings. These are warnings for prioritization, not current hard blockers.
 - Scene framing: fresh public GM beats should frame a concrete choice, obstacle, cost, reveal, route, or imminent action; reject atmosphere-only beats that do not move play forward.
 - Action-forward turns: fresh public agent messages should declare concrete fictional action or movement, not agreement-only replies.

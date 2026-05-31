@@ -29,6 +29,7 @@
     "elizaos:routes:validate": "npx ts-node --project scripts/tsconfig.json scripts/elizaos-route-parity.ts",
     "narrative:harness:test": "jest tests/lib/eliza/location-room-narrative-harness.test.ts --runInBand",
     "narrative:harness:live": "npx ts-node --project scripts/tsconfig.json scripts/location-room-narrative-eval.ts",
+    "campaign:render-location": "npx ts-node --project scripts/tsconfig.json scripts/campaign/render-location-catalog.ts",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"
   },
