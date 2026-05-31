@@ -994,6 +994,20 @@ describe('game-master beat generator helpers', () => {
       { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 }, progressionContext: requiredNarrationContext }
     )).toThrow('too short')
 
+    expect(() => normalizeGameMasterBeatResponse(JSON.stringify({
+      publicNarration: 'Ash says "the bell is mine" as the bell rope pulls open a route to the cellar stair.',
+      speakerInstruction: 'Choose whether to follow the cellar stair.',
+      stateSummary: 'The cellar stair opens under the bell rope.',
+      currentObjective: 'Choose whether to follow the stair.',
+      openThreads: ['What waits below?'],
+      ttrpgPhase: 'exploration',
+      combatReadiness: 'none',
+      threatLevel: 1,
+    }), { participants, speaker: participants[0] }, {
+      gameMasterAgentId: 'gm-1',
+      limits: { ...limits, publicNarrationMaxLength: 800 },
+    })).toThrow('must not narrate character dialogue')
+
     const repeatedFlatNoGmContext = buildGameMasterBeatProgressionContext({
       room: room({ tickCount: 2 }),
       narrativeState: {
@@ -1784,6 +1798,16 @@ describe('game-master beat generator helpers', () => {
         consequence: { summary: 'The failed check leaves a durable complication.', status: 'complication', tier: 'failure' },
       },
     }), failureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow('generic pressure language')
+
+    expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'Ash says "the cellar is open" as the root-choked cellar door grinds shut, and the failed search leaves a visible cost: the bell rope tightens across the route, pressure rises below, and the group must choose whether to force the blocked opening, bait the watcher toward the rafters, or withdraw before the stair closes.',
+      stateSummary: 'The room changed after the roll.',
+      currentObjective: 'Answer the changed room.',
+      openThreads: ['What changes next?'],
+      adventurePatch: {
+        consequence: { summary: 'The failed check leaves a durable complication.', status: 'complication', tier: 'failure' },
+      },
+    }), failureInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow('must not narrate character dialogue')
   })
 
   it('rejects durable adventurePatch consequences when failure-tier public narration is weak', () => {

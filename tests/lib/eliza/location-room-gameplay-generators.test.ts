@@ -613,6 +613,49 @@ describe('location room gameplay generators', () => {
     })
   })
 
+  it('recovers failed Official GM encounter proposals from a concrete encounter seed', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({ text: 'not json', message: null })
+      .mockResolvedValueOnce({ text: JSON.stringify({ title: 'Bell Bait' }), message: null })
+
+    const input = {
+      ...makeEncounterProposalInput(),
+      encounterSeed: {
+        title: 'Bell Bait',
+        summary: 'The taproom bell gives one sharp ring, and black feathers shake loose from the rafters.',
+        stakes: 'Facing an unknown threat in these ruins.',
+        source: 'location_catalog',
+        catalogEntryIds: ['crows-den-bell-bait', 'crows-den-rafter-crow-wight'],
+        encounterHints: ['Bell Bait: The rafters answer the bell rope with scraping movement.'],
+        monsterHints: ['Rafter Crow-Wight: An ash-black crow-wight folds itself among the beams.'],
+      },
+    } as never
+
+    const generator = new OfficialGameMasterGameplayGenerator({ startAgent: jest.fn() } as never)
+    const result = await generator.generateEncounterProposal(input)
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    expect(result).toMatchObject({
+      publicSetupNarration: expect.stringContaining('taproom bell'),
+      proposal: {
+        title: 'Bell Bait',
+        monsterName: 'Rafter Crow-Wight',
+        monsterArchetype: expect.stringContaining('Crow-Wight'),
+      },
+      metadata: {
+        generationDiagnostics: {
+          status: 'repaired',
+          repairAttempted: true,
+          repaired: true,
+          initialErrorCategory: 'missing_json_object',
+          repairErrorCategory: 'missing_required_field',
+        },
+      },
+    })
+    expect(result.publicSetupNarration).not.toContain('unknown threat')
+    expect(result.publicSetupNarration).not.toContain('speaking')
+  })
+
   it('throws typed GM encounter proposal transport failure without repair', async () => {
     mockedSendAndCollectOfficialEphemeralSessionMessage.mockRejectedValueOnce(new Error('network down'))
 
@@ -761,6 +804,42 @@ describe('location room gameplay generators', () => {
     expect(result.action.metadata).not.toHaveProperty('fallbackFromOfficialError')
   })
 
+  it('recovers target-constrained Official character action repairs with a legal visible monster attack', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({ text: 'I study the bell and wait.', message: null })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          actionType: 'attack',
+          target: { kind: 'monster', id: 'monster-404' },
+          publicSpeech: 'I strike the wrong maw.',
+        }),
+        message: null,
+      })
+
+    const generator = new OfficialGameplayActionGenerator({ startAgent: jest.fn() } as never)
+    const result = await generator.generateAction(makeGameplayActionInput())
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    expect(result.action).toMatchObject({
+      actionType: 'attack',
+      target: { kind: 'monster', id: 'monster-1' },
+      rollChoice: { source: 'fixed', checkType: 'attack' },
+      metadata: {
+        fallbackFromOfficialError: true,
+        initialErrorCategory: 'missing_json_object',
+        repairErrorCategory: 'target_constraint',
+      },
+    })
+    expect(result.action.publicSpeech).toContain('Maw')
+    expect(result.generationDiagnostics).toMatchObject({
+      status: 'repaired',
+      repairAttempted: true,
+      repaired: true,
+      initialErrorCategory: 'missing_json_object',
+      repairErrorCategory: 'target_constraint',
+    })
+  })
+
   it('throws typed diagnostics after one failed Official character action repair', async () => {
     mockedSendAndCollectOfficialEphemeralSessionMessage
       .mockResolvedValueOnce({ text: 'I study the bell and wait.', message: null })
@@ -800,6 +879,16 @@ describe('location room gameplay generators', () => {
       stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
       metadata: { rawResponseLength: 1 },
     }, input)).toMatchObject({ ok: false })
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash says "hold the bell rope" as Maw reels back under the bell rope and its line breaks.',
+      stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toMatchObject({
+      ok: false,
+      error: 'Gameplay outcome narration must not narrate character dialogue',
+    })
 
     const noDamageInput = makeGameplayOutcomeInput() as any
     noDamageInput.mechanicalSummary.mechanicalDeltas.actionRoll.tier = 'failure'

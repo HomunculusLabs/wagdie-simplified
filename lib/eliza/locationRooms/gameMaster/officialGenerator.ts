@@ -554,6 +554,7 @@ const GENERIC_NARRATIVE_PHRASES = [
 
 const CONCRETE_NARRATIVE_ANCHOR_PATTERN = /\b(?:altar|arch|ash|bar|beam|bell|bell rope|bench|blade|boat|book|bridge|candle|cart|cask|casks|cave|cellar|chain|chamber|chest|corridor|courtyard|crate|crow|crows|dock|door|doorway|feather|feathers|floor|floorboard|floorboards|forest|fountain|gate|glyph|grate|hall|idol|key|landing|lantern|lanterns|ledge|lever|lock|mark|marks|mask|mirror|passage|path|pit|platform|pool|rafter|rafters|river|road|rookery|roof|rope|route|salt|scratch|scratches|seam|shelf|shrine|shutter|shutters|stair|stairs|statue|stream|symbol|table|taproom|threshold|throne|torch|tower|track|tracks|tree|tunnel|wagon|wall|well|window)\b/i
 const SCENE_FRAME_INTERACTION_PATTERN = /\b(?:choose|choice|option|decision|decide|risk|cost|price|obstacle|block|blocked|blocks|reveal|reveals|revealed|clue|route|path|paths|door|exit|threshold|stair|gate|latch|press|bargain|retreat|withdraw|protect|exploit|follow|confront|intercept|open|test|search|inspect|examine|ask|question|force|move|cross|descend|climb|pull|cut|take|grab|listen|watch|approach|answer|answers|before|now|must)\b/i
+const CHARACTER_DIALOGUE_NARRATION_PATTERN = /\b(?:says?|said|asks?|asked|answers?|answered|replies?|replied|whispers?|whispered|shouts?|shouted|calls?|called|cries?|cried|mutters?|muttered|murmurs?|murmured|tells?|told|speaks?|spoke)\b[\s,:;'"“”‘’.-]{0,24}(?:["“”‘’']|that\b|to\b)|(?:["“”][^"“”]{2,160}["“”]\s*,?\s*)\b(?:says?|said|asks?|asked|answers?|answered|replies?|replied|whispers?|whispered|shouts?|shouted|calls?|called|cries?|cried|mutters?|muttered|murmurs?|murmured)\b/i
 
 function weakGenericNarrativePhrase(value: string): string | null {
   const normalized = value.toLowerCase().replace(/\s+/g, ' ')
@@ -566,6 +567,10 @@ function validateConcreteNarrativeText(
 ): void {
   const normalized = normalizeGenerationResponseText(value).replace(/\s+/g, ' ').trim()
   if (!normalized) return
+
+  if (CHARACTER_DIALOGUE_NARRATION_PATTERN.test(normalized)) {
+    throw new Error(`${options.label} must not narrate character dialogue or report what a character says`)
+  }
 
   const hasAnchor = CONCRETE_NARRATIVE_ANCHOR_PATTERN.test(normalized)
   const weakPhrase = weakGenericNarrativePhrase(normalized)
@@ -1108,7 +1113,7 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     '- JSON only; no markdown/prose outside object.',
     '- speakerInstruction/stateSummary required; use eligible token ids.',
     `- selectedSpeakerTokenId must be ${input.speaker.tokenId}.`,
-    '- PublicNarration public-safe: concrete object/route/threat; Frame public GM beats near a meaningful choice, cost, reveal, route, obstacle, or action; no generic/passive atmosphere-only copy.',
+    '- PublicNarration public-safe: concrete object/route/threat, no character dialogue; Frame public GM beats near a meaningful choice, cost, reveal, route, obstacle, or action; no generic/passive atmosphere-only copy.',
     ...(input.progressionContext?.requireOpeningPublicNarration
       ? [
         '- Opening publicNarration must be a rich table-setting GM beat: 3-5 sentences and roughly 300-650 characters.',
@@ -1317,7 +1322,7 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '- Output JSON only: no markdown fences, no commentary, no prose outside the object.',
     '- Use only the backend roll facts above for dice, modifier, total, DC, and outcome tier.',
     '- Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality, wallets, or private chain data.',
-    '- Narrate a consequence that fits the outcome tier and preserves future player agency; keep it natural prose, not an adventure-state panel.',
+    '- Narrate a consequence that fits the outcome tier and preserves future player agency; no character dialogue; natural prose, not an adventure-state panel.',
     '- Vary the first sentence/opening from recent GM outcome openings while preserving roll facts; do not reuse an exact opening.',
     '- For partial_success, failure, and critical_failure, publicNarration must be substantive (roughly 180+ characters), show a visible consequence such as cost, complication, blocked route, lost opportunity, harder choice, hostile response, obligation, or a concrete danger, and leave a changed situation or next choice rather than finality.',
     '- publicNarration: concrete object/route/threat; no pressure-only opening.',
@@ -1777,6 +1782,7 @@ function compactBeatRepairInstruction(kind: GameMasterRepairPromptKind, input: G
     openingRequired
       ? '- Opening publicNarration must be 3-5 sentences with sensory detail, 2-3 interactable hooks, stakes, and an unresolved prompt.'
       : '- Keep publicNarration concise and anchored to a concrete object, route, or threat.',
+    '- publicNarration has no character dialogue or "X says/asks/answers".',
     escalationRequired
       ? '- Do not leave repeated activity in flat story/none/0 state; use exploration/threat, foreshadow, or threatLevel >= 1 without forcing combat.'
       : '- Prefer narrative pressure over combat unless the current fiction clearly requires structured combat.',
@@ -1857,6 +1863,7 @@ function compactSceneCheckRepairInstruction(kind: GameMasterRepairPromptKind, in
     tier === 'partial_success' || tier === 'failure' || tier === 'critical_failure'
       ? '- For this tier, publicNarration must be substantive, name a visible consequence/cost, and leave a changed next choice.'
       : '- For this tier, publicNarration must still be concrete and anchored to the resolved action.',
+    '- publicNarration has no character dialogue or "X says/asks/answers".',
     '- combat_ready means danger readiness only; it does not start combat.',
   ]
 }

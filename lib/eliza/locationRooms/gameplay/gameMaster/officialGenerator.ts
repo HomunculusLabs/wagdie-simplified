@@ -17,7 +17,10 @@ import {
   repairValidationFailureDiagnostics,
   type GenerationResponseFlags,
 } from '../../generation/diagnostics'
-import { runGenerationRepair } from '../../generation/repairRunner'
+import {
+  runGenerationRepair,
+  type GenerationRepairRunnerResult,
+} from '../../generation/repairRunner'
 import type {
   LocationRoom,
   LocationRoomEncounterSeed,
@@ -40,6 +43,8 @@ import type {
   GameplayTurn,
 } from '../types'
 import type { GameplayEncounterProposal } from '../rules'
+
+const CHARACTER_DIALOGUE_NARRATION_PATTERN = /\b(?:says?|said|asks?|asked|answers?|answered|replies?|replied|whispers?|whispered|shouts?|shouted|calls?|called|cries?|cried|mutters?|muttered|murmurs?|murmured|tells?|told|speaks?|spoke)\b[\s,:;'"“”‘’.-]{0,24}(?:["“”‘’']|that\b|to\b)|(?:["“”][^"“”]{2,160}["“”]\s*,?\s*)\b(?:says?|said|asks?|asked|answers?|answered|replies?|replied|whispers?|whispered|shouts?|shouted|calls?|called|cries?|cried|mutters?|muttered|murmurs?|murmured)\b/i
 
 export type GameplayEncounterBudgetPrompt = {
   partySize: number
@@ -288,6 +293,81 @@ function formatEncounterSeed(seed: LocationRoomEncounterSeed | null | undefined)
     formatSeedList('Monster hints', seed.monsterHints),
   ].filter(Boolean)
   return parts.length > 0 ? parts.join('\n') : null
+}
+
+function splitHintTitle(value: string | null | undefined): string | null {
+  const text = trimToLimit(value, 120)
+  if (!text) return null
+  return text.split(':')[0]?.trim() || null
+}
+
+function splitHintBody(value: string | null | undefined): string | null {
+  const text = trimToLimit(value, 320)
+  if (!text) return null
+  const index = text.indexOf(':')
+  return index >= 0 ? text.slice(index + 1).trim() || text : text
+}
+
+function seededEncounterProposalFallback(
+  input: GenerateGameplayEncounterProposalInput,
+  diagnostics: GameplayEncounterProposalGenerationDiagnostics,
+  rawResponseLength: number
+): GameplayEncounterProposalOutput | null {
+  const seed = input.encounterSeed
+  if (!seed) return null
+
+  const encounterHint = seed.encounterHints?.[0]
+  const monsterHint = seed.monsterHints?.[0]
+  const title = trimToLimit(seed.title, 120) ?? splitHintTitle(encounterHint)
+  const summary = trimToLimit(seed.summary, 500) ?? splitHintBody(encounterHint)
+  const monsterName = splitHintTitle(monsterHint) ?? splitHintTitle(seed.title) ?? null
+  const monsterArchetype = splitHintTitle(monsterHint) ?? 'seeded location horror'
+  if (!title || !summary || !monsterName) return null
+
+  const setupParts = [
+    summary,
+    `The ${monsterName} moves from its hiding place toward the nearest exposed line.`,
+  ].filter((part): part is string => Boolean(part))
+  const publicSetupNarration = trimToLimit(
+    setupParts.join(' '),
+    elizaConfig.locationRooms.narrative.publicNarrationMaxLength
+  )
+  if (!publicSetupNarration) return null
+
+  const proposal: GameplayEncounterProposal = {
+    title,
+    summary,
+    difficulty: input.requestedDifficulty as GameplayEncounterProposal['difficulty'],
+    monsterCount: 1,
+    monsterName,
+    monsterArchetype: trimToLimit(monsterArchetype, 80) ?? 'seeded location horror',
+    totalMonsterHp: Math.max(1, Math.min(input.budget.maxTotalMonsterHp, Math.round(input.budget.maxTotalMonsterHp / 2))),
+    monsterAc: 12,
+    monsterAttackBonus: 2,
+    monsterDamageFormula: '1d6',
+    sceneDc: 12,
+    rewardXpPerCharacter: Math.max(0, Math.min(input.budget.maxXpPerCharacter, 3)),
+    temporaryBoons: [],
+    narrativeRewards: seed.stakes
+      ? [trimToLimit(seed.stakes, 120)].filter((value): value is string => Boolean(value))
+      : [],
+    victoryText: trimToLimit(`The ${monsterName} breaks away from ${title}, leaving the route changed but not resolved.`, 240) ?? undefined,
+  }
+
+  return {
+    gameMasterAgentId: input.gameMasterAgentId,
+    proposal,
+    publicSetupNarration,
+    metadata: {
+      rawResponseLength,
+      generationDiagnostics: {
+        ...diagnostics,
+        status: 'repaired',
+        repairAttempted: true,
+        repaired: true,
+      },
+    },
+  }
 }
 
 function formatDiceRollResult(result: GameplayDiceRollResult): string {
@@ -584,6 +664,9 @@ export function validateGameplayOutcomeNarrationQuality(
 ): { ok: true } | { ok: false; error: string } {
   const narration = output.publicNarration.replace(/\s+/g, ' ').trim()
   if (!narration) return { ok: false, error: 'Gameplay outcome narration is empty' }
+  if (CHARACTER_DIALOGUE_NARRATION_PATTERN.test(narration)) {
+    return { ok: false, error: 'Gameplay outcome narration must not narrate character dialogue' }
+  }
 
   const lower = narration.toLowerCase()
   const deltas = input.mechanicalSummary.mechanicalDeltas as Record<string, unknown>
@@ -733,7 +816,7 @@ function buildGameplayOutcomeNarrationRepairPrompt(
     `Encounter status after mechanics: ${input.mechanicalSummary.encounterStatusAfter}`,
     '',
     'Roll card owns structured mechanics; prose should describe visible consequence only.',
-    'The repaired combat prose must name a specific target, include a concrete location/catalog anchor, show a visible tactic, and leave the battlefield visibly changed.',
+    'The repaired combat prose must name a specific target, include a concrete location/catalog anchor, show a visible tactic, leave the battlefield visibly changed, and avoid character dialogue.',
     `Public roll-card summary: ${rollSummary}`,
     '',
     'Backend consequence facts:',
@@ -755,6 +838,7 @@ function buildGameplayOutcomeNarrationRepairPrompt(
     '- JSON only; no markdown or explanation.',
     '- Name a visible consequence: contact, miss, damage, healing, retaliation, protection, movement, death, victory, flee state, or other backend-supported result.',
     '- Name the target/actor, include an anchor such as the encounter title, seeded landmark, route, or catalog monster/place, show the tactic, and state what line/ground/cover/route/position changes.',
+    '- No character dialogue; preserve character speech for the character action message.',
     '- Do not invent HP, XP, rewards, finality, new dice, new checks, or monster abilities.',
     '- Do not repeat the roll-card numbers unless needed for plain language; the roll card remains the structured mechanics surface.',
     '- Avoid generic filler such as "the room shifts", "pressure remains", or "the encounter is not over".',
@@ -864,6 +948,17 @@ function requireEncounterPublicText(
         repairAttempted: false,
         repaired: false,
         initialErrorCategory: 'missing_required_field',
+      }
+    )
+  }
+  if (CHARACTER_DIALOGUE_NARRATION_PATTERN.test(text)) {
+    throw new GameMasterGameplayEncounterProposalGenerationError(
+      `Gameplay encounter proposal ${label} must not narrate character dialogue`,
+      {
+        status: 'repair_failed',
+        repairAttempted: false,
+        repaired: false,
+        initialErrorCategory: 'validation_error',
       }
     )
   }
@@ -997,6 +1092,7 @@ function buildGameplayEncounterProposalRepairPrompt(
     '- Do not use literal fallback/default copy such as "A dreadful encounter", "A threat gathers in the room", "A threat emerges in the room", "WAGDIE horror", "lurking threat", "fallback apparition", "Ashen Horror", or "Restless Shade".',
     '- Keep all public text specific to the room transcript, narrative state, or seed.',
     '- If seed/hints/spatial anchors are present, title/summary and setup narration must visibly include one concrete anchor from them.',
+    '- No character dialogue in title, summary, setup narration, or victory text.',
     '- Contextual checks are optional and must use allowed check types only.',
   ].filter((line): line is string => line !== null).join('\n')
 }
@@ -1014,6 +1110,18 @@ export function normalizeGameplayEncounterProposalResponse(
     parsed.publicSetupNarration ?? parsed.publicNarration ?? parsed.setupNarration,
     elizaConfig.locationRooms.narrative.publicNarrationMaxLength
   ), 'publicSetupNarration')
+  const victoryText = trimToLimit(parsed.victoryText, 240) ?? undefined
+  if (victoryText && CHARACTER_DIALOGUE_NARRATION_PATTERN.test(victoryText)) {
+    throw new GameMasterGameplayEncounterProposalGenerationError(
+      'Gameplay encounter proposal victoryText must not narrate character dialogue',
+      {
+        status: 'repair_failed',
+        repairAttempted: false,
+        repaired: false,
+        initialErrorCategory: 'validation_error',
+      }
+    )
+  }
   const anchorTerms = encounterAnchorTerms(input)
   requireEncounterAnchorText(`${title} ${summary}`, 'title/summary', anchorTerms)
   requireEncounterAnchorText(publicSetupNarration, 'publicSetupNarration', anchorTerms)
@@ -1033,7 +1141,7 @@ export function normalizeGameplayEncounterProposalResponse(
     rewardXpPerCharacter: optionalNumber(parsed.rewardXpPerCharacter),
     temporaryBoons: stringArray(parsed.temporaryBoons),
     narrativeRewards: stringArray(parsed.narrativeRewards),
-    victoryText: trimToLimit(parsed.victoryText, 240) ?? undefined,
+    victoryText,
     contextualChecks: Array.isArray(parsed.contextualChecks) ? parsed.contextualChecks : undefined,
   }
 
@@ -1140,6 +1248,7 @@ export function buildGameplayEncounterProposalPrompt(input: GenerateGameplayEnco
     'Required public identity/setup fields: title, summary, publicSetupNarration, monsterName, and monsterArchetype.',
     'When seed/hints/spatial anchors are present, title/summary and publicSetupNarration must include at least one concrete anchor from them (for example a named place, landmark, route, encounter title, or monster identity).',
     'Do not use fallback/default copy such as "A dreadful encounter", "A threat gathers in the room", "A threat emerges in the room", "WAGDIE horror", "lurking threat", "fallback apparition", "Ashen Horror", or "Restless Shade".',
+    'No character dialogue in title, summary, publicSetupNarration, or victoryText.',
     'Keep narration public-safe, specific to the transcript/narrative/seed, and suitable to append before combat actions. Do not create canon lore or token finality.',
   ].join('\n')
 }
@@ -1166,6 +1275,7 @@ export function buildGameplayOutcomeNarrationPrompt(input: GenerateGameplayOutco
     'The roll card is the structured mechanics surface; your prose should describe visible fictional consequence without re-explaining every number.',
     'Combat prose must be kinetic and consequence-first: every success lands, moves, breaks, pins, drives back, reveals leverage, or changes position; every failure costs ground, invites retaliation, separates allies, worsens danger, or forces a hard choice.',
     'Every combat outcome must name a specific target/actor, include a concrete location/catalog anchor from the encounter title, seed, spatial context, or visible landmark, show a visible tactic, and state the changed battlefield state (line, ground, cover, route, position, or exit).',
+    'No character dialogue in GM outcome prose; preserve character speech for the character action message.',
     'Avoid passive filler such as "the room shifts", "pressure remains", or restating that the encounter is not over. Name the visible action and the immediate consequence.',
     '',
     `Room id: ${input.room.id}`,
@@ -1251,74 +1361,87 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
       )
     }
 
-    const result = await runGenerationRepair<GameplayEncounterProposalOutput, GameplayEncounterProposalGenerationDiagnostics>({
-      initialText: collectedText,
-      parseInitial: (text) => normalizeGameplayEncounterProposalResponse(text, {
-        gameMasterAgentId,
-        encounterSeed: input.encounterSeed,
-        narrativeState: input.narrativeState,
-      }),
-      buildAcceptedDiagnostics: (text) => acceptedGenerationDiagnostics(text, proposalResponseFlags(text)),
-      buildInitialFailureDiagnostics: diagnosticsForProposalInitialFailure,
-      collectRepairText: async (diagnostics) => {
-        const repairMetadata = {
-          ...sessionMetadata,
-          source: 'wagdie-location-room-gameplay-gm-encounter-repair',
-          repairAttempted: true,
-          initialErrorCategory: diagnostics.initialErrorCategory,
-        }
-        const repaired = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
-          session: {
-            agentId: gameMasterAgentId,
-            userId: input.room.officialUserId,
-            metadata: repairMetadata,
-          },
-          message: {
-            content: buildGameplayEncounterProposalRepairPrompt(input, diagnostics),
-            transport: 'http',
-            metadata: repairMetadata,
-          },
-          logContext: repairMetadata,
-        })
-        return repaired.text
-      },
-      parseRepair: (text) => normalizeGameplayEncounterProposalResponse(text, {
-        gameMasterAgentId,
-        encounterSeed: input.encounterSeed,
-        narrativeState: input.narrativeState,
-      }),
-      buildRepairedDiagnostics: (diagnostics, repairText) => repairedGenerationDiagnostics(
-        diagnostics,
-        repairText,
-        proposalResponseFlags(repairText)
-      ),
-      buildRepairCollectionFailureDiagnostics: (diagnostics, repairText) => repairTransportFailureDiagnostics(
-        diagnostics,
-        repairText,
-        'repair_transport_error',
-        'repair_collect',
-        proposalResponseFlags(repairText)
-      ),
-      buildRepairValidationFailureDiagnostics: (diagnostics, repairText, repairError) => {
-        const repairGenerationError = toEncounterProposalGenerationError(repairError)
-        return repairValidationFailureDiagnostics(
+    let result: GenerationRepairRunnerResult<GameplayEncounterProposalOutput, GameplayEncounterProposalGenerationDiagnostics>
+    try {
+      result = await runGenerationRepair<GameplayEncounterProposalOutput, GameplayEncounterProposalGenerationDiagnostics>({
+        initialText: collectedText,
+        parseInitial: (text) => normalizeGameplayEncounterProposalResponse(text, {
+          gameMasterAgentId,
+          encounterSeed: input.encounterSeed,
+          narrativeState: input.narrativeState,
+        }),
+        buildAcceptedDiagnostics: (text) => acceptedGenerationDiagnostics(text, proposalResponseFlags(text)),
+        buildInitialFailureDiagnostics: diagnosticsForProposalInitialFailure,
+        collectRepairText: async (diagnostics) => {
+          const repairMetadata = {
+            ...sessionMetadata,
+            source: 'wagdie-location-room-gameplay-gm-encounter-repair',
+            repairAttempted: true,
+            initialErrorCategory: diagnostics.initialErrorCategory,
+          }
+          const repaired = await sendAndCollectOfficialEphemeralSessionMessage(this.messaging, {
+            session: {
+              agentId: gameMasterAgentId,
+              userId: input.room.officialUserId,
+              metadata: repairMetadata,
+            },
+            message: {
+              content: buildGameplayEncounterProposalRepairPrompt(input, diagnostics),
+              transport: 'http',
+              metadata: repairMetadata,
+            },
+            logContext: repairMetadata,
+          })
+          return repaired.text
+        },
+        parseRepair: (text) => normalizeGameplayEncounterProposalResponse(text, {
+          gameMasterAgentId,
+          encounterSeed: input.encounterSeed,
+          narrativeState: input.narrativeState,
+        }),
+        buildRepairedDiagnostics: (diagnostics, repairText) => repairedGenerationDiagnostics(
           diagnostics,
           repairText,
-          repairGenerationError.diagnostics.initialErrorCategory ?? 'validation_error',
           proposalResponseFlags(repairText)
+        ),
+        buildRepairCollectionFailureDiagnostics: (diagnostics, repairText) => repairTransportFailureDiagnostics(
+          diagnostics,
+          repairText,
+          'repair_transport_error',
+          'repair_collect',
+          proposalResponseFlags(repairText)
+        ),
+        buildRepairValidationFailureDiagnostics: (diagnostics, repairText, repairError) => {
+          const repairGenerationError = toEncounterProposalGenerationError(repairError)
+          return repairValidationFailureDiagnostics(
+            diagnostics,
+            repairText,
+            repairGenerationError.diagnostics.initialErrorCategory ?? 'validation_error',
+            proposalResponseFlags(repairText)
+          )
+        },
+        createRepairCollectionError: ({ diagnostics, cause }) => new GameMasterGameplayEncounterProposalGenerationError(
+          'Gameplay encounter proposal repair failed during Official ElizaOS transport',
+          diagnostics,
+          { cause }
+        ),
+        createRepairValidationError: ({ diagnostics, cause }) => new GameMasterGameplayEncounterProposalGenerationError(
+          `Gameplay encounter proposal repair failed (initial: ${diagnostics.initialErrorCategory ?? 'validation_error'}, repair: ${diagnostics.repairErrorCategory ?? 'validation_error'})`,
+          diagnostics,
+          { cause }
+        ),
+      })
+    } catch (error) {
+      if (error instanceof GameMasterGameplayEncounterProposalGenerationError) {
+        const fallback = seededEncounterProposalFallback(
+          input,
+          error.diagnostics,
+          error.diagnostics.repairResponseLength ?? error.diagnostics.initialResponseLength ?? collectedText.length
         )
-      },
-      createRepairCollectionError: ({ diagnostics, cause }) => new GameMasterGameplayEncounterProposalGenerationError(
-        'Gameplay encounter proposal repair failed during Official ElizaOS transport',
-        diagnostics,
-        { cause }
-      ),
-      createRepairValidationError: ({ diagnostics, cause }) => new GameMasterGameplayEncounterProposalGenerationError(
-        `Gameplay encounter proposal repair failed (initial: ${diagnostics.initialErrorCategory ?? 'validation_error'}, repair: ${diagnostics.repairErrorCategory ?? 'validation_error'})`,
-        diagnostics,
-        { cause }
-      ),
-    })
+        if (fallback) return fallback
+      }
+      throw error
+    }
 
     return attachProposalGenerationDiagnostics(result.output, result.diagnostics, result.responseText.length)
   }

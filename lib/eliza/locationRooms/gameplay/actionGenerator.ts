@@ -398,6 +398,59 @@ function withGameplayActionRepairMetadata(
   }
 }
 
+function fallbackAttackActionFromVisibleMonster(
+  input: GenerateGameplayActionInput,
+  initialError: GameplayActionSemanticError,
+  initialResponseLength: number,
+  repairErrorCategory: GameplayActionSemanticErrorCategory,
+  repairResponseLength: number,
+  officialAgentId: string | null
+): GenerateGameplayActionResult | null {
+  if (repairErrorCategory !== 'target_constraint') return null
+
+  const monsters = input.visibleMonsters ?? parseGameplayMonsters(input.encounter.monsterState)
+  const legalIds = new Set(input.validation.legalMonsterIds ?? [])
+  const monster = monsters.find((candidate) => (
+    candidate.status === 'alive' &&
+    candidate.hp > 0 &&
+    legalIds.has(candidate.id)
+  ))
+  if (!monster) return null
+
+  const action: GameplayActionEnvelope = {
+    actionType: 'attack',
+    target: { kind: 'monster', id: monster.id },
+    rollChoice: { source: 'fixed', checkType: 'attack' },
+    publicSpeech: `I strike the ${monster.name} before it breaks our line.`,
+    intentSummary: `Attack ${monster.name}.`,
+    metadata: {
+      semanticRepairAttempted: true,
+      repairedFromSemanticFailure: true,
+      fallbackFromOfficialError: true,
+      initialErrorCategory: initialError.category,
+      repairErrorCategory,
+    },
+  }
+
+  const validation = validateGameplayActionEnvelope(action, input.validation)
+  if (!validation.ok) return null
+
+  return {
+    officialAgentId,
+    action: validation.action,
+    rawResponseLength: repairResponseLength,
+    generationDiagnostics: {
+      status: 'repaired',
+      repairAttempted: true,
+      repaired: true,
+      initialErrorCategory: initialError.category,
+      repairErrorCategory,
+      initialResponseLength,
+      repairResponseLength,
+    },
+  }
+}
+
 export class GameplayActionGenerationError extends Error {
   constructor(
     message: string,
@@ -536,6 +589,16 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
           const repairErrorCategory = repairError instanceof GameplayActionSemanticError
             ? repairError.category
             : 'repair_transport_error'
+          const fallback = fallbackAttackActionFromVisibleMonster(
+            input,
+            initialSemanticError,
+            collectedText.length,
+            repairErrorCategory,
+            repairText.length,
+            record.id
+          )
+          if (fallback) return fallback
+
           throw new GameplayActionGenerationError(
             `Gameplay action repair failed (initial: ${initialSemanticError.category}, repair: ${repairErrorCategory})`,
             {
