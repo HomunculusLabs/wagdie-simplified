@@ -24,6 +24,12 @@ import { getFilterSidebarActiveCount } from './filter-sidebar-types'
 interface FilterSidebarProps {
   model: FilterSidebarModel
   className?: string
+  /** Controlled mobile drawer open state. When provided, the sidebar defers to the parent. */
+  mobileOpen?: boolean
+  /** Notifies the parent when the mobile drawer wants to open/close. */
+  onMobileOpenChange?: (open: boolean) => void
+  /** Show the floating mobile toggle button. Defaults to true. */
+  showMobileToggle?: boolean
 }
 
 const TAB_ITEMS: TabItem[] = [
@@ -80,10 +86,25 @@ function renderDropdown(filter: FilterSidebarDropdownModel) {
 
 export function FilterSidebar({
   model,
-  className = ''
+  className = '',
+  mobileOpen,
+  onMobileOpenChange,
+  showMobileToggle = true,
 }: FilterSidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false)
-  const [isMobileOpen, setIsMobileOpen] = useState(false)
+  const [internalMobileOpen, setInternalMobileOpen] = useState(false)
+
+  const isControlled = mobileOpen !== undefined
+  const isMobileOpen = isControlled ? mobileOpen : internalMobileOpen
+
+  const setIsMobileOpen = useCallback((next: boolean | ((prev: boolean) => boolean)) => {
+    const resolve = (prev: boolean) => (typeof next === 'function' ? next(prev) : next)
+    if (isControlled) {
+      onMobileOpenChange?.(resolve(isMobileOpen))
+    } else {
+      setInternalMobileOpen(resolve)
+    }
+  }, [isControlled, isMobileOpen, onMobileOpenChange])
 
   const { tab, sort, search, toggles, traitGroups, totalCount, onClearAllFilters } = model
   const activeFilterCount = getFilterSidebarActiveCount(model)
@@ -94,11 +115,11 @@ export function FilterSidebar({
 
   const toggleMobile = useCallback(() => {
     setIsMobileOpen(prev => !prev)
-  }, [])
+  }, [setIsMobileOpen])
 
   const closeMobile = useCallback(() => {
     setIsMobileOpen(false)
-  }, [])
+  }, [setIsMobileOpen])
 
   // Lock body scroll while the mobile drawer is open
   useEffect(() => {
@@ -118,26 +139,28 @@ export function FilterSidebar({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isMobileOpen])
+  }, [isMobileOpen, setIsMobileOpen])
 
   return (
     <>
       {/* Mobile Filter Toggle Button */}
-      <button
-        onClick={toggleMobile}
-        className="lg:hidden fixed bottom-4 right-4 z-50 flex items-center gap-2 px-4 py-3 bg-soul-accent text-black font-eskapade text-sm tracking-wider rounded-sm shadow-lg hover:bg-soul-accent/90 transition-colors"
-        aria-label="Toggle filters"
-      >
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-        </svg>
-        <span>Filters</span>
-        {activeFilterCount > 0 && (
-          <span className="flex items-center justify-center w-5 h-5 bg-black/30 rounded-full text-xs">
-            {activeFilterCount}
-          </span>
-        )}
-      </button>
+      {showMobileToggle && (
+        <button
+          onClick={toggleMobile}
+          className="lg:hidden fixed bottom-4 right-4 z-50 flex items-center gap-2 px-4 py-3 bg-soul-accent text-black font-eskapade text-sm tracking-wider rounded-sm shadow-lg hover:bg-soul-accent/90 transition-colors"
+          aria-label="Toggle filters"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+          </svg>
+          <span>Filters</span>
+          {activeFilterCount > 0 && (
+            <span className="flex items-center justify-center w-5 h-5 bg-black/30 rounded-full text-xs">
+              {activeFilterCount}
+            </span>
+          )}
+        </button>
+      )}
 
       {/* Mobile Overlay */}
       <div

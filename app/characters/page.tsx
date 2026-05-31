@@ -6,10 +6,12 @@
 
 'use client'
 
-import { useCallback, useMemo, Suspense } from 'react'
+import { useCallback, useMemo, useState, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import { BannerHeader } from '@/components/shared/BannerHeader'
 import { FilterSidebar } from '@/components/characters/FilterSidebar'
+import { MobileFilterBar } from '@/components/characters/MobileFilterBar'
+import { getFilterSidebarActiveCount } from '@/components/characters/filter-sidebar-types'
 import { CharacterCard } from '@/components/characters/CharacterCard'
 import { ActiveFilters } from '@/components/characters/ActiveFilters'
 import { Alert, Spinner, Pagination, Empty } from '@/components/ui'
@@ -29,6 +31,7 @@ function CharactersPageContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const { address } = useWallet()
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false)
 
   const {
     filters,
@@ -210,6 +213,8 @@ function CharactersPageContent() {
     onClearAllFilters: handlers.onClearAllFilters,
   }
 
+  const activeFilterCount = getFilterSidebarActiveCount(filterSidebarModel)
+
   return (
     <div className="min-h-screen bg-soul-950">
       <BannerHeader
@@ -219,11 +224,26 @@ function CharactersPageContent() {
 
       <div className="flex">
         {/* Filter Sidebar */}
-        <FilterSidebar model={filterSidebarModel} />
+        <FilterSidebar
+          model={filterSidebarModel}
+          mobileOpen={mobileFiltersOpen}
+          onMobileOpenChange={setMobileFiltersOpen}
+          showMobileToggle={false}
+        />
 
         {/* Main Content */}
         <main className="flex-1 min-h-screen">
           <div className="px-6 py-8">
+            {/* Sticky mobile filter bar */}
+            <MobileFilterBar
+              tab={tab}
+              onTabChange={handlers.onTabChange}
+              sort={sort}
+              onSortChange={handlers.onSortChange}
+              activeFilterCount={activeFilterCount}
+              onOpenFilters={() => setMobileFiltersOpen(true)}
+            />
+
             {/* Active Filters Display (mobile-visible summary) */}
             {hasActiveFilters && (
               <ActiveFilters
