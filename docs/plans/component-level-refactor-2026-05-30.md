@@ -269,6 +269,12 @@ During Item 6, the internal config shapes should be close enough to this model t
 
 **Size:** S
 
+## Orchestration Progress
+- [x] Lane A — Searing extraction: Work Items 1–3 plus relevant Item 8 tests. Completed: extracted searing controller, helper module, presentational components, and focused searing tests; baseline searing/filter tests pass per agent report.
+- [x] Lane B — Home page extraction: Work Items 4–5 plus relevant Item 8 tests. Completed: extracted `useVideoConsent`, `VideoPlayer`, home presentational components, and `tests/components/home/useVideoConsent.test.tsx`; focused test passes.
+- [x] Lane C — FilterSidebar config/model migration: Work Items 6–7 plus relevant Item 8 tests/story updates. Completed: introduced `FilterSidebarModel`, migrated sidebar/callsite/story, and added focused FilterSidebar tests; focused filter tests pass per agent report.
+- [x] Lane D — Final validation and cleanup: Work Item 9 after lanes A–C complete. Completed: focused combined test run passed (7 suites / 28 tests); final review found no concrete regressions.
+
 ## Open Questions
 None blocking. Implementation should preserve visible behavior unless a later test exposes behavior that is already broken or ambiguous.
 

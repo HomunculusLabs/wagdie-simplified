@@ -6,62 +6,23 @@
 
 'use client'
 
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import { Tabs } from '@/components/ui'
 import type { TabItem } from '@/components/ui'
-import type { CharacterFilterTab, SortOrder, OriginCount, AlignmentCount, TraitCount } from '@/types/character'
+import type { CharacterFilterTab } from '@/types/character'
 import { SheetToggle } from './SheetToggle'
 import { OriginDropdown } from './OriginDropdown'
 import { AlignmentDropdown } from './AlignmentDropdown'
 import { TraitDropdown } from './TraitDropdown'
+import type {
+  FilterSidebarDropdownModel,
+  FilterSidebarModel,
+  FilterSidebarTraitDropdownModel,
+} from './filter-sidebar-types'
+import { getFilterSidebarActiveCount } from './filter-sidebar-types'
 
 interface FilterSidebarProps {
-  // Tab & Sort controls
-  currentTab: CharacterFilterTab
-  currentSort: SortOrder
-  onTabChange: (tab: CharacterFilterTab) => void
-  onSortChange: (sort: SortOrder) => void
-  // Search
-  searchValue: string
-  onSearchChange: (value: string) => void
-  onClearSearch: () => void
-  // Sheet/profile filters
-  hasSheetFilter: boolean
-  onHasSheetChange: (hasSheet: boolean) => void
-  hasElizaProfileFilter: boolean
-  onHasElizaProfileChange: (hasElizaProfile: boolean) => void
-  // Origin filter
-  originFilter: string | null
-  availableOrigins: OriginCount[]
-  onOriginChange: (origin: string | null) => void
-  originsLoading: boolean
-  // Alignment filter
-  alignmentFilter: string | null
-  availableAlignments: AlignmentCount[]
-  onAlignmentChange: (alignment: string | null) => void
-  alignmentsLoading: boolean
-  // The 17 filter
-  the17Filter: string | null
-  availableThe17: TraitCount[]
-  onThe17Change: (the17: string | null) => void
-  the17Loading: boolean
-  // Equipment filters
-  armorFilter: string | null
-  availableArmor: TraitCount[]
-  onArmorChange: (armor: string | null) => void
-  armorLoading: boolean
-  backFilter: string | null
-  availableBack: TraitCount[]
-  onBackChange: (back: string | null) => void
-  backLoading: boolean
-  maskFilter: string | null
-  availableMask: TraitCount[]
-  onMaskChange: (mask: string | null) => void
-  maskLoading: boolean
-  // Clear all
-  onClearAllFilters: () => void
-  // Results info
-  totalCount: number
+  model: FilterSidebarModel
   className?: string
 }
 
@@ -74,61 +35,58 @@ const TAB_ITEMS: TabItem[] = [
   { id: 'fallen', label: 'Fallen Warriors' },
 ]
 
+function renderTraitDropdown(filter: FilterSidebarTraitDropdownModel) {
+  return (
+    <TraitDropdown
+      key={filter.id}
+      label={filter.label}
+      value={filter.value}
+      options={filter.options}
+      onChange={filter.onChange}
+      isLoading={filter.isLoading}
+      className="w-full"
+    />
+  )
+}
+
+function renderDropdown(filter: FilterSidebarDropdownModel) {
+  switch (filter.kind) {
+    case 'origin':
+      return (
+        <OriginDropdown
+          key={filter.id}
+          value={filter.value}
+          options={filter.options}
+          onChange={filter.onChange}
+          isLoading={filter.isLoading}
+          className="w-full"
+        />
+      )
+    case 'alignment':
+      return (
+        <AlignmentDropdown
+          key={filter.id}
+          value={filter.value}
+          options={filter.options}
+          onChange={filter.onChange}
+          isLoading={filter.isLoading}
+          className="w-full"
+        />
+      )
+    case 'trait':
+      return renderTraitDropdown(filter)
+  }
+}
+
 export function FilterSidebar({
-  currentTab,
-  currentSort,
-  onTabChange,
-  onSortChange,
-  searchValue,
-  onSearchChange,
-  onClearSearch,
-  hasSheetFilter,
-  onHasSheetChange,
-  hasElizaProfileFilter,
-  onHasElizaProfileChange,
-  originFilter,
-  availableOrigins,
-  onOriginChange,
-  originsLoading,
-  alignmentFilter,
-  availableAlignments,
-  onAlignmentChange,
-  alignmentsLoading,
-  the17Filter,
-  availableThe17,
-  onThe17Change,
-  the17Loading,
-  armorFilter,
-  availableArmor,
-  onArmorChange,
-  armorLoading,
-  backFilter,
-  availableBack,
-  onBackChange,
-  backLoading,
-  maskFilter,
-  availableMask,
-  onMaskChange,
-  maskLoading,
-  onClearAllFilters,
-  totalCount,
+  model,
   className = ''
 }: FilterSidebarProps) {
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [isMobileOpen, setIsMobileOpen] = useState(false)
 
-  // Count active filters
-  const activeFilterCount = [
-    hasSheetFilter,
-    hasElizaProfileFilter,
-    originFilter !== null,
-    alignmentFilter !== null,
-    the17Filter !== null,
-    armorFilter !== null,
-    backFilter !== null,
-    maskFilter !== null,
-    searchValue.length > 0
-  ].filter(Boolean).length
+  const { tab, sort, search, toggles, traitGroups, totalCount, onClearAllFilters } = model
+  const activeFilterCount = getFilterSidebarActiveCount(model)
 
   const toggleCollapse = useCallback(() => {
     setIsCollapsed(prev => !prev)
@@ -137,6 +95,30 @@ export function FilterSidebar({
   const toggleMobile = useCallback(() => {
     setIsMobileOpen(prev => !prev)
   }, [])
+
+  const closeMobile = useCallback(() => {
+    setIsMobileOpen(false)
+  }, [])
+
+  // Lock body scroll while the mobile drawer is open
+  useEffect(() => {
+    if (!isMobileOpen) return
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = previous
+    }
+  }, [isMobileOpen])
+
+  // Close the drawer on Escape
+  useEffect(() => {
+    if (!isMobileOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsMobileOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isMobileOpen])
 
   return (
     <>
@@ -158,23 +140,29 @@ export function FilterSidebar({
       </button>
 
       {/* Mobile Overlay */}
-      {isMobileOpen && (
-        <div
-          className="lg:hidden fixed inset-0 bg-black/60 z-40"
-          onClick={toggleMobile}
-        />
-      )}
+      <div
+        aria-hidden={!isMobileOpen}
+        onClick={closeMobile}
+        className={`
+          lg:hidden fixed inset-0 z-40 bg-black/70 backdrop-blur-sm
+          transition-opacity duration-300 ease-in-out
+          ${isMobileOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}
+        `}
+      />
 
       {/* Sidebar Container */}
       <aside
         className={`
           ${className}
-          ${isCollapsed ? 'w-16' : 'w-72'}
-          ${isMobileOpen ? 'fixed inset-y-0 left-0 translate-x-0' : 'hidden lg:block'}
-          lg:relative z-50 lg:z-10
-          h-screen lg:h-auto lg:self-start lg:sticky lg:top-4
+          ${isCollapsed ? 'lg:w-16' : 'lg:w-72'}
+          w-[min(85vw,20rem)] lg:w-72
+          fixed inset-y-0 left-0 lg:relative lg:inset-auto
+          ${isMobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+          z-50 lg:z-10
+          h-[100dvh] lg:h-auto lg:self-start lg:sticky lg:top-4
           bg-soul-950 border-r border-neutral-800
-          transition-all duration-300 ease-in-out
+          shadow-2xl lg:shadow-none
+          transition-transform duration-300 ease-in-out
           overflow-hidden flex-shrink-0
         `}
       >
@@ -248,14 +236,14 @@ export function FilterSidebar({
                 </div>
                 <input
                   type="text"
-                  value={searchValue}
-                  onChange={(e) => onSearchChange(e.target.value)}
+                  value={search.value}
+                  onChange={(e) => search.onChange(e.target.value)}
                   placeholder="Name or token ID..."
                   className="w-full bg-black/40 border border-neutral-800 rounded-sm py-2 pl-10 pr-8 text-sm font-eskapade text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-soul-accent/50 focus:ring-1 focus:ring-soul-accent/30 transition-all"
                 />
-                {searchValue && (
+                {search.value && (
                   <button
-                    onClick={onClearSearch}
+                    onClick={search.onClear}
                     className="absolute inset-y-0 right-0 flex items-center pr-2 text-neutral-500 hover:text-neutral-300 transition-colors"
                     aria-label="Clear search"
                   >
@@ -274,8 +262,8 @@ export function FilterSidebar({
               </label>
               <Tabs
                 items={TAB_ITEMS}
-                activeId={currentTab}
-                onChange={(id) => onTabChange(id as CharacterFilterTab)}
+                activeId={tab.value}
+                onChange={(id) => tab.onChange(id as CharacterFilterTab)}
                 variant="vertical"
               />
             </div>
@@ -286,16 +274,16 @@ export function FilterSidebar({
                 SORT ORDER
               </label>
               <button
-                onClick={() => onSortChange(currentSort === 'asc' ? 'desc' : 'asc')}
+                onClick={() => sort.onChange(sort.value === 'asc' ? 'desc' : 'asc')}
                 className="flex items-center justify-between w-full px-3 py-2 bg-black/40 border border-neutral-800 rounded-sm text-neutral-400 hover:text-soul-accent hover:border-soul-accent/50 transition-colors font-eskapade text-sm"
               >
                 <span>Token ID</span>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-neutral-500">
-                    {currentSort === 'asc' ? 'Low → High' : 'High → Low'}
+                    {sort.value === 'asc' ? 'Low → High' : 'High → Low'}
                   </span>
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    {currentSort === 'asc' ? (
+                    {sort.value === 'asc' ? (
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
                     ) : (
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
@@ -312,47 +300,17 @@ export function FilterSidebar({
               </label>
 
               <div className="space-y-3">
-                {/* Has Sheet Toggle */}
-                <SheetToggle
-                  checked={hasSheetFilter}
-                  onChange={onHasSheetChange}
-                />
+                {toggles.map((toggle) => (
+                  <SheetToggle
+                    key={toggle.id}
+                    checked={toggle.checked}
+                    onChange={toggle.onChange}
+                    label={toggle.label}
+                    title={toggle.title}
+                  />
+                ))}
 
-                {/* Has ElizaOS Profile Toggle */}
-                <SheetToggle
-                  checked={hasElizaProfileFilter}
-                  onChange={onHasElizaProfileChange}
-                  label="Has ElizaOS Profile"
-                  title="Show only characters with an ElizaOS profile"
-                />
-
-                {/* Origin Dropdown */}
-                <OriginDropdown
-                  value={originFilter}
-                  options={availableOrigins}
-                  onChange={onOriginChange}
-                  isLoading={originsLoading}
-                  className="w-full"
-                />
-
-                {/* Alignment Dropdown */}
-                <AlignmentDropdown
-                  value={alignmentFilter}
-                  options={availableAlignments}
-                  onChange={onAlignmentChange}
-                  isLoading={alignmentsLoading}
-                  className="w-full"
-                />
-
-                {/* The 17 Dropdown */}
-                <TraitDropdown
-                  label="The 17"
-                  value={the17Filter}
-                  options={availableThe17}
-                  onChange={onThe17Change}
-                  isLoading={the17Loading}
-                  className="w-full"
-                />
+                {traitGroups.primary.map(renderDropdown)}
               </div>
             </div>
 
@@ -363,32 +321,7 @@ export function FilterSidebar({
               </label>
 
               <div className="space-y-3">
-                <TraitDropdown
-                  label="Armor"
-                  value={armorFilter}
-                  options={availableArmor}
-                  onChange={onArmorChange}
-                  isLoading={armorLoading}
-                  className="w-full"
-                />
-
-                <TraitDropdown
-                  label="Back"
-                  value={backFilter}
-                  options={availableBack}
-                  onChange={onBackChange}
-                  isLoading={backLoading}
-                  className="w-full"
-                />
-
-                <TraitDropdown
-                  label="Mask"
-                  value={maskFilter}
-                  options={availableMask}
-                  onChange={onMaskChange}
-                  isLoading={maskLoading}
-                  className="w-full"
-                />
+                {traitGroups.equipment.map(renderTraitDropdown)}
               </div>
             </div>
 

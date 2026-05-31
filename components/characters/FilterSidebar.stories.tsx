@@ -5,6 +5,7 @@
 
 import type { Meta, StoryObj } from '@storybook/react'
 import { FilterSidebar } from './FilterSidebar'
+import type { FilterSidebarModel } from './filter-sidebar-types'
 import type { OriginCount, AlignmentCount, TraitCount } from '@/types/character'
 
 const mockOrigins: OriginCount[] = [
@@ -47,6 +48,103 @@ const mockMask: TraitCount[] = [
   { value: 'Hood', count: 300 },
 ]
 
+const noop = () => {}
+
+function createFilterSidebarModel(overrides: Partial<FilterSidebarModel> = {}): FilterSidebarModel {
+  return {
+    tab: {
+      value: 'all',
+      onChange: noop,
+    },
+    sort: {
+      value: 'asc',
+      onChange: noop,
+    },
+    search: {
+      value: '',
+      onChange: noop,
+      onClear: noop,
+    },
+    toggles: [
+      {
+        id: 'hasSheet',
+        checked: false,
+        onChange: noop,
+      },
+      {
+        id: 'hasElizaProfile',
+        checked: false,
+        onChange: noop,
+        label: 'Has ElizaOS Profile',
+        title: 'Show only characters with an ElizaOS profile',
+      },
+    ],
+    traitGroups: {
+      primary: [
+        {
+          id: 'origin',
+          kind: 'origin',
+          value: null,
+          options: mockOrigins,
+          onChange: noop,
+          isLoading: false,
+        },
+        {
+          id: 'alignment',
+          kind: 'alignment',
+          value: null,
+          options: mockAlignments,
+          onChange: noop,
+          isLoading: false,
+        },
+        {
+          id: 'the17',
+          kind: 'trait',
+          label: 'The 17',
+          value: null,
+          options: mockThe17,
+          onChange: noop,
+          isLoading: false,
+        },
+      ],
+      equipment: [
+        {
+          id: 'armor',
+          kind: 'trait',
+          label: 'Armor',
+          value: null,
+          options: mockArmor,
+          onChange: noop,
+          isLoading: false,
+        },
+        {
+          id: 'back',
+          kind: 'trait',
+          label: 'Back',
+          value: null,
+          options: mockBack,
+          onChange: noop,
+          isLoading: false,
+        },
+        {
+          id: 'mask',
+          kind: 'trait',
+          label: 'Mask',
+          value: null,
+          options: mockMask,
+          onChange: noop,
+          isLoading: false,
+        },
+      ],
+    },
+    totalCount: 6231,
+    onClearAllFilters: noop,
+    ...overrides,
+  }
+}
+
+const defaultModel = createFilterSidebarModel()
+
 const meta: Meta<typeof FilterSidebar> = {
   title: 'Characters/FilterSidebar',
   component: FilterSidebar,
@@ -70,43 +168,7 @@ export default meta
 type Story = StoryObj<typeof FilterSidebar>
 
 const defaultArgs = {
-  currentTab: 'all' as const,
-  currentSort: 'asc' as const,
-  onTabChange: () => {},
-  onSortChange: () => {},
-  searchValue: '',
-  onSearchChange: () => {},
-  onClearSearch: () => {},
-  hasSheetFilter: false,
-  onHasSheetChange: () => {},
-  hasElizaProfileFilter: false,
-  onHasElizaProfileChange: () => {},
-  originFilter: null,
-  availableOrigins: mockOrigins,
-  onOriginChange: () => {},
-  originsLoading: false,
-  alignmentFilter: null,
-  availableAlignments: mockAlignments,
-  onAlignmentChange: () => {},
-  alignmentsLoading: false,
-  the17Filter: null,
-  availableThe17: mockThe17,
-  onThe17Change: () => {},
-  the17Loading: false,
-  armorFilter: null,
-  availableArmor: mockArmor,
-  onArmorChange: () => {},
-  armorLoading: false,
-  backFilter: null,
-  availableBack: mockBack,
-  onBackChange: () => {},
-  backLoading: false,
-  maskFilter: null,
-  availableMask: mockMask,
-  onMaskChange: () => {},
-  maskLoading: false,
-  onClearAllFilters: () => {},
-  totalCount: 6231,
+  model: defaultModel,
 }
 
 export const Default: Story = {
@@ -115,57 +177,95 @@ export const Default: Story = {
 
 export const WithActiveFilters: Story = {
   args: {
-    ...defaultArgs,
-    currentTab: 'owned',
-    searchValue: 'grimwald',
-    hasSheetFilter: true,
-    hasElizaProfileFilter: true,
-    originFilter: 'Undead',
-    alignmentFilter: 'Chaotic Evil',
-    the17Filter: 'Luta the Beacon',
-    armorFilter: 'Plate Mail',
-    totalCount: 42,
+    model: createFilterSidebarModel({
+      tab: {
+        ...defaultModel.tab,
+        value: 'owned',
+      },
+      search: {
+        ...defaultModel.search,
+        value: 'grimwald',
+      },
+      toggles: defaultModel.toggles.map((toggle) => ({
+        ...toggle,
+        checked: true,
+      })),
+      traitGroups: {
+        primary: defaultModel.traitGroups.primary.map((filter) => {
+          if (filter.id === 'origin') return { ...filter, value: 'Undead' }
+          if (filter.id === 'alignment') return { ...filter, value: 'Chaotic Evil' }
+          if (filter.id === 'the17') return { ...filter, value: 'Luta the Beacon' }
+          return filter
+        }),
+        equipment: defaultModel.traitGroups.equipment.map((filter) => {
+          if (filter.id === 'armor') return { ...filter, value: 'Plate Mail' }
+          return filter
+        }),
+      },
+      totalCount: 42,
+    }),
   },
 }
 
 export const Loading: Story = {
   args: {
-    ...defaultArgs,
-    originsLoading: true,
-    alignmentsLoading: true,
-    the17Loading: true,
-    armorLoading: true,
-    backLoading: true,
-    maskLoading: true,
+    model: createFilterSidebarModel({
+      traitGroups: {
+        primary: defaultModel.traitGroups.primary.map((filter) => ({
+          ...filter,
+          isLoading: true,
+        })),
+        equipment: defaultModel.traitGroups.equipment.map((filter) => ({
+          ...filter,
+          isLoading: true,
+        })),
+      },
+    }),
   },
 }
 
 export const OwnedTab: Story = {
   args: {
-    ...defaultArgs,
-    currentTab: 'owned',
-    totalCount: 12,
+    model: createFilterSidebarModel({
+      tab: {
+        ...defaultModel.tab,
+        value: 'owned',
+      },
+      totalCount: 12,
+    }),
   },
 }
 
 export const InfectedTab: Story = {
   args: {
-    ...defaultArgs,
-    currentTab: 'infected',
-    totalCount: 1847,
+    model: createFilterSidebarModel({
+      tab: {
+        ...defaultModel.tab,
+        value: 'infected',
+      },
+      totalCount: 1847,
+    }),
   },
 }
 
 export const DescendingSort: Story = {
   args: {
-    ...defaultArgs,
-    currentSort: 'desc',
+    model: createFilterSidebarModel({
+      sort: {
+        ...defaultModel.sort,
+        value: 'desc',
+      },
+    }),
   },
 }
 
 export const WithSearch: Story = {
   args: {
-    ...defaultArgs,
-    searchValue: 'token 1234',
+    model: createFilterSidebarModel({
+      search: {
+        ...defaultModel.search,
+        value: 'token 1234',
+      },
+    }),
   },
 }

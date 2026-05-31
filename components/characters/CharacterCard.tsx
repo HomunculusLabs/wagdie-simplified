@@ -82,7 +82,7 @@ export function CharacterCard({ character, onClick, onSearClick, showSearingLink
       tabIndex={onClick ? 0 : undefined}
       role={onClick ? 'button' : undefined}
       aria-label={onClick ? `View ${name}` : undefined}
-      className={`group overflow-hidden cursor-pointer transition-all duration-500 hover:border-soul-accent/40 hover:shadow-[0_0_20px_rgba(200,170,110,0.1)] focus:outline-none focus-visible:ring-2 focus-visible:ring-soul-accent focus-visible:ring-offset-2 focus-visible:ring-offset-soul-950 ${className}`}
+      className={`group overflow-hidden rounded-md cursor-pointer transition-all duration-500 hover:-translate-y-0.5 hover:border-soul-accent/40 hover:shadow-[0_0_24px_rgba(200,170,110,0.12)] focus:outline-none focus-visible:ring-2 focus-visible:ring-soul-accent focus-visible:ring-offset-2 focus-visible:ring-offset-soul-950 ${className}`}
     >
       {/* Character Image */}
       <div className="relative w-full aspect-square overflow-hidden bg-neutral-900">
@@ -102,8 +102,11 @@ export function CharacterCard({ character, onClick, onSearClick, showSearingLink
         />
 
 
+        {/* Bottom scrim so badges/token id read on light character art */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
+
         {/* Status Badges */}
-        <div className="absolute top-2 right-2 flex flex-col gap-1">
+        <div className="absolute top-1.5 right-1.5 sm:top-2 sm:right-2 flex flex-col items-end gap-1">
           <OwnershipBadge tokenId={BigInt(character.token_id)} />
           {/* Dead badge for burned+staked characters */}
           {character.burned && character.location_id && (
@@ -150,10 +153,10 @@ export function CharacterCard({ character, onClick, onSearClick, showSearingLink
       </div>
 
       {/* Character Info */}
-      <CardContent className="p-4">
+      <CardContent className="p-3 sm:p-4">
         <h3
           title={name}
-          className="text-h4 font-display text-bone group-hover:text-soul-accent transition-colors duration-300 line-clamp-2 min-h-[2.5em] leading-tight lowercase"
+          className="text-body-sm sm:text-h4 font-display text-bone group-hover:text-soul-accent transition-colors duration-300 line-clamp-2 min-h-[2.5em] leading-tight lowercase"
         >
           {name.toLowerCase()}
         </h3>

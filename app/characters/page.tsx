@@ -21,6 +21,7 @@ import { useWallet } from '@/hooks/useWallet'
 import { useCharacterBrowseFilters } from '@/hooks/useCharacterBrowseFilters'
 import type { Character } from '@/types/character'
 import { THE_17_COUNT, THE_17_FILTER_VALUE } from '@/lib/domain/character/the17'
+import type { FilterSidebarModel } from '@/components/characters/filter-sidebar-types'
 
 const ITEMS_PER_PAGE = 50
 
@@ -119,6 +120,96 @@ function CharactersPageContent() {
       character.staker_address?.toLowerCase() === walletAddress
   }, [address])
 
+  const filterSidebarModel: FilterSidebarModel = {
+    tab: {
+      value: tab,
+      onChange: handlers.onTabChange,
+    },
+    sort: {
+      value: sort,
+      onChange: handlers.onSortChange,
+    },
+    search: {
+      value: searchInput,
+      onChange: setSearchInput,
+      onClear: handlers.onClearSearch,
+    },
+    toggles: [
+      {
+        id: 'hasSheet',
+        checked: hasSheet,
+        onChange: handlers.onHasSheetChange,
+      },
+      {
+        id: 'hasElizaProfile',
+        checked: hasElizaProfile,
+        onChange: handlers.onHasElizaProfileChange,
+        label: 'Has ElizaOS Profile',
+        title: 'Show only characters with an ElizaOS profile',
+      },
+    ],
+    traitGroups: {
+      primary: [
+        {
+          id: 'origin',
+          kind: 'origin',
+          value: origin,
+          options: origins,
+          onChange: handlers.onOriginChange,
+          isLoading: originsLoading,
+        },
+        {
+          id: 'alignment',
+          kind: 'alignment',
+          value: alignment,
+          options: alignments,
+          onChange: handlers.onAlignmentChange,
+          isLoading: alignmentsLoading,
+        },
+        {
+          id: 'the17',
+          kind: 'trait',
+          label: 'The 17',
+          value: the17,
+          options: the17Options,
+          onChange: handlers.onThe17Change,
+          isLoading: false,
+        },
+      ],
+      equipment: [
+        {
+          id: 'armor',
+          kind: 'trait',
+          label: 'Armor',
+          value: armor,
+          options: armorTraits,
+          onChange: handlers.onArmorChange,
+          isLoading: armorLoading,
+        },
+        {
+          id: 'back',
+          kind: 'trait',
+          label: 'Back',
+          value: back,
+          options: backTraits,
+          onChange: handlers.onBackChange,
+          isLoading: backLoading,
+        },
+        {
+          id: 'mask',
+          kind: 'trait',
+          label: 'Mask',
+          value: mask,
+          options: maskTraits,
+          onChange: handlers.onMaskChange,
+          isLoading: maskLoading,
+        },
+      ],
+    },
+    totalCount,
+    onClearAllFilters: handlers.onClearAllFilters,
+  }
+
   return (
     <div className="min-h-screen bg-soul-950">
       <BannerHeader
@@ -128,45 +219,7 @@ function CharactersPageContent() {
 
       <div className="flex">
         {/* Filter Sidebar */}
-        <FilterSidebar
-          currentTab={tab}
-          currentSort={sort}
-          onTabChange={handlers.onTabChange}
-          onSortChange={handlers.onSortChange}
-          searchValue={searchInput}
-          onSearchChange={setSearchInput}
-          onClearSearch={handlers.onClearSearch}
-          hasSheetFilter={hasSheet}
-          onHasSheetChange={handlers.onHasSheetChange}
-          hasElizaProfileFilter={hasElizaProfile}
-          onHasElizaProfileChange={handlers.onHasElizaProfileChange}
-          originFilter={origin}
-          availableOrigins={origins}
-          onOriginChange={handlers.onOriginChange}
-          originsLoading={originsLoading}
-          alignmentFilter={alignment}
-          availableAlignments={alignments}
-          onAlignmentChange={handlers.onAlignmentChange}
-          alignmentsLoading={alignmentsLoading}
-          the17Filter={the17}
-          availableThe17={the17Options}
-          onThe17Change={handlers.onThe17Change}
-          the17Loading={false}
-          armorFilter={armor}
-          availableArmor={armorTraits}
-          onArmorChange={handlers.onArmorChange}
-          armorLoading={armorLoading}
-          backFilter={back}
-          availableBack={backTraits}
-          onBackChange={handlers.onBackChange}
-          backLoading={backLoading}
-          maskFilter={mask}
-          availableMask={maskTraits}
-          onMaskChange={handlers.onMaskChange}
-          maskLoading={maskLoading}
-          onClearAllFilters={handlers.onClearAllFilters}
-          totalCount={totalCount}
-        />
+        <FilterSidebar model={filterSidebarModel} />
 
         {/* Main Content */}
         <main className="flex-1 min-h-screen">
@@ -243,7 +296,7 @@ function CharactersPageContent() {
                   )}
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 mb-12">
+                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4 md:gap-6 mb-12">
                   {characters.filter(character => character && character.token_id).map((character) => (
                     <CharacterCard
                       key={character.token_id}
