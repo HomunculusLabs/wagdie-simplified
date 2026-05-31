@@ -17,6 +17,7 @@ interface EncounterMessageCardProps {
   message: PublicRoomMessage;
   roomData: PublicLocationRoomRead;
   isLatest?: boolean;
+  isContinuation?: boolean;
 }
 
 function avatarInitial(name: string): string {
@@ -43,7 +44,7 @@ function splitLegacyRolls(content: string): { narration: string; legacyRolls: st
   return { narration: content, legacyRolls: null };
 }
 
-export function EncounterMessageCard({ message, roomData, isLatest = false }: EncounterMessageCardProps) {
+export function EncounterMessageCard({ message, roomData, isLatest = false, isContinuation = false }: EncounterMessageCardProps) {
   const participant = findParticipantForMessage(roomData.participants, message);
   const gameplayCharacter = findGameplayCharacter(roomData.gameplay, message.tokenId);
   const isGameMaster = message.authorKind === 'game_master';
@@ -57,10 +58,15 @@ export function EncounterMessageCard({ message, roomData, isLatest = false }: En
   const { narration, legacyRolls } = splitLegacyRolls(message.content);
 
   return (
-    <article className={`rounded-2xl border p-4 md:p-5 ${isLatest ? 'ring-1 ring-soul-accent/45' : ''} ${getMessageToneClassName(message)}`}>
-      <div className="grid gap-4 md:grid-cols-[10rem,minmax(0,1fr)] md:gap-5">
-        <aside className="flex gap-3 md:block md:space-y-3">
-          {isGameMaster ? (
+    <article className={`rounded-2xl border ${isContinuation ? 'p-3 md:p-4' : 'p-4 md:p-5'} ${isLatest ? 'ring-1 ring-soul-accent/45' : ''} ${getMessageToneClassName(message)}`}>
+      <div className={`grid gap-4 ${isContinuation ? 'md:grid-cols-[2rem,minmax(0,1fr)]' : 'md:grid-cols-[10rem,minmax(0,1fr)] md:gap-5'}`}>
+        <aside className={isContinuation ? 'flex items-start justify-center pt-1' : 'flex gap-3 md:block md:space-y-3'}>
+          {isContinuation ? (
+            <div className="flex flex-col items-center gap-2" aria-label={`Continued message from ${displayName}`}>
+              <span className="h-2.5 w-2.5 rounded-full border border-neutral-600 bg-neutral-500/60" />
+              <span className="h-full min-h-8 w-px bg-neutral-800" aria-hidden="true" />
+            </div>
+          ) : isGameMaster ? (
             <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full border border-soul-accent/40 bg-soul-accent/15 font-display text-2xl lowercase text-soul-accent md:h-16 md:w-16">
               gm
             </div>
@@ -76,25 +82,28 @@ export function EncounterMessageCard({ message, roomData, isLatest = false }: En
             </div>
           )}
 
-          <div className="min-w-0">
-            <p className={isGameMaster ? 'font-display text-xl lowercase text-soul-accent' : 'truncate font-eskapade text-lg text-neutral-100'}>
-              {displayName}
-            </p>
-            {message.tokenId != null && !isGameMaster && (
-              <p className="font-eskapade text-xs text-neutral-500">Token #{message.tokenId}</p>
-            )}
-            {statusCopy && (
-              <p className={`mt-2 inline-flex rounded-full border px-2.5 py-1 font-eskapade text-xs ${getStatusToneClassName(gameplayCharacter?.status, gameplayCharacter?.hpBand)}`}>
-                {statusCopy}
+          {!isContinuation && (
+            <div className="min-w-0">
+              <p className={isGameMaster ? 'font-display text-xl lowercase text-soul-accent' : 'truncate font-eskapade text-lg text-neutral-100'}>
+                {displayName}
               </p>
-            )}
-          </div>
+              {message.tokenId != null && !isGameMaster && (
+                <p className="font-eskapade text-xs text-neutral-500">Token #{message.tokenId}</p>
+              )}
+              {statusCopy && (
+                <p className={`mt-2 inline-flex rounded-full border px-2.5 py-1 font-eskapade text-xs ${getStatusToneClassName(gameplayCharacter?.status, gameplayCharacter?.hpBand)}`}>
+                  {statusCopy}
+                </p>
+              )}
+            </div>
+          )}
         </aside>
 
         <div className="min-w-0 space-y-4">
           <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800/70 pb-3">
             <div className="flex flex-wrap items-center gap-2 font-eskapade text-xs uppercase tracking-[0.18em] text-neutral-500">
               <span>#{message.sequence}</span>
+              {isContinuation && <span className="text-neutral-400">continued {displayName}</span>}
               {isLatest && <span className="text-soul-accent">Latest</span>}
               {domain && (
                 <span className={domain === 'combat' ? 'text-rose-300' : 'text-sky-300'}>

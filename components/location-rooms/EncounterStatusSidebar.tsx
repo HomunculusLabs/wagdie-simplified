@@ -116,11 +116,11 @@ export function EncounterStatusSidebar({ roomData, lastFetchedAt }: EncounterSta
   const ttrpg = roomData.ttrpg;
 
   return (
-    <aside className="space-y-3 lg:sticky lg:top-4">
+    <aside className="space-y-3 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:pr-1">
       <section className="rounded-2xl border border-neutral-800 bg-black/45 p-3.5 shadow-2xl">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="font-eskapade text-xs uppercase tracking-[0.22em] text-neutral-500">Room status</p>
+            <p className="font-eskapade text-xs uppercase tracking-[0.22em] text-neutral-500">Room details</p>
             <h2 className="mt-1 font-display text-2xl lowercase text-neutral-100">
               {gameplay?.encounter?.publicTitle ?? (gameplay?.mode === 'enabled' ? 'encounter watch' : 'story watch')}
             </h2>

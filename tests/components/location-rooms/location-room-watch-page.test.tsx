@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { LocationRoomWatchPage } from '@/components/location-rooms/LocationRoomWatchPage';
 import type { PublicLocationRoomRead } from '@/lib/eliza/locationRooms/types';
 import { usePublicLocationRoom } from '@/hooks/usePublicLocationRoom';
@@ -270,13 +270,14 @@ describe('LocationRoomWatchPage', () => {
     expect(screen.getByRole('link', { name: /Back to map/i })).toHaveAttribute('href', '/map');
     expect(screen.getAllByText('Crows Den').length).toBeGreaterThan(0);
     expect(screen.getByText('Requested crows_den aliases to 11')).toBeInTheDocument();
-    expect(screen.getByText('5 messages')).toBeInTheDocument();
+    expect(screen.getByText('Location watch room')).toBeInTheDocument();
+    expect(screen.getByText('5 messages · latest #5')).toBeInTheDocument();
     expect(screen.getByText('Phase Threat · Readiness Ready')).toBeInTheDocument();
-    expect(screen.getByText('Phase Threat')).toBeInTheDocument();
-    expect(screen.getByText('Readiness Ready')).toBeInTheDocument();
-    expect(screen.getByText('Threat 4 / 5')).toBeInTheDocument();
+    expect(screen.getByText('Encounter Active · Round 2')).toBeInTheDocument();
     expect(screen.getByText('Threat level 4 / 5')).toBeInTheDocument();
-    expect(screen.getByText('3 completed turns')).toBeInTheDocument();
+    expect(screen.getByText('Turns: 3 / 100')).toBeInTheDocument();
+    expect(screen.getByText('current beat')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Jump to latest/i })).toBeInTheDocument();
 
     expect(screen.getByText('I raise my rusted blade.')).toBeInTheDocument();
     expect(screen.getByText('A bell tolls beneath the ash, promising teeth in the dark.')).toBeInTheDocument();
@@ -312,7 +313,7 @@ describe('LocationRoomWatchPage', () => {
     expect(screen.getByText('Read the Runes')).toBeInTheDocument();
     expect(screen.getByText(/Contextual check · action Investigate/)).toBeInTheDocument();
     expect(screen.getByText(/1d20\+5 → 19/)).toBeInTheDocument();
-    expect(screen.getByText('The ghoul staggers as the blade bites.')).toBeInTheDocument();
+    expect(screen.getAllByText('The ghoul staggers as the blade bites.').length).toBeGreaterThan(0);
     expect(screen.queryByText(/Rolls:/)).not.toBeInTheDocument();
     expect(screen.getByText(/1d20\+4 → 18/)).toBeInTheDocument();
     expect(screen.getByText(/Ash Ghoul takes 7 damage/)).toBeInTheDocument();
@@ -428,7 +429,7 @@ describe('LocationRoomWatchPage', () => {
       gameplay: undefined,
       pagination: { ...roomFixture.pagination, total: 3 },
     };
-    mockUsePublicLocationRoom.mockReturnValueOnce({
+    mockUsePublicLocationRoom.mockReturnValue({
       roomData: sceneRoomFixture,
       isLoading: false,
       error: null,
@@ -460,6 +461,86 @@ describe('LocationRoomWatchPage', () => {
     expect(screen.queryByText('Combat action')).not.toBeInTheDocument();
     expect(screen.queryByText('Combat outcome')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Structured GM rolls')).not.toBeInTheDocument();
+  });
+
+  it('shows pending activity while follow-latest is paused and jumps back to the latest message', async () => {
+    const scrollIntoView = jest.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const refetch = jest.fn();
+    let hookState = {
+      roomData: roomFixture,
+      isLoading: false,
+      error: null,
+      lastFetchedAt: new Date('2026-05-24T13:06:00.000Z'),
+      refetch,
+    };
+    mockUsePublicLocationRoom.mockImplementation(() => hookState);
+
+    const { rerender } = render(<LocationRoomWatchPage locationId="crows_den" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /Following latest/i })).toBeInTheDocument());
+    scrollIntoView.mockClear();
+
+    fireEvent.click(screen.getByRole('button', { name: /Following latest/i }));
+    expect(screen.getByRole('button', { name: /Follow latest/i })).toBeInTheDocument();
+
+    hookState = {
+      ...hookState,
+      roomData: {
+        ...roomFixture,
+        activity: {
+          ...roomFixture.activity!,
+          messageCount: 6,
+          latestSequence: 6,
+          latestMessageCreatedAt: '2026-05-24T13:06:00.000Z',
+        },
+        messages: [
+          ...roomFixture.messages,
+          {
+            id: 'msg-6',
+            sequence: 6,
+            authorKind: 'game_master',
+            tokenId: null,
+            authorName: 'Internal GM Agent',
+            content: 'A new shadow crosses the threshold.',
+            createdAt: '2026-05-24T13:06:00.000Z',
+            messageDomain: 'narrative',
+            messageKind: 'gm_beat',
+            ttrpgPhase: 'threat',
+          },
+        ],
+      },
+    };
+    rerender(<LocationRoomWatchPage locationId="crows_den" />);
+
+    await waitFor(() => expect(screen.getAllByText(/New activity — jump to latest/i).length).toBeGreaterThan(0));
+    expect(screen.getAllByText('A new shadow crosses the threshold.').length).toBeGreaterThan(0);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getAllByRole('button', { name: /New activity — jump to latest/i })[0]);
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('does not create pending activity for duplicate same-sequence refreshes while paused', async () => {
+    let hookState = {
+      roomData: roomFixture,
+      isLoading: false,
+      error: null,
+      lastFetchedAt: new Date('2026-05-24T13:06:00.000Z'),
+      refetch: jest.fn(),
+    };
+    mockUsePublicLocationRoom.mockImplementation(() => hookState);
+
+    const { rerender } = render(<LocationRoomWatchPage locationId="crows_den" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /Following latest/i })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /Following latest/i }));
+    expect(screen.getByRole('button', { name: /Follow latest/i })).toBeInTheDocument();
+
+    hookState = { ...hookState, lastFetchedAt: new Date('2026-05-24T13:07:00.000Z') };
+    rerender(<LocationRoomWatchPage locationId="crows_den" />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Follow latest/i })).toBeInTheDocument());
+    expect(screen.queryByText(/New activity — jump to latest/i)).not.toBeInTheDocument();
   });
 
   it('renders loading, error, and empty states', async () => {

@@ -200,3 +200,199 @@ export function hasGameplayRewards(gameplay?: PublicLocationRoomRead['gameplay']
     rewards?.narrativeRewards.length
   );
 }
+
+export type CurrentBeatSummary = {
+  message: PublicRoomMessage;
+  sequence: number;
+  speakerName: string;
+  isGameMaster: boolean;
+  label: string | null;
+  domain: string | null;
+  phase: string | null;
+  timeLabel: string;
+  contentPreview: string;
+  rollSummary: string | null;
+};
+
+export type TranscriptDisplayItem =
+  | {
+      type: 'message';
+      key: string;
+      message: PublicRoomMessage;
+      isLatest: boolean;
+      isContinuation: boolean;
+    }
+  | {
+      type: 'new-activity-marker';
+      key: string;
+      beforeSequence: number;
+      pendingLatestSequence: number;
+      label: string;
+    };
+
+export interface TranscriptDisplayOptions {
+  latestSequence: number | null;
+  lastSeenSequence: number | null;
+  pendingLatestSequence: number | null;
+}
+
+const CONTINUATION_WINDOW_MS = 5 * 60 * 1000;
+const CURRENT_BEAT_PREVIEW_LENGTH = 220;
+
+function publicSpeakerKey(message: PublicRoomMessage): string {
+  if (message.authorKind === 'game_master') return 'game_master';
+  if (message.tokenId != null) return `token:${message.tokenId}`;
+  return `author:${message.authorKind}:${message.authorName}`;
+}
+
+function publicSpeakerName(roomData: PublicLocationRoomRead, message: PublicRoomMessage): string {
+  if (message.authorKind === 'game_master') return 'Game Master';
+  const participant = findParticipantForMessage(roomData.participants, message);
+  return participant?.name ?? message.authorName;
+}
+
+function trimContentPreview(content: string): string {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= CURRENT_BEAT_PREVIEW_LENGTH) return normalized;
+  return `${normalized.slice(0, CURRENT_BEAT_PREVIEW_LENGTH - 1).trimEnd()}…`;
+}
+
+function formatRelativeTime(value?: string | Date | null, now: Date = new Date()): string | null {
+  if (!value) return null;
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const diffMs = now.getTime() - date.getTime();
+  const absoluteMs = Math.abs(diffMs);
+  const suffix = diffMs >= 0 ? 'ago' : 'from now';
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  if (absoluteMs < minute) return 'just now';
+  if (absoluteMs < hour) return `${Math.round(absoluteMs / minute)}m ${suffix}`;
+  if (absoluteMs < day) return `${Math.round(absoluteMs / hour)}h ${suffix}`;
+  return formatDateTime(date.toISOString());
+}
+
+function rollSummary(message: PublicRoomMessage): string | null {
+  const rolls = message.gameplayRolls;
+  if (!rolls) return null;
+
+  const label = rolls.action.checkLabel?.trim()
+    || (rolls.action.checkType ? formatStatusLabel(rolls.action.checkType) : '')
+    || formatStatusLabel(rolls.action.actionType);
+  const total = rolls.action.total ?? rolls.action.roll?.total;
+  const tier = rolls.action.tier ? formatStatusLabel(rolls.action.tier) : null;
+  const parts = [label];
+
+  if (total != null) parts.push(`total ${total}`);
+  if (rolls.action.dc != null) parts.push(`DC ${rolls.action.dc}`);
+  if (tier) parts.push(tier);
+
+  return parts.filter(Boolean).join(' · ');
+}
+
+function isContinuationMessage(previous: PublicRoomMessage | null, message: PublicRoomMessage): boolean {
+  if (!previous) return false;
+  if (previous.gameplayRolls || message.gameplayRolls) return false;
+  if (publicSpeakerKey(previous) !== publicSpeakerKey(message)) return false;
+  if (getPublicRoomMessageDomain(previous) !== getPublicRoomMessageDomain(message)) return false;
+  if (getPublicRoomMessagePhase(previous) !== getPublicRoomMessagePhase(message)) return false;
+
+  const previousTime = new Date(previous.createdAt).getTime();
+  const currentTime = new Date(message.createdAt).getTime();
+  if (Number.isNaN(previousTime) || Number.isNaN(currentTime)) return false;
+
+  return Math.abs(currentTime - previousTime) <= CONTINUATION_WINDOW_MS;
+}
+
+export function getLatestPublicSequence(roomData?: PublicLocationRoomRead | null): number | null {
+  if (!roomData) return null;
+  const messages = sortMessagesChronologically(roomData.messages);
+  return roomData.activity?.latestSequence ?? messages.at(-1)?.sequence ?? null;
+}
+
+export function deriveCurrentBeatSummary(roomData: PublicLocationRoomRead): CurrentBeatSummary | null {
+  const messages = sortMessagesChronologically(roomData.messages);
+  if (messages.length === 0) return null;
+
+  const latestSequence = getLatestPublicSequence(roomData);
+  const message = messages.find((item) => latestSequence != null && item.sequence === latestSequence) ?? messages.at(-1);
+  if (!message) return null;
+
+  const domain = getPublicRoomMessageDomain(message) ?? null;
+  const phase = getPublicRoomMessagePhase(message) ?? null;
+
+  return {
+    message,
+    sequence: message.sequence,
+    speakerName: publicSpeakerName(roomData, message),
+    isGameMaster: message.authorKind === 'game_master',
+    label: getGameplayMessageLabel(message),
+    domain: domain ? formatStatusLabel(domain) : null,
+    phase: phase ? formatStatusLabel(phase) : null,
+    timeLabel: formatTime(message.createdAt),
+    contentPreview: trimContentPreview(message.content),
+    rollSummary: rollSummary(message),
+  };
+}
+
+export function buildTranscriptDisplayItems(
+  roomData: PublicLocationRoomRead,
+  options: TranscriptDisplayOptions
+): TranscriptDisplayItem[] {
+  const messages = sortMessagesChronologically(roomData.messages);
+  const items: TranscriptDisplayItem[] = [];
+  const latestSequence = options.latestSequence;
+  const lastSeenSequence = options.lastSeenSequence;
+  const pendingLatestSequence = options.pendingLatestSequence;
+  const shouldShowMarker =
+    lastSeenSequence != null &&
+    pendingLatestSequence != null &&
+    pendingLatestSequence > lastSeenSequence;
+  let markerInserted = false;
+  let previousMessage: PublicRoomMessage | null = null;
+
+  for (const message of messages) {
+    if (shouldShowMarker && !markerInserted && message.sequence > lastSeenSequence) {
+      items.push({
+        type: 'new-activity-marker',
+        key: `new-activity:${message.sequence}`,
+        beforeSequence: message.sequence,
+        pendingLatestSequence,
+        label: 'New activity — jump to latest',
+      });
+      markerInserted = true;
+    }
+
+    items.push({
+      type: 'message',
+      key: `message:${message.id || message.sequence}`,
+      message,
+      isLatest: latestSequence != null && message.sequence === latestSequence,
+      isContinuation: isContinuationMessage(previousMessage, message),
+    });
+    previousMessage = message;
+  }
+
+  return items;
+}
+
+export function formatLiveFreshnessLabel(
+  roomData: PublicLocationRoomRead,
+  lastFetchedAt: Date | null,
+  now: Date = new Date()
+): string {
+  const latestMessage = formatRelativeTime(roomData.activity?.latestMessageCreatedAt, now);
+  if (latestMessage) return `Updated ${latestMessage}`;
+
+  const fetched = formatRelativeTime(lastFetchedAt, now);
+  if (fetched) return `Fetched ${fetched}`;
+
+  const generated = formatRelativeTime(roomData.activity?.generatedAt, now);
+  if (generated) return `Generated ${generated}`;
+
+  return 'Freshness pending';
+}

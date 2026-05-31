@@ -1,16 +1,26 @@
 import type { RefObject } from 'react';
 import type { PublicLocationRoomRead } from '@/lib/eliza/locationRooms/types';
+import { Button } from '@/components/ui';
 import { EncounterMessageCard } from './EncounterMessageCard';
-import { sortMessagesChronologically } from './locationRoomPresentation';
+import { buildTranscriptDisplayItems, getLatestPublicSequence, sortMessagesChronologically } from './locationRoomPresentation';
 
 interface EncounterTranscriptProps {
   roomData: PublicLocationRoomRead;
   endRef?: RefObject<HTMLDivElement>;
+  lastSeenSequence?: number | null;
+  pendingLatestSequence?: number | null;
+  onJumpToLatest?: () => void;
 }
 
-export function EncounterTranscript({ roomData, endRef }: EncounterTranscriptProps) {
+export function EncounterTranscript({
+  roomData,
+  endRef,
+  lastSeenSequence = null,
+  pendingLatestSequence = null,
+  onJumpToLatest,
+}: EncounterTranscriptProps) {
   const messages = sortMessagesChronologically(roomData.messages);
-  const latestSequence = roomData.activity?.latestSequence ?? messages.at(-1)?.sequence ?? null;
+  const latestSequence = getLatestPublicSequence(roomData);
 
   if (messages.length === 0) {
     return (
@@ -29,16 +39,44 @@ export function EncounterTranscript({ roomData, endRef }: EncounterTranscriptPro
     );
   }
 
+  const items = buildTranscriptDisplayItems(roomData, {
+    latestSequence,
+    lastSeenSequence,
+    pendingLatestSequence,
+  });
+
   return (
-    <section aria-label="Location room transcript" className="space-y-5">
-      {messages.map((message) => (
-        <EncounterMessageCard
-          key={message.id}
-          message={message}
-          roomData={roomData}
-          isLatest={latestSequence != null && message.sequence === latestSequence}
-        />
-      ))}
+    <section aria-label="Location room transcript" className="space-y-4">
+      {items.map((item) => {
+        if (item.type === 'new-activity-marker') {
+          return (
+            <div
+              key={item.key}
+              className="sticky top-2 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-soul-accent/35 bg-soul-950/95 px-4 py-3 shadow-xl backdrop-blur"
+            >
+              <p className="font-eskapade text-sm text-soul-accent">
+                {item.label}
+                <span className="ml-2 text-xs text-neutral-500">through #{item.pendingLatestSequence}</span>
+              </p>
+              {onJumpToLatest && (
+                <Button type="button" variant="secondary" size="sm" onClick={onJumpToLatest}>
+                  Jump to latest
+                </Button>
+              )}
+            </div>
+          );
+        }
+
+        return (
+          <EncounterMessageCard
+            key={item.key}
+            message={item.message}
+            roomData={roomData}
+            isLatest={item.isLatest}
+            isContinuation={item.isContinuation}
+          />
+        );
+      })}
       <div ref={endRef} aria-hidden="true" />
     </section>
   );

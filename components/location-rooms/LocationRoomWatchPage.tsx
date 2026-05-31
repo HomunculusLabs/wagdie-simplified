@@ -1,11 +1,18 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Spinner } from '@/components/ui';
 import { PUBLIC_LOCATION_ROOM_DEFAULT_PAGE_SIZE, usePublicLocationRoom } from '@/hooks/usePublicLocationRoom';
+import { CurrentBeatPanel } from './CurrentBeatPanel';
 import { EncounterStatusSidebar } from './EncounterStatusSidebar';
 import { EncounterTranscript } from './EncounterTranscript';
-import { formatCount, formatDateTime, formatStatusLabel } from './locationRoomPresentation';
+import {
+  deriveCurrentBeatSummary,
+  formatCount,
+  formatLiveFreshnessLabel,
+  formatStatusLabel,
+  getLatestPublicSequence,
+} from './locationRoomPresentation';
 
 interface LocationRoomWatchPageProps {
   locationId: string;
@@ -13,6 +20,8 @@ interface LocationRoomWatchPageProps {
 
 export function LocationRoomWatchPage({ locationId }: LocationRoomWatchPageProps) {
   const [followLatest, setFollowLatest] = useState(true);
+  const [lastSeenSequence, setLastSeenSequence] = useState<number | null>(null);
+  const [pendingLatestSequence, setPendingLatestSequence] = useState<number | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const { roomData, isLoading, error, lastFetchedAt, refetch } = usePublicLocationRoom({
     locationId,
@@ -20,36 +29,46 @@ export function LocationRoomWatchPage({ locationId }: LocationRoomWatchPageProps
     passiveRefresh: true,
   });
 
-  const latestSequence = roomData?.activity?.latestSequence ?? roomData?.messages.at(-1)?.sequence ?? null;
+  const latestSequence = getLatestPublicSequence(roomData);
+  const currentBeat = useMemo(() => (roomData ? deriveCurrentBeatSummary(roomData) : null), [roomData]);
+  const hasPendingActivity =
+    pendingLatestSequence != null &&
+    lastSeenSequence != null &&
+    pendingLatestSequence > lastSeenSequence;
+
+  const scrollToLatest = useCallback(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, []);
+
+  const handleJumpToLatest = useCallback(() => {
+    setFollowLatest(true);
+    setPendingLatestSequence(null);
+    setLastSeenSequence(latestSequence);
+    scrollToLatest();
+  }, [latestSequence, scrollToLatest]);
 
   useEffect(() => {
-    if (!followLatest || !latestSequence) return;
-    transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [followLatest, latestSequence]);
+    if (latestSequence == null) return;
 
-  const headerFacts = useMemo(() => {
-    if (!roomData) return [];
+    setLastSeenSequence((current) => {
+      if (current == null) {
+        setPendingLatestSequence(null);
+        return latestSequence;
+      }
 
-    const facts = [
-      formatCount('participant', roomData.participants.length),
-      formatCount('message', roomData.activity?.messageCount ?? roomData.messages.length),
-      `Latest sequence ${roomData.activity?.latestSequence ?? '—'}`,
-      `Latest message ${formatDateTime(roomData.activity?.latestMessageCreatedAt)}`,
-      `Generated ${formatDateTime(roomData.activity?.generatedAt)}`,
-      `Fetched ${lastFetchedAt ? formatDateTime(lastFetchedAt.toISOString()) : 'pending'}`,
-    ];
+      if (latestSequence <= current) return current;
 
-    if (roomData.ttrpg) {
-      facts.push(`Phase ${formatStatusLabel(roomData.ttrpg.phase)}`);
-      facts.push(`Readiness ${formatStatusLabel(roomData.ttrpg.combatReadiness)}`);
-      if (roomData.ttrpg.threatLevel != null) facts.push(`Threat ${roomData.ttrpg.threatLevel} / 5`);
-    }
-    if (roomData.activity?.tickCount != null) facts.push(`${roomData.activity.tickCount} ticks`);
-    if (roomData.activity?.completedTurnCount != null) facts.push(`${roomData.activity.completedTurnCount} completed turns`);
-    if (roomData.activity?.targetTurnCount != null) facts.push(`${roomData.activity.targetTurnCount} target turns`);
+      if (followLatest) {
+        setPendingLatestSequence(null);
+        return latestSequence;
+      }
 
-    return facts;
-  }, [lastFetchedAt, roomData]);
+      setPendingLatestSequence((pending) => (pending != null && pending >= latestSequence ? pending : latestSequence));
+      return current;
+    });
+
+    if (followLatest) scrollToLatest();
+  }, [followLatest, latestSequence, scrollToLatest]);
 
   if (isLoading && !roomData) {
     return (
@@ -97,11 +116,27 @@ export function LocationRoomWatchPage({ locationId }: LocationRoomWatchPageProps
   const locationName = roomData.identity?.canonicalLocationName ?? roomData.room.locationName;
   const canonicalLocationId = roomData.identity?.canonicalLocationId ?? roomData.room.locationId;
   const requestedLocationId = roomData.identity?.requestedLocationId ?? locationId;
+  const followButtonLabel = hasPendingActivity
+    ? 'New activity — jump to latest'
+    : followLatest
+      ? 'Following latest'
+      : 'Follow latest';
+  const railFacts = [
+    formatCount('participant', roomData.participants.length),
+    `${formatCount('message', roomData.activity?.messageCount ?? roomData.messages.length)} · latest #${latestSequence ?? '—'}`,
+    roomData.ttrpg
+      ? `Phase ${formatStatusLabel(roomData.ttrpg.phase)} · Readiness ${formatStatusLabel(roomData.ttrpg.combatReadiness)}`
+      : null,
+    roomData.gameplay?.encounter
+      ? `Encounter ${formatStatusLabel(roomData.gameplay.encounter.status)} · Round ${roomData.gameplay.encounter.round}`
+      : null,
+    formatLiveFreshnessLabel(roomData, lastFetchedAt),
+  ].filter(Boolean) as string[];
 
   return (
     <main className="min-h-screen bg-soul-950 text-neutral-100">
-      <section className="border-b border-neutral-800 bg-[radial-gradient(circle_at_top_left,rgba(180,130,255,0.14),transparent_30%),linear-gradient(180deg,rgba(0,0,0,0.76),rgba(16,12,28,0.88))]">
-        <div className="mx-auto max-w-7xl px-4 py-5 md:py-7">
+      <section className="border-b border-neutral-800 bg-[radial-gradient(circle_at_top_left,rgba(180,130,255,0.14),transparent_30%),linear-gradient(180deg,rgba(0,0,0,0.82),rgba(16,12,28,0.92))]">
+        <div className="mx-auto max-w-7xl px-4 py-4 md:py-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <a href="/map" className="font-eskapade text-sm text-soul-accent transition-colors hover:text-neutral-100">
               ← Back to map
@@ -110,65 +145,80 @@ export function LocationRoomWatchPage({ locationId }: LocationRoomWatchPageProps
               <Button type="button" variant="secondary" size="sm" onClick={() => void refetch({ silent: true })}>
                 Refresh
               </Button>
-              <Button type="button" variant="secondary" size="sm" onClick={() => setFollowLatest((value) => !value)}>
-                {followLatest ? 'Following latest' : 'Follow latest'}
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  if (followLatest && !hasPendingActivity) {
+                    setFollowLatest(false);
+                    return;
+                  }
+                  handleJumpToLatest();
+                }}
+              >
+                {followButtonLabel}
               </Button>
             </div>
           </div>
 
-          <div className="mt-5 max-w-4xl">
-            <p className="font-eskapade text-xs uppercase tracking-[0.3em] text-soul-accent/80">Location encounter watch</p>
-            <h1 className="mt-1 font-display text-4xl lowercase text-neutral-50 md:text-6xl">
-              {locationName}
-            </h1>
-            <p className="mt-3 max-w-3xl font-eskapade text-sm leading-relaxed text-neutral-400 md:text-base">
-              A read-only room transcript built for leaving open while gameplay unfolds. Use the map for staking and manual trigger actions.
-            </p>
-          </div>
+          <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr),auto] lg:items-end">
+            <div className="min-w-0">
+              <p className="font-eskapade text-xs uppercase tracking-[0.3em] text-soul-accent/80">Location watch room</p>
+              <h1 className="mt-1 font-display text-4xl lowercase text-neutral-50 md:text-6xl">
+                {locationName}
+              </h1>
+              <p className="mt-2 max-w-3xl font-eskapade text-sm leading-relaxed text-neutral-400 md:text-base">
+                A read-only live room feed for leaving open while gameplay unfolds. Use the map for staking and manual trigger actions.
+              </p>
+            </div>
 
-          <div className="mt-4 flex flex-wrap gap-2 font-eskapade text-xs text-neutral-400">
-            <span className="rounded-full border border-neutral-700 bg-black/35 px-3 py-1">
-              Canonical {canonicalLocationId}
-            </span>
-            {roomData.identity?.isAlias && (
-              <span className="rounded-full border border-amber-500/35 bg-amber-500/10 px-3 py-1 text-amber-100">
-                Requested {requestedLocationId} aliases to {canonicalLocationId}
-              </span>
-            )}
-            {roomData.ttrpg && (
-              <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-sky-100">
-                Phase {formatStatusLabel(roomData.ttrpg.phase)} · Readiness {formatStatusLabel(roomData.ttrpg.combatReadiness)}
-              </span>
-            )}
-            {roomData.gameplay?.encounter && (
+            <div className="flex flex-wrap gap-2 font-eskapade text-xs text-neutral-400 lg:justify-end">
               <span className="rounded-full border border-neutral-700 bg-black/35 px-3 py-1">
-                Encounter {formatStatusLabel(roomData.gameplay.encounter.status)} · Round {roomData.gameplay.encounter.round}
+                Canonical {canonicalLocationId}
+              </span>
+              {roomData.identity?.isAlias && (
+                <span className="rounded-full border border-amber-500/35 bg-amber-500/10 px-3 py-1 text-amber-100">
+                  Requested {requestedLocationId} aliases to {canonicalLocationId}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2 font-eskapade text-xs text-neutral-300">
+            {railFacts.map((fact) => (
+              <span key={fact} className="rounded-full border border-neutral-800 bg-black/35 px-3 py-1.5">
+                {fact}
+              </span>
+            ))}
+            {error && (
+              <span className="rounded-full border border-amber-500/35 bg-amber-500/10 px-3 py-1.5 text-amber-100">
+                Passive refresh failed
               </span>
             )}
           </div>
-
-          <dl className="mt-4 grid gap-2 font-eskapade text-xs text-neutral-400 sm:grid-cols-2 lg:grid-cols-4">
-            {headerFacts.map((fact) => (
-              <div key={fact} className="rounded-lg border border-neutral-800 bg-black/35 px-3 py-2">
-                {fact}
-              </div>
-            ))}
-          </dl>
         </div>
       </section>
 
-      <div className="mx-auto grid max-w-7xl gap-5 px-4 py-6 lg:grid-cols-[minmax(0,1fr),23rem] lg:items-start lg:py-8">
-        <div className="lg:order-2">
-          <EncounterStatusSidebar roomData={roomData} lastFetchedAt={lastFetchedAt} />
-        </div>
-
-        <div className="space-y-4 lg:order-1">
+      <div className="mx-auto grid max-w-7xl gap-5 px-4 py-5 lg:grid-cols-[minmax(0,1fr),23rem] lg:items-start lg:py-6">
+        <div className="space-y-4">
           {error && (
-            <Alert variant="default" className="border-neutral-800 bg-neutral-950/70">
+            <Alert variant="default" className="border-amber-500/30 bg-amber-500/10 text-amber-100">
               Passive refresh failed: {error}
             </Alert>
           )}
-          <EncounterTranscript roomData={roomData} endRef={transcriptEndRef} />
+          <CurrentBeatPanel beat={currentBeat} hasPendingActivity={hasPendingActivity} onJumpToLatest={handleJumpToLatest} />
+          <EncounterTranscript
+            roomData={roomData}
+            endRef={transcriptEndRef}
+            lastSeenSequence={lastSeenSequence}
+            pendingLatestSequence={pendingLatestSequence}
+            onJumpToLatest={handleJumpToLatest}
+          />
+        </div>
+
+        <div>
+          <EncounterStatusSidebar roomData={roomData} lastFetchedAt={lastFetchedAt} />
         </div>
       </div>
     </main>
