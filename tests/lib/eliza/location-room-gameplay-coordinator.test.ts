@@ -511,6 +511,70 @@ describe('location room gameplay coordinator', () => {
     expect(gameplayRepository.createActiveEncounter).not.toHaveBeenCalled()
   })
 
+  it('appends a game-master ending narration when every character is already dead', async () => {
+    const { coordinator, gameplayRepository, roomRepository, gmGenerator, actionGenerator } = makeCoordinator()
+    gameplayRepository.state.status = 'active_encounter'
+    gameplayRepository.state.activeEncounterId = 'encounter-1'
+    gameplayRepository.state.characters = {
+      '1': { tokenId: 1, name: 'Ash', hp: 0, maxHp: 10, status: 'dead', xp: 0, temporaryBoons: [], wounds: [] },
+      '2': { tokenId: 2, name: 'Bone', hp: 0, maxHp: 10, status: 'dead', xp: 0, temporaryBoons: [], wounds: [] },
+    }
+    gameplayRepository.encounters.push({
+      id: 'encounter-1',
+      roomId: 'room-1',
+      locationId: 'loc-1',
+      status: 'active',
+      difficulty: 'normal',
+      roundNumber: 2,
+      publicTitle: 'Bell Maw',
+      publicSummary: 'A maw unfolds.',
+      monsterState: [{ id: 'monster-1', name: 'Bell Maw', archetype: 'bell horror', hp: 2, maxHp: 2, ac: 10, attackBonus: 2, damageFormula: '1d4', status: 'alive' }],
+      rewardPlan: {},
+      mechanics: {},
+      metadata: {},
+      lastError: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      completedAt: null,
+    })
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+    })
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      selectedTokenId: null,
+      messageIds: ['msg-1'],
+      encounterStatusAfter: 'defeat',
+    })
+    expect(roomRepository.messages).toEqual([expect.objectContaining({
+      authorKind: 'game_master',
+      tokenId: null,
+      content: expect.stringContaining('ends in defeat'),
+      metadata: expect.objectContaining({
+        dedupeKey: 'gameplay:gm_terminal_outcome',
+        gameplayMessageKind: 'gm_outcome',
+        ttrpgPhase: 'aftermath',
+        encounterStatusAfter: 'defeat',
+      }),
+    })])
+    expect(gameplayRepository.encounters[0]).toMatchObject({ status: 'defeat', completedAt: now.toISOString() })
+    expect(gameplayRepository.state).toMatchObject({ status: 'aftermath', activeEncounterId: null })
+    expect(gameplayRepository.turns[0]).toMatchObject({
+      status: 'completed',
+      selectedTokenId: null,
+      publicMessageIds: ['msg-1'],
+      outcomeSummary: expect.stringContaining('ends in defeat'),
+    })
+    expect(actionGenerator.generateAction).not.toHaveBeenCalled()
+    expect(gmGenerator.generateOutcomeNarration).not.toHaveBeenCalled()
+  })
+
   it('persists encounter proposal diagnostics before encounter creation fails', async () => {
     const { coordinator, gameplayRepository, roomRepository, gmGenerator } = makeCoordinator()
     const failure = new GameMasterGameplayEncounterProposalGenerationError('proposal repair failed', {

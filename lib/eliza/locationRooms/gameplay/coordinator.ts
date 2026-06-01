@@ -314,6 +314,15 @@ function rollCardContent(publicRolls: ReturnType<typeof projectPublicGameplayRol
   ].filter(Boolean).join('') + '.'
 }
 
+function terminalEncounterNarration(status: string, encounter: GameplayEncounter): string {
+  const title = encounter.publicTitle?.trim() || 'The encounter'
+  if (status === 'fled') {
+    return `${title} ends in retreat. The room falls into aftermath as the survivors scatter from the threat.`
+  }
+
+  return `${title} ends in defeat. The room falls silent, and the Game Master marks the aftermath of the fallen party.`
+}
+
 function activeMonsterIds(encounter: GameplayEncounter): string[] {
   return parseGameplayMonsters(encounter.monsterState)
     .filter((monster) => monster.status === 'alive' && monster.hp > 0)
@@ -728,10 +737,35 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         status: terminalStatus,
         completedAt: nowIso(input.now),
       })
-      await this.gameplayRepository.updateState(input.room, {
+      gameplayState = await this.gameplayRepository.updateState(input.room, {
         status: 'aftermath',
         activeEncounterId: null,
       })
+      const endingNarration = terminalEncounterNarration(encounter.status, encounter)
+      const endingMessage = await this.repository.appendMessage({
+        roomId: input.room.id,
+        locationId: input.room.locationId,
+        tickId: input.tick.id,
+        authorKind: 'game_master',
+        tokenId: null,
+        officialAgentId: gameMasterAgentId,
+        authorName: GAMEPLAY_GAME_MASTER_AUTHOR_NAME,
+        content: endingNarration,
+        visibility: 'public',
+        dedupeKey: 'gameplay:gm_terminal_outcome',
+        metadata: {
+          source: GAMEPLAY_SOURCE,
+          gameplay: true,
+          gameplayMessageKind: 'gm_outcome',
+          messageDomain: 'combat',
+          messageKind: 'gm_outcome',
+          ttrpgPhase: 'aftermath',
+          gameplayTurnId: turn.id,
+          encounterId: encounter.id,
+          encounterStatusAfter: encounter.status,
+        },
+      })
+      messageIds = messageIdsWith(messageIds, endingMessage.id)
       await this.narrativeRepository.updateState(input.room, {
         metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
           ttrpgPhase: 'aftermath',
@@ -741,14 +775,32 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
         }, {
           source: GAMEPLAY_SOURCE,
           lastGameplayEncounterId: encounter.id,
+          lastGameplayEncounterStatus: encounter.status,
           lastGameplayTerminalStatus: encounter.status,
           lastTickId: input.tick.id,
         }),
       })
-      return {
-        status: 'skipped',
+      turn = await this.gameplayRepository.storeTurnOutcome(turn.id, {
+        status: 'completed',
         selectedTokenId: null,
-        reason: `encounter_${encounter.status}`,
+        action: {},
+        diceResults: [],
+        mechanicalDeltas: { encounterStatusAfter: encounter.status },
+        publicMessageIds: messageIds,
+        outcomeSummary: endingNarration,
+        metadata: {
+          ...turn.metadata,
+          gameMasterAgentId,
+          terminalEncounterStatus: encounter.status,
+        },
+        completedAt: nowIso(input.now),
+      })
+      return {
+        status: 'completed',
+        selectedTokenId: null,
+        messageId: endingMessage.id,
+        messageIds: turn.publicMessageIds,
+        encounterStatusAfter: encounter.status,
       }
     }
 
