@@ -23,7 +23,7 @@ import {
 import type { GameMasterAgentResolver, LocationRoomNarrativeCoordinator } from '../narrativeCoordinator'
 import type { LocationRoomGameplayCoordinator, LocationRoomGameplayEncounterTrigger } from '../gameplay/coordinator'
 import type { LocationRoomGameplayRepository } from '../gameplay/repository'
-import type { GameplayEncounter, GameplayRun } from '../gameplay/types'
+import type { GameplayEncounter, GameplayRoomState, GameplayRun } from '../gameplay/types'
 import { selectLocationRoomSpeaker } from '../speakerSelection'
 import { LocationRoomManualTickIntentForbiddenError } from './errors'
 import { ensureLocationRoomGameplayConfigReady, isLocationRoomGameplayEnabledForLocation } from './configGuards'
@@ -49,6 +49,24 @@ export type LocationRoomTickProcessorDependencies = {
   gameplayCoordinator: LocationRoomGameplayCoordinator
   gameplayRepository: LocationRoomGameplayRepository
   narrativeRepository: LocationRoomNarrativeRepository
+}
+
+function isParticipantAvailableForRoomSpeech(
+  participant: Pick<LocationRoomParticipant, 'tokenId'>,
+  gameplayState: GameplayRoomState | null
+): boolean {
+  if (!gameplayState) return true
+  const character = gameplayState.characters[String(participant.tokenId)]
+  if (!character) return true
+  if (character.status === 'dead' || character.status === 'fled') return false
+  return character.hp > 0
+}
+
+function filterParticipantsAvailableForRoomSpeech(
+  participants: LocationRoomParticipant[],
+  gameplayState: GameplayRoomState | null
+): LocationRoomParticipant[] {
+  return participants.filter((participant) => isParticipantAvailableForRoomSpeech(participant, gameplayState))
 }
 
 export class LocationRoomTickProcessor {
@@ -486,7 +504,14 @@ export class LocationRoomTickProcessor {
 
     await ensureLocationRoomGameplayConfigReady(room.locationId, this.gameMasterAgentResolver)
 
-    const participants = await this.membership.listEligibleParticipantsByLocation(room.locationId)
+    const gameplayEnabledForLocation = isLocationRoomGameplayEnabledForLocation(room.locationId)
+    const gameplayStateForEligibility = gameplayEnabledForLocation
+      ? await this.gameplayRepository.findStateByRoomId(room.id).catch(() => null)
+      : null
+    const participants = filterParticipantsAvailableForRoomSpeech(
+      await this.membership.listEligibleParticipantsByLocation(room.locationId),
+      gameplayStateForEligibility
+    )
     if (participants.length < MIN_ELIGIBLE_PARTICIPANTS) {
       logLocationRoomRouteDecision({
         tickId: tick.id,
@@ -494,7 +519,7 @@ export class LocationRoomTickProcessor {
         locationId: room.locationId,
         turnIntent: tick.turnIntent ?? 'auto',
         triggerType: tick.triggerType,
-        gameplayGateResult: isLocationRoomGameplayEnabledForLocation(room.locationId) ? 'enabled' : 'disabled',
+        gameplayGateResult: gameplayEnabledForLocation ? 'enabled' : 'disabled',
         activeEncounterId: null,
         combatTriggerId: null,
         sceneCheckRequestPresent: false,
@@ -521,7 +546,6 @@ export class LocationRoomTickProcessor {
     )
 
     const turnIntent = tick.turnIntent ?? 'auto'
-    const gameplayEnabledForLocation = isLocationRoomGameplayEnabledForLocation(room.locationId)
     const gameplayGateResult: LocationRoomRouteDiagnostic['gameplayGateResult'] = gameplayEnabledForLocation ? 'enabled' : 'disabled'
     let activeEncounterId: string | null = null
     let combatTriggerId: string | null = null

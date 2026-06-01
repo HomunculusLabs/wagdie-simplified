@@ -3028,6 +3028,21 @@ describe('location room service scenario harness routing coverage', () => {
     expect(oneParticipantHarness.snapshots.room.nextTickAt).toEqual(expect.any(String))
   })
 
+  it('does not select gameplay-dead characters for narrative speech', async () => {
+    const harness = await runLocationRoomServiceScenario({
+      intent: 'story',
+      participants: [participant(1, 'Dead Ash'), participant(2, 'Bone'), participant(3, 'Crow')],
+      gameplayCharacters: {
+        1: { tokenId: 1, name: 'Dead Ash', hp: 0, maxHp: 10, status: 'dead', xp: 0, temporaryBoons: [], wounds: [] },
+        2: { tokenId: 2, name: 'Bone', hp: 10, maxHp: 10, status: 'alive', xp: 0, temporaryBoons: [], wounds: [] },
+        3: { tokenId: 3, name: 'Crow', hp: 10, maxHp: 10, status: 'alive', xp: 0, temporaryBoons: [], wounds: [] },
+      },
+    })
+
+    expect(harness.result.processing).toMatchObject({ attempted: true, status: 'completed', result: { selectedTokenId: 2 } })
+    expect(harness.snapshots.messages.at(-1)).toMatchObject({ authorKind: 'agent', tokenId: 2 })
+  })
+
   it('marks failed narrative ticks retryable and gameplay-run ticks dead at exhaustion', async () => {
     const retryHarness = await runLocationRoomServiceScenario({
       intent: 'story',

@@ -2,7 +2,7 @@ import { DefaultLocationRoomNarrativeCoordinator, type GameMasterAgentResolver, 
 import type { GameMasterBeatGenerator } from '@/lib/eliza/locationRooms/gameMasterGenerator'
 import type { LocationRoomGameplayCoordinator, ProcessGameplayLocationRoomTurnInput, ProcessGameplayLocationRoomTurnResult } from '@/lib/eliza/locationRooms/gameplay/coordinator'
 import type { LocationRoomGameplayRepository } from '@/lib/eliza/locationRooms/gameplay/repository'
-import type { GameplayEncounter, GameplayRoomState, GameplayRun, GameplayRunStartedByActor, GameplayTurn } from '@/lib/eliza/locationRooms/gameplay/types'
+import type { GameplayCharacterStateMap, GameplayEncounter, GameplayRoomState, GameplayRun, GameplayRunStartedByActor, GameplayTurn } from '@/lib/eliza/locationRooms/gameplay/types'
 import { normalizeNarrativeSceneCheckMetadata } from '@/lib/eliza/locationRooms/narrativeTypes'
 import type { LocationRoomNarrativeRepository } from '@/lib/eliza/locationRooms/narrativeRepository'
 import type { LocationRoomRepository } from '@/lib/eliza/locationRooms/repository'
@@ -38,6 +38,7 @@ export type LocationRoomServiceScenarioHarnessOptions = {
   gameplayCoordinatorThrows?: Error
   narrativeCoordinatorThrows?: Error
   gameplayProcessResult?: ProcessGameplayLocationRoomTurnResult
+  gameplayCharacters?: GameplayCharacterStateMap
 }
 
 type WorkerResult = Awaited<ReturnType<LocationRoomService['runScheduledWorker']>>
@@ -139,6 +140,7 @@ export async function createLocationRoomServiceScenario(options: LocationRoomSer
     activeRun,
     activeEncounter,
     activeTurnTickId: options.gameplayRunTick || activeRun ? pendingTick?.id ?? `tick-${scenario.id}-1` : null,
+    characters: options.gameplayCharacters,
   })
   const gameplayCoordinator = new ScriptedGameplayCoordinator({ result: options.gameplayProcessResult, error: options.gameplayCoordinatorThrows })
   const service = new LocationRoomService(
@@ -279,14 +281,18 @@ function defaultGameplayEncounter(scenario: NarrativeHarnessScenario, overrides:
   }
 }
 
-function defaultGameplayState(scenario: NarrativeHarnessScenario, activeEncounterId: string | null): GameplayRoomState {
+function defaultGameplayState(
+  scenario: NarrativeHarnessScenario,
+  activeEncounterId: string | null,
+  characters?: GameplayCharacterStateMap
+): GameplayRoomState {
   return {
     id: 'gameplay-state-1',
     roomId: `room-${scenario.locationId}`,
     locationId: scenario.locationId,
     status: activeEncounterId ? 'active_encounter' : 'idle',
     activeEncounterId,
-    characters: {
+    characters: characters ?? {
       [scenario.characters[0]?.tokenId ?? 1]: { tokenId: scenario.characters[0]?.tokenId ?? 1, name: scenario.characters[0]?.name ?? 'Ash', hp: 10, maxHp: 10, status: 'alive', xp: 0, temporaryBoons: [], wounds: [] },
       [scenario.characters[1]?.tokenId ?? 2]: { tokenId: scenario.characters[1]?.tokenId ?? 2, name: scenario.characters[1]?.name ?? 'Bone', hp: 10, maxHp: 10, status: 'alive', xp: 0, temporaryBoons: [], wounds: [] },
     },
@@ -340,11 +346,14 @@ export class ScenarioGameplayRepository implements Partial<LocationRoomGameplayR
     activeRun: GameplayRun | null
     activeEncounter: GameplayEncounter | null
     activeTurnTickId: string | null
+    characters?: GameplayCharacterStateMap
   }) {
     this.scenario = options.scenario
     this.run = options.activeRun
     this.encounter = options.activeEncounter
-    this.state = options.activeEncounter ? defaultGameplayState(options.scenario, options.activeEncounter.id) : null
+    this.state = options.activeEncounter || options.characters
+      ? defaultGameplayState(options.scenario, options.activeEncounter?.id ?? null, options.characters)
+      : null
     this.durableTurnTickId = options.activeTurnTickId
   }
 

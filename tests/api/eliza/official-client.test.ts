@@ -78,6 +78,7 @@ jest.mock('@elizaos/api-client', () => {
 })
 
 import { OfficialWagdieElizaClient } from '@/lib/eliza/official/client'
+import { createOfficialAgentId } from '@/lib/eliza/official/ids'
 import type { OfficialConversationLink, OfficialConversationRepository } from '@/lib/eliza/officialConversationRepository'
 
 const AGENT_ID = '11111111-1111-5111-8111-111111111111'
@@ -152,20 +153,15 @@ describe('OfficialWagdieElizaClient', () => {
     jest.restoreAllMocks()
   })
 
-  it('maps official agents to WAGDIE character records by externalId', async () => {
+  it('maps official agents to WAGDIE character records by deterministic externalId', async () => {
+    const deterministicAgentId = createOfficialAgentId('123')
     const fetchMock = jest
       .fn()
       .mockResolvedValueOnce(
         jsonResponse({
           success: true,
-          data: { agents: [{ id: AGENT_ID, name: 'Ash', characterName: 'Ash', status: 'active' }] },
-        })
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({
-          success: true,
           data: {
-            id: AGENT_ID,
+            id: deterministicAgentId,
             name: 'Ash',
             bio: ['A watcher'],
             settings: { wagdie: { externalId: '123' } },
@@ -183,43 +179,21 @@ describe('OfficialWagdieElizaClient', () => {
     })
 
     await expect(client.characters.getRecordByExternalId('123')).resolves.toMatchObject({
-      id: AGENT_ID,
+      id: deterministicAgentId,
       externalId: '123',
       character: { name: 'Ash', settings: { wagdie: { externalId: '123' } } },
     })
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-      'https://elizaos.example/api/agents',
-      `https://elizaos.example/api/agents/${AGENT_ID}`,
+      `https://elizaos.example/api/agents/${deterministicAgentId}`,
     ])
   })
 
-  it('skips stale listed official agents that 404 during externalId lookup', async () => {
-    const staleAgentId = '22222222-2222-5222-8222-222222222222'
+  it('returns null when deterministic official agent lookup 404s', async () => {
+    const deterministicAgentId = createOfficialAgentId('123')
     const fetchMock = jest
       .fn()
-      .mockResolvedValueOnce(
-        jsonResponse({
-          success: true,
-          data: {
-            agents: [
-              { id: staleAgentId, name: 'Stale', characterName: 'Stale', status: 'inactive' },
-              { id: AGENT_ID, name: 'Ash', characterName: 'Ash', status: 'active' },
-            ],
-          },
-        })
-      )
       .mockResolvedValueOnce(jsonResponse({ success: false, error: { code: 'NOT_FOUND', message: 'Agent not found' } }, { status: 404 }))
-      .mockResolvedValueOnce(
-        jsonResponse({
-          success: true,
-          data: {
-            id: AGENT_ID,
-            name: 'Ash',
-            settings: { wagdie: { externalId: '123' } },
-          },
-        })
-      )
 
     global.fetch = fetchMock as typeof fetch
 
@@ -228,10 +202,11 @@ describe('OfficialWagdieElizaClient', () => {
       apiKey: 'service-key',
     })
 
-    await expect(client.characters.getRecordByExternalId('123')).resolves.toMatchObject({
-      id: AGENT_ID,
-      externalId: '123',
-    })
+    await expect(client.characters.getRecordByExternalId('123')).resolves.toBeNull()
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      `https://elizaos.example/api/agents/${deterministicAgentId}`,
+    ])
   })
 
   it('creates official agents with WAGDIE external id metadata', async () => {

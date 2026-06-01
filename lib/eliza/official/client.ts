@@ -260,30 +260,31 @@ export class OfficialWagdieElizaClient implements WagdieElizaClient {
     },
 
     getRecordByExternalId: async (externalId: string): Promise<CharacterRecord | null> => {
+      const trimmedExternalId = externalId.trim()
+      if (!trimmedExternalId) {
+        return null
+      }
+
+      const deterministicAgentId = createOfficialAgentId(trimmedExternalId)
+
       try {
-        const { agents } = await this.client.agents.listAgents()
+        const record = await this.characters.getRecord(deterministicAgentId)
 
-        for (const agent of agents) {
-          if (!agent.id) continue
-
-          let record: CharacterRecord
-          try {
-            record = await this.characters.getRecord(agent.id)
-          } catch (error) {
-            if (error instanceof WagdieElizaError && error.statusCode === 404) {
-              continue
-            }
-            throw error
-          }
-
-          if (record.externalId === externalId) {
-            return record
-          }
+        if (record.externalId && record.externalId !== trimmedExternalId) {
+          console.warn('[Official ElizaOS] deterministic agent externalId mismatch', {
+            requestedExternalId: trimmedExternalId,
+            agentId: deterministicAgentId,
+            recordExternalId: record.externalId,
+          })
         }
 
-        return null
+        return record
       } catch (error) {
-        throw normalizeOfficialElizaError(error, 'Failed to search official ElizaOS agents')
+        if (error instanceof WagdieElizaError && error.statusCode === 404) {
+          return null
+        }
+
+        throw normalizeOfficialElizaError(error, 'Failed to load official ElizaOS agent by external id')
       }
     },
 
