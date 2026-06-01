@@ -17,13 +17,8 @@ import { useConversations } from '@/hooks/useConversations'
 import { useElizaAuth } from '@/hooks/useElizaAuth'
 import { Button, Spinner } from '@/components/ui'
 import { AI_PERSONA_REQUIRED_ERROR, AI_PERSONA_REQUIRED_MESSAGE } from '@/lib/eliza/chatReadiness'
-import {
-  DOCK_DEFAULT_WIDTH,
-  DOCK_OVERLAY_CLASS,
-  DOCK_PANEL_SHELL_CLASS,
-  DOCK_PANEL_TRANSITION_CLASS,
-  DOCK_Z_INDEX,
-} from './dockShell'
+import { CHAT_DOCK_VISIBLE_EVENT } from './dockShell'
+import { RightEdgeDockShell } from './RightEdgeDockShell'
 
 interface ChatSidebarProps {
   tokenId: string
@@ -51,7 +46,6 @@ function ChatSidebarComponent({
 
   const { checkToken, getToken, isAuthenticated, isAuthenticating, authStep, error: authError, clearAuth } = useElizaAuth()
 
-  const panelRef = useRef<HTMLDivElement | null>(null)
   const passiveAuthCheckKeyRef = useRef<string | null>(null)
   const [visible, setVisible] = useState(false)
 
@@ -259,29 +253,33 @@ function ChatSidebarComponent({
   if (!visible && !isOpen) return null
 
   return (
-    <div className={DOCK_OVERLAY_CLASS} style={{ zIndex: DOCK_Z_INDEX }}>
-      {/* Drawer Panel */}
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-labelledby="chat-sidebar-title"
-        className={`
-          ${DOCK_PANEL_SHELL_CLASS}
-          w-full
-          ${DOCK_PANEL_TRANSITION_CLASS}
-          ${isOpen ? 'translate-x-0' : 'translate-x-full'}
-        `}
-        style={{ maxWidth: `min(100vw, ${DOCK_DEFAULT_WIDTH}px)` }}
-      >
-        <ChatHeader
-          characterName={characterName}
-          tokenId={tokenId}
-          onClose={onClose}
-          onToggleHistory={toggleHistory}
-          onNewConversation={handleNewConversation}
-          showHistoryToggle={isConnected && isPersonaReady && (showHistory || conversations.length > 0)}
-          isHistoryOpen={showHistory}
-        />
+    <RightEdgeDockShell
+      ariaLabel="Chat dock"
+      isAvailable={isOpen}
+      onRequestClose={onClose}
+      visibilityEventName={CHAT_DOCK_VISIBLE_EVENT}
+      collapseResetKey={`${tokenId}:${characterId}:${isOpen ? 'open' : 'closed'}`}
+      panelRole="dialog"
+      panelAriaLabelledBy="chat-sidebar-title"
+      panelTestId="chat-drawer-panel"
+      resizeHandleTestId="chat-resize-handle"
+      resizeHandleLabel="Resize chat sidebar"
+      collapsedRailLabel="chat"
+      collapseButtonLabel="Collapse chat sidebar"
+      expandButtonLabel="Expand chat sidebar"
+    >
+      {({ collapseButton }) => (
+        <>
+          <ChatHeader
+            characterName={characterName}
+            tokenId={tokenId}
+            onClose={onClose}
+            onToggleHistory={toggleHistory}
+            onNewConversation={handleNewConversation}
+            showHistoryToggle={isConnected && isPersonaReady && (showHistory || conversations.length > 0)}
+            isHistoryOpen={showHistory}
+            dockControls={collapseButton}
+          />
 
         {/* Wallet connection gate */}
         {!isConnected ? (
@@ -413,8 +411,9 @@ function ChatSidebarComponent({
             />
           </>
         )}
-      </div>
-    </div>
+        </>
+      )}
+    </RightEdgeDockShell>
   )
 }
 

@@ -7,8 +7,31 @@
  * never looks "layered".
  */
 
-/** Default panel width in px (desktop). Persona dock may resize from this baseline. */
+/** Default panel width in px (desktop). */
 export const DOCK_DEFAULT_WIDTH = 500
+
+/** Minimum resizable panel width in px (desktop). */
+export const DOCK_MIN_WIDTH = 340
+
+/** Maximum resizable panel width in px (desktop). */
+export const DOCK_MAX_WIDTH = 720
+
+/** Width of the collapsed right-edge rail in px (desktop). */
+export const DOCK_COLLAPSED_WIDTH = 56
+
+/** Minimum viewport gutter to preserve beside desktop docks. */
+export const DOCK_MOBILE_EDGE_GUTTER = 16
+
+/** Visibility event for the normal chat dock geometry. */
+export const CHAT_DOCK_VISIBLE_EVENT = 'chat-dock-visible-change'
+
+export interface RightEdgeDockVisibilityDetail {
+  visible: boolean
+  width: number
+  available?: boolean
+  collapsed?: boolean
+  resizing?: boolean
+}
 
 /** Shared stacking context for both docks. They are mutually exclusive, so same z. */
 export const DOCK_Z_INDEX = 60

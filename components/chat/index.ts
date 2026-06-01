@@ -15,6 +15,7 @@ export { ConversationItem } from './ConversationItem'
 export { ChatDock } from './ChatDock'
 
 export { ChatToggleButton } from './ChatToggleButton'
+export { CHAT_DOCK_VISIBLE_EVENT } from './dockShell'
 
 export {
   PersonaAssistantDockSlot,

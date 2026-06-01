@@ -1,15 +1,31 @@
 'use client'
 
-import { memo, type CSSProperties } from 'react'
+import { memo, useEffect, useState, type CSSProperties } from 'react'
 import { useChatDock } from '@/contexts/ChatDockContext'
 import { Button } from '@/components/ui'
-import { DOCK_DEFAULT_WIDTH } from './dockShell'
+import { CHAT_DOCK_VISIBLE_EVENT, DOCK_DEFAULT_WIDTH, type RightEdgeDockVisibilityDetail } from './dockShell'
 
 /** Gap between the open dock's edge and the floating toggle button. */
 const TOGGLE_GUTTER = 20
 
 function ChatToggleButtonComponent() {
   const { isOpen, target, toggleChat } = useChatDock()
+  const [chatDockWidth, setChatDockWidth] = useState(DOCK_DEFAULT_WIDTH)
+
+  useEffect(() => {
+    const handleChatDockVisibility = (event: Event) => {
+      const { width } = (event as CustomEvent<RightEdgeDockVisibilityDetail>).detail ?? {}
+      if (typeof width === 'number') {
+        setChatDockWidth(width)
+      }
+    }
+
+    window.addEventListener(CHAT_DOCK_VISIBLE_EVENT, handleChatDockVisibility)
+
+    return () => {
+      window.removeEventListener(CHAT_DOCK_VISIBLE_EVENT, handleChatDockVisibility)
+    }
+  }, [])
 
   if (!target) return null
 
@@ -19,7 +35,7 @@ function ChatToggleButtonComponent() {
   // On md+, when open, it sits just outside the panel. The offset is derived from the shared
   // dock width via a CSS var so it can't drift; the md:right-[var(...)] class is static so
   // Tailwind's JIT compiles it.
-  const style = { '--toggle-open-right': `${DOCK_DEFAULT_WIDTH + TOGGLE_GUTTER}px` } as CSSProperties
+  const style = { '--toggle-open-right': `${chatDockWidth + TOGGLE_GUTTER}px` } as CSSProperties
 
   return (
     <div

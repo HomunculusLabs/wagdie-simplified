@@ -3,7 +3,7 @@
  * Header for chat sidebar with character name, history toggle, and close button
  */
 
-import { memo } from 'react'
+import { memo, type ReactNode } from 'react'
 import { Button } from '@/components/ui'
 
 interface ChatHeaderProps {
@@ -14,6 +14,7 @@ interface ChatHeaderProps {
   onNewConversation?: () => void
   showHistoryToggle?: boolean
   isHistoryOpen?: boolean
+  dockControls?: ReactNode
 }
 
 function ChatHeaderComponent({
@@ -24,6 +25,7 @@ function ChatHeaderComponent({
   onNewConversation,
   showHistoryToggle = false,
   isHistoryOpen = false,
+  dockControls,
 }: ChatHeaderProps) {
   return (
     <header className="flex items-center justify-between p-4 border-b border-neutral-800 bg-black/50">
@@ -66,6 +68,8 @@ function ChatHeaderComponent({
             <HistoryIcon />
           </Button>
         )}
+
+        {dockControls}
 
         {/* Close button */}
         <Button

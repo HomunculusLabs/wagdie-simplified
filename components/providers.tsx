@@ -15,14 +15,23 @@ import {
   ChatToggleButton,
   PersonaAssistantDockSlot,
   PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT,
+  CHAT_DOCK_VISIBLE_EVENT,
 } from '@/components/chat'
+import { DOCK_DEFAULT_WIDTH, type RightEdgeDockVisibilityDetail } from '@/components/chat/dockShell'
 
 function ChatDockContentWrapper({ children }: { children: React.ReactNode }) {
   const { isOpen, target } = useChatDock()
   const [isPersonaAssistantDockVisible, setIsPersonaAssistantDockVisible] = useState(false)
-  const [personaAssistantDockWidth, setPersonaAssistantDockWidth] = useState(500)
-  const shouldPushContent = (isOpen && !!target) || isPersonaAssistantDockVisible
-  const contentOffset = isPersonaAssistantDockVisible ? personaAssistantDockWidth : 500
+  const [personaAssistantDockWidth, setPersonaAssistantDockWidth] = useState(DOCK_DEFAULT_WIDTH)
+  const [chatDockWidth, setChatDockWidth] = useState(DOCK_DEFAULT_WIDTH)
+  const [isChatDockCollapsed, setIsChatDockCollapsed] = useState(false)
+  const shouldPushForChat = isOpen && !!target && !isChatDockCollapsed
+  const shouldPushContent = shouldPushForChat || isPersonaAssistantDockVisible
+  const contentOffset = shouldPushForChat
+    ? chatDockWidth
+    : isPersonaAssistantDockVisible
+      ? personaAssistantDockWidth
+      : DOCK_DEFAULT_WIDTH
 
   useEffect(() => {
     const handlePersonaAssistantDockVisibility = (event: Event) => {
@@ -33,10 +42,20 @@ function ChatDockContentWrapper({ children }: { children: React.ReactNode }) {
       }
     }
 
+    const handleChatDockVisibility = (event: Event) => {
+      const { width, collapsed } = (event as CustomEvent<RightEdgeDockVisibilityDetail>).detail ?? {}
+      setIsChatDockCollapsed(Boolean(collapsed))
+      if (typeof width === 'number') {
+        setChatDockWidth(width)
+      }
+    }
+
     window.addEventListener(PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT, handlePersonaAssistantDockVisibility)
+    window.addEventListener(CHAT_DOCK_VISIBLE_EVENT, handleChatDockVisibility)
 
     return () => {
       window.removeEventListener(PERSONA_ASSISTANT_DOCK_VISIBLE_EVENT, handlePersonaAssistantDockVisibility)
+      window.removeEventListener(CHAT_DOCK_VISIBLE_EVENT, handleChatDockVisibility)
     }
   }, [])
 
