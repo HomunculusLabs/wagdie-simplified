@@ -1,8 +1,16 @@
 import 'dotenv/config'
 
-import { access, mkdir, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createClient } from '@supabase/supabase-js'
+import { buildBaseCharacterImageVersion } from '../lib/services/assets/character-current-image-urls'
+import {
+  compareImageBytes,
+  dedupeImageUrlCandidates,
+  describeImageBytes,
+  type CharacterBaseImageVerificationStatus,
+  type ImageByteMetadata,
+} from '../lib/services/assets/character-image-verification'
 
 type CharacterMetadata = Record<string, unknown>
 
@@ -10,8 +18,22 @@ type CharacterRow = {
   token_id: number
   metadata?: CharacterMetadata | null
   image_url?: string | null
+  original_image_url?: string | null
+  original_metadata_sha256?: string | null
+  current_image_url?: string | null
+  current_image_version?: string | null
+  current_image_kind?: string | null
+  current_image_sha256?: string | null
+  current_image_storage?: Record<string, unknown> | null
+  current_image_updated_at?: string | null
   infection_status?: string | null
   infected?: boolean | null
+}
+
+type FetchedImage = {
+  sourceUrl: string
+  bytes: Buffer
+  metadata: ImageByteMetadata
 }
 
 type DownloadResult = {
@@ -19,11 +41,32 @@ type DownloadResult = {
   downloaded: boolean
   skipped: boolean
   error: string | null
+  verificationStatus: CharacterBaseImageVerificationStatus
+  verifiedAt: string | null
+  source: ImageByteMetadata | null
+  local: ImageByteMetadata | null
 }
 
 type ManifestEntry = {
   token_id: number
   metadata_file: string
+  metadata_sha256: string
+  original_image_url: string | null
+  source_image_url: string | null
+  source_image_sha256: string | null
+  source_content_type: string | null
+  source_byte_length: number | null
+  local_base_image_file: string
+  local_base_image_url: string
+  local_base_image_sha256: string | null
+  local_base_image_byte_length: number | null
+  local_base_image_content_type: string | null
+  current_base_image_url: string | null
+  current_base_image_version: string | null
+  verification_status: CharacterBaseImageVerificationStatus
+  verified_at: string | null
+  verification_error: string | null
+  /** Legacy manifest compatibility fields. */
   image_file: string
   image_exists: boolean
   image_downloaded: boolean
@@ -36,9 +79,13 @@ type Summary = {
   table: string
   total_rows: number
   metadata_written: number
+  metadata_preserved: number
   images_already_present: number
   images_downloaded: number
   images_refreshed: number
+  images_verified: number
+  images_hash_mismatched: number
+  images_unverified: number
   images_failed: number
   output: {
     metadata_dir: string
@@ -71,11 +118,6 @@ const statusModulePath = path.join(
   process.cwd(),
   'lib/data/local-character-asset-status.ts'
 )
-const openseaChain = process.env.OPENSEA_CHAIN || 'ethereum'
-const openseaContractAddress =
-  process.env.WAGDIE_ADDRESS ||
-  process.env.NEXT_PUBLIC_WAGDIE_ADDRESS ||
-  '0x659a4bdaaacc62d2bd9cb18225d9c89b5b697a5a'
 const pageSize = Number(process.env.LOCAL_ASSET_PAGE_SIZE || 500)
 const concurrency = Number(process.env.LOCAL_ASSET_CONCURRENCY || 4)
 const downloadMissingImages = !['0', 'false', 'no', 'off'].includes(
@@ -96,8 +138,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 })
 
 let hasImageUrlColumn = true
-const openSeaCandidateCache = new Map<number, Promise<string[]>>()
-
+let hasCurrentImageColumns = true
 function getIpfsPath(value: string): string | null {
   const trimmed = value.trim()
   if (!trimmed) return null
@@ -122,10 +163,6 @@ function getIpfsPath(value: string): string | null {
   return null
 }
 
-function isIpfsLikeUrl(value: string | undefined | null): boolean {
-  return typeof value === 'string' && Boolean(getIpfsPath(value))
-}
-
 function shouldIncludeOriginalIpfsGatewayUrl(value: string): boolean {
   try {
     return !RETIRED_IPFS_GATEWAY_HOSTS.has(new URL(value).hostname)
@@ -135,16 +172,7 @@ function shouldIncludeOriginalIpfsGatewayUrl(value: string): boolean {
 }
 
 function dedupe(values: string[]): string[] {
-  const seen = new Set<string>()
-  const result: string[] = []
-
-  for (const value of values) {
-    if (!value || seen.has(value)) continue
-    seen.add(value)
-    result.push(value)
-  }
-
-  return result
+  return dedupeImageUrlCandidates(values)
 }
 
 function normalizeUrlCandidates(value: string | undefined | null): string[] {
@@ -166,72 +194,21 @@ function normalizeUrlCandidates(value: string | undefined | null): string[] {
   ])
 }
 
-function isCurrentlyInfected(row: CharacterRow): boolean {
-  if (row.infection_status != null) {
-    return row.infection_status === 'infected'
-  }
-
-  return row.infected === true
-}
-
 function stringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
 }
 
-function getNestedString(
-  value: CharacterMetadata | null | undefined,
-  pathParts: string[]
-): string | null {
-  let current: unknown = value
-
-  for (const part of pathParts) {
-    if (!current || typeof current !== 'object' || Array.isArray(current)) {
-      return null
-    }
-    current = (current as Record<string, unknown>)[part]
-  }
-
-  return stringOrNull(current)
-}
-
-function isSeared(row: CharacterRow): boolean {
-  const metadata = row.metadata || null
+function getOriginalImageUrl(row: CharacterRow, staticMetadata: CharacterMetadata): string | null {
   return (
-    metadata?.isSeared === true ||
-    Boolean(stringOrNull(metadata?.searImage)) ||
-    Boolean(getNestedString(metadata, ['searing_materialization', 'seared_image_url']))
+    stringOrNull(row.original_image_url) ||
+    stringOrNull(staticMetadata.originalImage) ||
+    stringOrNull(staticMetadata.image)
   )
 }
 
-function shouldRefreshCurrentImage(row: CharacterRow): boolean {
-  return isCurrentlyInfected(row) || isSeared(row)
-}
-
-function getImageCandidates(row: CharacterRow): string[] {
-  const metadata = row.metadata || null
-  const infectedCandidates = isCurrentlyInfected(row)
-    ? dedupe([
-        ...normalizeUrlCandidates(stringOrNull(metadata?.infectedImage)),
-        ...normalizeUrlCandidates(stringOrNull(metadata?.infected_image_url)),
-        ...normalizeUrlCandidates(getNestedString(metadata, ['infection', 'image_url'])),
-        ...normalizeUrlCandidates(getNestedString(metadata, ['infection', 'image'])),
-      ])
-    : []
-
-  const imageUrlCandidates = normalizeUrlCandidates(row.image_url || null)
-  const imageUrlIsIpfsLike = isIpfsLikeUrl(row.image_url || null)
-
-  return dedupe([
-    ...infectedCandidates,
-    ...normalizeUrlCandidates(stringOrNull(metadata?.searImage)),
-    ...normalizeUrlCandidates(
-      getNestedString(metadata, ['searing_materialization', 'seared_image_url'])
-    ),
-    ...(imageUrlIsIpfsLike ? [] : imageUrlCandidates),
-    ...(imageUrlIsIpfsLike ? imageUrlCandidates : []),
-    ...normalizeUrlCandidates(stringOrNull(metadata?.image)),
-    ...normalizeUrlCandidates(stringOrNull(metadata?.image_url)),
-  ])
+function getBaseImageCandidates(row: CharacterRow, staticMetadata: CharacterMetadata): string[] {
+  const originalImageUrl = getOriginalImageUrl(row, staticMetadata)
+  return originalImageUrl ? normalizeUrlCandidates(originalImageUrl) : []
 }
 
 async function exists(filePath: string): Promise<boolean> {
@@ -243,7 +220,35 @@ async function exists(filePath: string): Promise<boolean> {
   }
 }
 
-async function fetchImage(url: string): Promise<Buffer> {
+async function readExistingImageMetadata(filePath: string): Promise<ImageByteMetadata | null> {
+  try {
+    return describeImageBytes(await readFile(filePath))
+  } catch {
+    return null
+  }
+}
+
+async function loadOrCreateStaticMetadata(
+  metadataFile: string,
+  metadata: CharacterMetadata | null | undefined
+): Promise<{ metadata: CharacterMetadata; bytes: Buffer; preserved: boolean }> {
+  if (await exists(metadataFile)) {
+    const bytes = await readFile(metadataFile)
+    try {
+      const parsed = JSON.parse(bytes.toString('utf8')) as CharacterMetadata
+      return { metadata: parsed, bytes, preserved: true }
+    } catch {
+      return { metadata: {}, bytes, preserved: true }
+    }
+  }
+
+  const staticMetadata = metadata || {}
+  const bytes = Buffer.from(JSON.stringify(staticMetadata, null, 2))
+  await writeFile(metadataFile, bytes)
+  return { metadata: staticMetadata, bytes, preserved: false }
+}
+
+async function fetchImage(url: string): Promise<FetchedImage> {
   const headers: Record<string, string> = {
     'user-agent': 'Mozilla/5.0',
   }
@@ -266,115 +271,161 @@ async function fetchImage(url: string): Promise<Buffer> {
     throw new Error(`Unexpected content-type: ${contentType || 'unknown'}`)
   }
 
-  return Buffer.from(await response.arrayBuffer())
+  const bytes = Buffer.from(await response.arrayBuffer())
+  return {
+    sourceUrl: url,
+    bytes,
+    metadata: describeImageBytes(bytes, contentType),
+  }
 }
 
-async function getOpenSeaCachedImageCandidates(tokenId: number): Promise<string[]> {
-  const cached = openSeaCandidateCache.get(tokenId)
-  if (cached) {
-    return cached
+async function fetchFirstImageCandidate(candidates: string[]): Promise<{
+  image: FetchedImage | null
+  error: string | null
+}> {
+  let lastError: string | null = null
+
+  for (const candidate of candidates) {
+    try {
+      return { image: await fetchImage(candidate), error: null }
+    } catch (error) {
+      lastError = `${candidate} :: ${error instanceof Error ? error.message : String(error)}`
+    }
   }
 
-  const promise = (async () => {
-    const assetUrl = `https://opensea.io/item/${openseaChain}/${openseaContractAddress}/${tokenId}`
-
-    try {
-      const response = await fetch(assetUrl, {
-        headers: {
-          'user-agent': 'Mozilla/5.0',
-        },
-        signal: AbortSignal.timeout(20_000),
-      })
-
-      if (!response.ok) {
-        return []
-      }
-
-      const html = await response.text()
-      const matches = html.match(
-        /"image":"(https:\/\/(?:i2c|i2|raw2?)\.seadn\.io[^"]+)"/g
-      )
-
-      if (!matches || matches.length === 0) {
-        return []
-      }
-
-      return dedupe(
-        matches.map((match) =>
-          match
-            .replace(/^"image":"/, '')
-            .replace(/"$/, '')
-            .replace(/\\u002F/g, '/')
-            .replace(/\\\//g, '/')
-        )
-      )
-    } catch {
-      return []
-    }
-  })()
-
-  openSeaCandidateCache.set(tokenId, promise)
-  return promise
+  return { image: null, error: lastError || 'No usable image candidates' }
 }
 
-async function downloadImage(
-  tokenId: number,
+async function verifyOrDownloadBaseImage(
   candidates: string[],
-  destinationPath: string
+  destinationPath: string,
+  hadLocalImage: boolean
 ): Promise<DownloadResult> {
-  if (!downloadMissingImages) {
+  if (candidates.length === 0) {
     return {
       sourceUrl: null,
       downloaded: false,
       skipped: true,
+      error: hadLocalImage
+        ? 'No canonical original image candidate; existing local file is unverified'
+        : 'No canonical original image candidate',
+      verificationStatus: hadLocalImage ? 'unverified_existing' : 'missing_local',
+      verifiedAt: null,
+      source: null,
+      local: hadLocalImage ? await readExistingImageMetadata(destinationPath) : null,
+    }
+  }
+
+  const fetched = await fetchFirstImageCandidate(candidates)
+  if (!fetched.image) {
+    return {
+      sourceUrl: null,
+      downloaded: false,
+      skipped: true,
+      error: fetched.error,
+      verificationStatus: 'source_unreachable',
+      verifiedAt: null,
+      source: null,
+      local: hadLocalImage ? await readExistingImageMetadata(destinationPath) : null,
+    }
+  }
+
+  const source = fetched.image
+
+  if (hadLocalImage) {
+    try {
+      const localBytes = await readFile(destinationPath)
+      const comparison = compareImageBytes(source.bytes, localBytes, source.metadata.contentType)
+
+      if (comparison.matches) {
+        return {
+          sourceUrl: source.sourceUrl,
+          downloaded: false,
+          skipped: false,
+          error: null,
+          verificationStatus: 'verified',
+          verifiedAt: new Date().toISOString(),
+          source: comparison.source,
+          local: comparison.local,
+        }
+      }
+
+      if (!downloadMissingImages) {
+        return {
+          sourceUrl: source.sourceUrl,
+          downloaded: false,
+          skipped: true,
+          error: comparison.error,
+          verificationStatus: 'hash_mismatch',
+          verifiedAt: null,
+          source: comparison.source,
+          local: comparison.local,
+        }
+      }
+
+      await writeFile(destinationPath, source.bytes)
+      return {
+        sourceUrl: source.sourceUrl,
+        downloaded: true,
+        skipped: false,
+        error: comparison.error,
+        verificationStatus: 'verified',
+        verifiedAt: new Date().toISOString(),
+        source: source.metadata,
+        local: source.metadata,
+      }
+    } catch (error) {
+      if (!downloadMissingImages) {
+        return {
+          sourceUrl: source.sourceUrl,
+          downloaded: false,
+          skipped: true,
+          error: error instanceof Error ? error.message : String(error),
+          verificationStatus: 'download_failed',
+          verifiedAt: null,
+          source: source.metadata,
+          local: null,
+        }
+      }
+    }
+  }
+
+  if (!downloadMissingImages) {
+    return {
+      sourceUrl: source.sourceUrl,
+      downloaded: false,
+      skipped: true,
+      error: 'Local base image missing and downloads are disabled',
+      verificationStatus: 'missing_local',
+      verifiedAt: null,
+      source: source.metadata,
+      local: null,
+    }
+  }
+
+  try {
+    await writeFile(destinationPath, source.bytes)
+    return {
+      sourceUrl: source.sourceUrl,
+      downloaded: true,
+      skipped: false,
       error: null,
+      verificationStatus: 'verified',
+      verifiedAt: new Date().toISOString(),
+      source: source.metadata,
+      local: source.metadata,
     }
-  }
-
-  let lastError: string | null = null
-  const attemptedCandidates = new Set<string>()
-
-  for (const candidate of candidates) {
-    attemptedCandidates.add(candidate)
-    try {
-      const bytes = await fetchImage(candidate)
-      await writeFile(destinationPath, bytes)
-      return {
-        sourceUrl: candidate,
-        downloaded: true,
-        skipped: false,
-        error: null,
-      }
-    } catch (error) {
-      lastError = `${candidate} :: ${error instanceof Error ? error.message : String(error)}`
+  } catch (error) {
+    return {
+      sourceUrl: source.sourceUrl,
+      downloaded: false,
+      skipped: false,
+      error: error instanceof Error ? error.message : String(error),
+      verificationStatus: 'download_failed',
+      verifiedAt: null,
+      source: source.metadata,
+      local: null,
     }
-  }
-
-  const openSeaCandidates = await getOpenSeaCachedImageCandidates(tokenId)
-  for (const candidate of openSeaCandidates) {
-    if (attemptedCandidates.has(candidate)) {
-      continue
-    }
-
-    try {
-      const bytes = await fetchImage(candidate)
-      await writeFile(destinationPath, bytes)
-      return {
-        sourceUrl: candidate,
-        downloaded: true,
-        skipped: false,
-        error: null,
-      }
-    } catch (error) {
-      lastError = `${candidate} :: ${error instanceof Error ? error.message : String(error)}`
-    }
-  }
-
-  return {
-    sourceUrl: null,
-    downloaded: false,
-    skipped: false,
-    error: lastError || 'No usable image candidates',
   }
 }
 
@@ -383,9 +434,12 @@ async function loadRows(): Promise<CharacterRow[]> {
   let from = 0
 
   while (true) {
+    const currentImageColumns = hasCurrentImageColumns
+      ? ', original_image_url, original_metadata_sha256, current_image_url, current_image_version, current_image_kind, current_image_sha256, current_image_storage, current_image_updated_at'
+      : ''
     const selectColumns = hasImageUrlColumn
-      ? 'token_id, metadata, image_url, infection_status, infected'
-      : 'token_id, metadata, infection_status, infected'
+      ? `token_id, metadata, image_url${currentImageColumns}, infection_status, infected`
+      : `token_id, metadata${currentImageColumns}, infection_status, infected`
 
     const { data, error } = await supabase
       .from(tableName)
@@ -394,6 +448,11 @@ async function loadRows(): Promise<CharacterRow[]> {
       .range(from, from + pageSize - 1)
 
     if (error) {
+      if (hasCurrentImageColumns && /current_image|original_image|original_metadata/i.test(error.message)) {
+        hasCurrentImageColumns = false
+        continue
+      }
+
       if (hasImageUrlColumn && error.message.includes('image_url')) {
         hasImageUrlColumn = false
         continue
@@ -437,19 +496,23 @@ async function mapWithConcurrency<T>(
   await Promise.all(Array.from({ length: Math.max(1, limit) }, () => run()))
 }
 
-function renderStatusModule(missingTokenIds: number[]): string {
-  const values = missingTokenIds.join(', ')
+function renderStatusModule(verifiedTokenIds: number[]): string {
+  const values = verifiedTokenIds.join(', ')
 
-  return `export const MISSING_LOCAL_CHARACTER_IMAGE_TOKEN_IDS = [${values}] as const
+  return `export const VERIFIED_LOCAL_CHARACTER_IMAGE_TOKEN_IDS = [${values}] as const
 
-const MISSING_LOCAL_CHARACTER_IMAGE_TOKEN_ID_SET = new Set<number>(MISSING_LOCAL_CHARACTER_IMAGE_TOKEN_IDS)
+const VERIFIED_LOCAL_CHARACTER_IMAGE_TOKEN_ID_SET = new Set<number>(VERIFIED_LOCAL_CHARACTER_IMAGE_TOKEN_IDS)
 
+/**
+ * True only when the generated asset manifest verified the local base image bytes
+ * against the canonical original source bytes.
+ */
 export function hasLocalCharacterImage(tokenId: number): boolean {
-  if (!Number.isInteger(tokenId) || tokenId < 1 || tokenId > 6666) {
+  if (!Number.isInteger(tokenId) || tokenId < 1) {
     return false
   }
 
-  return !MISSING_LOCAL_CHARACTER_IMAGE_TOKEN_ID_SET.has(tokenId)
+  return VERIFIED_LOCAL_CHARACTER_IMAGE_TOKEN_ID_SET.has(tokenId)
 }
 `
 }
@@ -467,9 +530,13 @@ async function main(): Promise<void> {
     table: tableName,
     total_rows: rows.length,
     metadata_written: 0,
+    metadata_preserved: 0,
     images_already_present: 0,
     images_downloaded: 0,
     images_refreshed: 0,
+    images_verified: 0,
+    images_hash_mismatched: 0,
+    images_unverified: 0,
     images_failed: 0,
     output: {
       metadata_dir: metadataDir,
@@ -482,44 +549,69 @@ async function main(): Promise<void> {
   await mapWithConcurrency(rows, concurrency, async (row) => {
     const metadataFile = path.join(metadataDir, `${row.token_id}.json`)
     const imageFile = path.join(imageDir, `${row.token_id}.png`)
-    const refreshCurrentImage = shouldRefreshCurrentImage(row)
     const hadLocalImage = await exists(imageFile)
+    const staticMetadataResult = await loadOrCreateStaticMetadata(metadataFile, row.metadata)
+    const metadataSha256 = describeImageBytes(staticMetadataResult.bytes).sha256
 
-    await writeFile(metadataFile, JSON.stringify(row.metadata || {}, null, 2))
-    summary.metadata_written += 1
-
-    if (hadLocalImage && !refreshCurrentImage) {
-      summary.images_already_present += 1
-      manifest.push({
-        token_id: row.token_id,
-        metadata_file: path.relative(process.cwd(), metadataFile),
-        image_file: path.relative(process.cwd(), imageFile),
-        image_exists: true,
-        image_downloaded: false,
-        image_source_url: null,
-        image_error: null,
-      })
-      return
+    if (staticMetadataResult.preserved) {
+      summary.metadata_preserved += 1
+    } else {
+      summary.metadata_written += 1
     }
 
-    const result = await downloadImage(row.token_id, getImageCandidates(row), imageFile)
+    const originalImageUrl = getOriginalImageUrl(row, staticMetadataResult.metadata)
+    const result = await verifyOrDownloadBaseImage(
+      getBaseImageCandidates(row, staticMetadataResult.metadata),
+      imageFile,
+      hadLocalImage
+    )
 
-    if (result.downloaded) {
-      summary.images_downloaded += 1
-      if (hadLocalImage) {
-        summary.images_refreshed += 1
+    const verified = result.verificationStatus === 'verified'
+    const currentBaseImageVersion = verified && result.local
+      ? buildBaseCharacterImageVersion(result.local.sha256)
+      : null
+
+    if (verified) {
+      summary.images_verified += 1
+      if (result.downloaded) {
+        summary.images_downloaded += 1
+        if (hadLocalImage) {
+          summary.images_refreshed += 1
+        }
+      } else if (hadLocalImage) {
+        summary.images_already_present += 1
       }
-    } else if (!result.skipped) {
-      summary.images_failed += 1
+    } else {
+      summary.images_unverified += 1
+      if (result.verificationStatus === 'hash_mismatch') {
+        summary.images_hash_mismatched += 1
+      }
+      if (!result.skipped) {
+        summary.images_failed += 1
+      }
     }
-
-    const hasUsableLocalImage = result.downloaded || (hadLocalImage && !refreshCurrentImage)
 
     manifest.push({
       token_id: row.token_id,
       metadata_file: path.relative(process.cwd(), metadataFile),
+      metadata_sha256: metadataSha256,
+      original_image_url: originalImageUrl,
+      source_image_url: result.sourceUrl,
+      source_image_sha256: result.source?.sha256 || null,
+      source_content_type: result.source?.contentType || null,
+      source_byte_length: result.source?.byteLength || null,
+      local_base_image_file: path.relative(process.cwd(), imageFile),
+      local_base_image_url: `/images/characters/${row.token_id}.png`,
+      local_base_image_sha256: result.local?.sha256 || null,
+      local_base_image_byte_length: result.local?.byteLength || null,
+      local_base_image_content_type: result.local?.contentType || null,
+      current_base_image_url: verified ? `/images/characters/${row.token_id}.png` : null,
+      current_base_image_version: currentBaseImageVersion,
+      verification_status: result.verificationStatus,
+      verified_at: result.verifiedAt,
+      verification_error: result.error,
       image_file: path.relative(process.cwd(), imageFile),
-      image_exists: hasUsableLocalImage,
+      image_exists: verified,
       image_downloaded: result.downloaded,
       image_source_url: result.sourceUrl,
       image_error: result.error,
@@ -528,18 +620,22 @@ async function main(): Promise<void> {
 
   manifest.sort((left, right) => left.token_id - right.token_id)
 
+  const verifiedTokenIds = manifest
+    .filter((entry) => entry.verification_status === 'verified')
+    .map((entry) => entry.token_id)
   const missingTokenIds = manifest
-    .filter((entry) => !entry.image_exists)
+    .filter((entry) => entry.verification_status !== 'verified')
     .map((entry) => entry.token_id)
 
   await writeFile(
     manifestPath,
     JSON.stringify({ summary, items: manifest }, null, 2)
   )
-  await writeFile(statusModulePath, renderStatusModule(missingTokenIds))
+  await writeFile(statusModulePath, renderStatusModule(verifiedTokenIds))
 
   console.log(JSON.stringify({
     ...summary,
+    verified_local_images: verifiedTokenIds.length,
     missing_local_images: missingTokenIds.length,
   }, null, 2))
 }

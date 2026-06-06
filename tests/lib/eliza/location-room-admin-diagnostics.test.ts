@@ -221,6 +221,7 @@ function makeRoomRepository(overrides: Partial<jest.Mocked<LocationRoomRepositor
     })),
     markTickSelected: jest.fn(),
     appendMessage: jest.fn(),
+    appendMessagesBatch: jest.fn(),
     markTickCompleted: jest.fn(),
     markTickSkipped: jest.fn(),
     markTickFailed: jest.fn(),

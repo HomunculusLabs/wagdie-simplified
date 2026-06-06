@@ -104,19 +104,28 @@ describe('SearingMaterializationService', () => {
         uploadSearedImage: jest.fn(async (_tokenId: number, image: Buffer, options?: { version?: string }) => {
           uploadedImage = image
           uploadedVersion = options?.version
-          return `https://storage.googleapis.com/seared-wagdie-images/5873/${uploadedVersion}.png`
+          return {
+            publicPath: `/images/characters/current/5873.png?v=${uploadedVersion}`,
+            version: uploadedVersion || 'seared-aaaaaaaa-log7-0000000000000000',
+            sha256: 'f'.repeat(64),
+            storage: {
+              type: 'gcs',
+              objectName: `5873/${uploadedVersion}.png`,
+              backingUrl: `https://storage.googleapis.com/seared-wagdie-images/5873/${uploadedVersion}.png`,
+            },
+          }
         }),
       } as never
     )
 
     const result = await service.materializeEvent(event.id)
 
-    expect(uploadedVersion).toMatch(new RegExp(`^tx-${transactionHash.slice(2)}-log-7-[a-f0-9]{16}$`))
+    expect(uploadedVersion).toMatch(new RegExp(`^seared-${transactionHash.slice(2, 10)}-log7-[a-f0-9]{16}$`))
     expect(result).toMatchObject({
       status: 'completed',
       tokenId: 5873,
       concordId: event.concord_id,
-      imageUrl: `https://storage.googleapis.com/seared-wagdie-images/5873/${uploadedVersion}.png`,
+      imageUrl: `/images/characters/current/5873.png?v=${uploadedVersion}`,
     })
     expect(uploadedImage).toBeTruthy()
     expect(changedPixelCount(await rawRgba(original), await rawRgba(uploadedImage as Buffer))).toBeGreaterThan(1000)
@@ -187,15 +196,28 @@ describe('SearingMaterializationService', () => {
       } as never,
       { compose } as never,
       {
-        uploadSearedImage: jest.fn(async () => 'https://storage.googleapis.com/seared-wagdie-images/7/current.png'),
+        uploadSearedImage: jest.fn(async () => ({
+          publicPath: '/images/characters/current/7.png?v=seared-cccccccc-log1-abcdef1234567890',
+          version: 'seared-cccccccc-log1-abcdef1234567890',
+          sha256: 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+          storage: {
+            type: 'gcs',
+            objectName: '7/seared-cccccccc-log1-abcdef1234567890.png',
+            backingUrl: 'https://storage.googleapis.com/seared-wagdie-images/7/seared-cccccccc-log1-abcdef1234567890.png',
+          },
+        })),
       } as never
     )
 
     await expect(service.materializeEvent(event.id)).resolves.toMatchObject({ status: 'completed' })
     expect(markCompleted).toHaveBeenCalledWith(
       event.id,
-      'https://storage.googleapis.com/seared-wagdie-images/7/current.png',
+      '/images/characters/current/7.png?v=seared-cccccccc-log1-abcdef1234567890',
       expect.objectContaining({
+        current_image: expect.objectContaining({
+          url: '/images/characters/current/7.png?v=seared-cccccccc-log1-abcdef1234567890',
+          storage: expect.objectContaining({ type: 'gcs' }),
+        }),
         layers: expect.arrayContaining([
           expect.objectContaining({ trait_type: 'Armor', value: 'Current Armor' }),
         ]),

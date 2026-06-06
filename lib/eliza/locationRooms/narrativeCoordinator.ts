@@ -43,6 +43,7 @@ import {
 } from './narrativeTypes'
 import {
   locationRoomRepository,
+  type CreateLocationRoomMessageInput,
   type LocationRoomRepository,
 } from './repository'
 import {
@@ -822,10 +823,6 @@ function inferSceneCheckFallbackFromDeclaredAction(input: {
   return primary
 }
 
-function messageIdsWith(existing: string[], id: string): string[] {
-  return existing.includes(id) ? existing : [...existing, id]
-}
-
 function sceneCheckIdForBeat(
   beat: LocationRoomNarrativeBeat,
   existingId: string | null,
@@ -920,6 +917,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
           recentMessages: input.recentMessages,
           narrativeState,
           progressionContext,
+          location: locationDetails,
         })
         validateGameMasterBeatProgressionContract({
           ...gameMasterOutput,
@@ -959,48 +957,35 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       progressionContext,
     })
 
-    if (shouldAppendPublicGameMasterBeat) {
-      const publicNarration = gameMasterOutput.publicNarration
-      if (!publicNarration) {
-        throw new Error('Location room narrative beat is missing public narration')
-      }
+    const gameMasterBeatMessageInput: CreateLocationRoomMessageInput | null = shouldAppendPublicGameMasterBeat
+      ? (() => {
+        const publicNarration = gameMasterOutput.publicNarration
+        if (!publicNarration) {
+          throw new Error('Location room narrative beat is missing public narration')
+        }
 
-      const gameMasterMessage = await this.repository.appendMessage({
-        roomId: input.room.id,
-        locationId: input.room.locationId,
-        tickId: input.tick.id,
-        authorKind: 'game_master',
-        tokenId: null,
-        officialAgentId: gameMasterOutput.gameMasterAgentId,
-        authorName: GAME_MASTER_AUTHOR_NAME,
-        content: publicNarration,
-        visibility: 'public',
-        dedupeKey: `narrative:${beat.id}:gm_beat`,
-        metadata: {
-          source: 'location-room-game-master',
-          triggerType: input.tick.triggerType,
-          beatId: beat.id,
-          messageDomain: 'narrative',
-          messageKind: 'gm_beat',
-          ttrpgPhase: gameMasterOutput.ttrpgPhase,
-        },
-      })
-
-      try {
-        beat = await this.narrativeRepository.markBeatGameMasterMessageAppended(beat.id, {
-          gameMasterAgentId: gameMasterOutput.gameMasterAgentId,
-          publicNarration: gameMasterOutput.publicNarration,
-          speakerInstruction: gameMasterOutput.speakerInstruction,
-          stateAfter: gameMasterOutput.stateAfter,
+        return {
+          roomId: input.room.id,
+          locationId: input.room.locationId,
+          tickId: input.tick.id,
+          authorKind: 'game_master',
+          tokenId: null,
+          officialAgentId: gameMasterOutput.gameMasterAgentId,
+          authorName: GAME_MASTER_AUTHOR_NAME,
+          content: publicNarration,
+          visibility: 'public',
+          dedupeKey: `narrative:${beat.id}:gm_beat`,
           metadata: {
-            ...toGameMasterBeatMetadata(gameMasterOutput),
-            gameMasterMessageId: gameMasterMessage.id,
+            source: 'location-room-game-master',
+            triggerType: input.tick.triggerType,
+            beatId: beat.id,
+            messageDomain: 'narrative',
+            messageKind: 'gm_beat',
+            ttrpgPhase: gameMasterOutput.ttrpgPhase,
           },
-        })
-      } catch (error) {
-        console.warn('[Location Room Narrative] Failed to mark game-master message appended after public append:', error)
-      }
-    }
+        }
+      })()
+      : null
 
     let storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
     const storedCharacterAction = normalizeStoredBeatCharacterAction(beat.metadata.characterAction)
@@ -1131,6 +1116,29 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         beatId: beat.id,
         output: gameMasterOutput,
       })
+      let gameMasterMessageId = typeof beat.metadata.gameMasterMessageId === 'string' && beat.metadata.gameMasterMessageId.trim()
+        ? beat.metadata.gameMasterMessageId.trim()
+        : null
+      if (gameMasterBeatMessageInput && !gameMasterMessageId) {
+        const gameMasterMessage = await this.repository.appendMessage(gameMasterBeatMessageInput)
+        gameMasterMessageId = gameMasterMessage.id
+
+        try {
+          beat = await this.narrativeRepository.markBeatGameMasterMessageAppended(beat.id, {
+            gameMasterAgentId: gameMasterOutput.gameMasterAgentId,
+            publicNarration: gameMasterOutput.publicNarration,
+            speakerInstruction: gameMasterOutput.speakerInstruction,
+            stateAfter: gameMasterOutput.stateAfter,
+            metadata: {
+              ...toGameMasterBeatMetadata(gameMasterOutput, effectiveTtrpg),
+              gameMasterMessageId,
+            },
+          })
+        } catch (error) {
+          console.warn('[Location Room Narrative] Failed to mark game-master message appended after public append:', error)
+        }
+      }
+
       const message = await this.repository.appendMessage({
         roomId: input.room.id,
         locationId: input.room.locationId,
@@ -1221,7 +1229,6 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       }
     }
 
-    let messageIds: string[] = []
     const sceneCheckId = sceneCheckIdForBeat(beat, storedSceneCheck.id, adjudication)
     const sceneAdventureSourceId = adventureSourceIdForSceneCheck(sceneCheckId)
     sceneCheckMetadata = mergeNarrativeSceneCheckMetadata(sceneCheckMetadata, {
@@ -1244,37 +1251,33 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
     })
     let actionMessageId = storedSceneCheck.messageIds.characterAction ?? null
     const characterActionContent = storedSceneCheck.characterAction?.content ?? content
-    if (!actionMessageId) {
-      const actionMessage = await this.repository.appendMessage({
-        roomId: input.room.id,
-        locationId: input.room.locationId,
-        tickId: input.tick.id,
-        authorKind: 'agent',
-        tokenId: input.speaker.tokenId,
-        officialAgentId,
-        authorName: input.speaker.name,
-        content: characterActionContent,
-        visibility: 'public',
-        dedupeKey: `scene_check:${beat.id}:character_action`,
-        metadata: {
-          source: 'scheduled-location-room-tick',
-          triggerType: input.tick.triggerType,
-          narrative: true,
-          beatId: beat.id,
-          sceneCheck: true,
-          sceneCheckId,
-          messageDomain: 'narrative',
-          messageKind: 'character_action',
-          ttrpgPhase: gameMasterOutput.ttrpgPhase,
-          adjudication,
-          sceneCheckRequest: storedSceneCheck.request,
-          sceneCheckProposal: storedSceneCheck.proposal,
-          sceneCheckProposalError: storedSceneCheck.proposalError,
-        },
-      })
-      actionMessageId = actionMessage.id
+    const characterActionMessageInput: CreateLocationRoomMessageInput = {
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      tickId: input.tick.id,
+      authorKind: 'agent',
+      tokenId: input.speaker.tokenId,
+      officialAgentId,
+      authorName: input.speaker.name,
+      content: characterActionContent,
+      visibility: 'public',
+      dedupeKey: `scene_check:${beat.id}:character_action`,
+      metadata: {
+        source: 'scheduled-location-room-tick',
+        triggerType: input.tick.triggerType,
+        narrative: true,
+        beatId: beat.id,
+        sceneCheck: true,
+        sceneCheckId,
+        messageDomain: 'narrative',
+        messageKind: 'character_action',
+        ttrpgPhase: gameMasterOutput.ttrpgPhase,
+        adjudication,
+        sceneCheckRequest: storedSceneCheck.request,
+        sceneCheckProposal: storedSceneCheck.proposal,
+        sceneCheckProposalError: storedSceneCheck.proposalError,
+      },
     }
-    messageIds = messageIdsWith(messageIds, actionMessageId)
 
     let resolution = storedSceneCheck.resolution
     let publicRolls = storedSceneCheck.publicRolls
@@ -1286,55 +1289,43 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         adjudication,
         resolution,
         publicRolls,
-        messageIds: {
-          ...storedSceneCheck.messageIds,
-          characterAction: actionMessageId,
-        },
       }))
       storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
     } else if (!publicRolls) {
       publicRolls = projectPublicSceneCheckRolls(resolution, { sceneCheckId })
+      beat = await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(beat.metadata, {
+        id: sceneCheckId,
+        adjudication,
+        publicRolls,
+      }))
+      storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
     }
 
     let rollCardMessageId = storedSceneCheck.messageIds.rollCard ?? null
-    if (!rollCardMessageId) {
-      const rollCardMessage = await this.repository.appendMessage({
-        roomId: input.room.id,
-        locationId: input.room.locationId,
-        tickId: input.tick.id,
-        authorKind: 'game_master',
-        tokenId: null,
-        officialAgentId: gameMasterOutput.gameMasterAgentId,
-        authorName: GAME_MASTER_AUTHOR_NAME,
-        content: sceneRollCardContent(publicRolls),
-        visibility: 'public',
-        dedupeKey: `scene_check:${beat.id}:roll_card`,
-        metadata: {
-          source: 'location-room-scene-check',
-          triggerType: input.tick.triggerType,
-          narrative: true,
-          beatId: beat.id,
-          sceneCheck: true,
-          sceneCheckId,
-          messageDomain: 'narrative',
-          messageKind: 'roll_card',
-          ttrpgPhase: gameMasterOutput.ttrpgPhase,
-          publicRolls,
-        },
-      })
-      rollCardMessageId = rollCardMessage.id
-    }
-    messageIds = messageIdsWith(messageIds, rollCardMessageId)
-
-    beat = await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata(beat.metadata, {
-      messageIds: {
-        ...storedSceneCheck.messageIds,
-        characterAction: actionMessageId,
-        rollCard: rollCardMessageId,
+    const rollCardMessageInput: CreateLocationRoomMessageInput = {
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      tickId: input.tick.id,
+      authorKind: 'game_master',
+      tokenId: null,
+      officialAgentId: gameMasterOutput.gameMasterAgentId,
+      authorName: GAME_MASTER_AUTHOR_NAME,
+      content: sceneRollCardContent(publicRolls),
+      visibility: 'public',
+      dedupeKey: `scene_check:${beat.id}:roll_card`,
+      metadata: {
+        source: 'location-room-scene-check',
+        triggerType: input.tick.triggerType,
+        narrative: true,
+        beatId: beat.id,
+        sceneCheck: true,
+        sceneCheckId,
+        messageDomain: 'narrative',
+        messageKind: 'roll_card',
+        ttrpgPhase: gameMasterOutput.ttrpgPhase,
+        publicRolls,
       },
-      publicRolls,
-    }))
-    storedSceneCheck = normalizeNarrativeSceneCheckMetadata(beat.metadata)
+    }
 
     let outcome = storedSceneCheck.gmOutcome
     if (!outcome) {
@@ -1356,6 +1347,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
         sceneCheckId,
         resolution,
         publicRolls,
+        location: locationDetails,
       }
       if (!this.gameMasterGenerator.generateSceneCheckOutcome) {
         const error = new Error('Game-master scene-check outcome generator is required')
@@ -1438,45 +1430,76 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       escalation: sceneCheckEscalation,
     })
     let outcomeMessageId = storedSceneCheck.messageIds.gmOutcome ?? null
-    if (!outcomeMessageId) {
-      const outcomeMessage = await this.repository.appendMessage({
-        roomId: input.room.id,
-        locationId: input.room.locationId,
-        tickId: input.tick.id,
-        authorKind: 'game_master',
-        tokenId: null,
-        officialAgentId: outcome.gameMasterAgentId,
-        authorName: GAME_MASTER_AUTHOR_NAME,
-        content: outcome.publicNarration,
-        visibility: 'public',
-        dedupeKey: `scene_check:${beat.id}:gm_outcome`,
-        metadata: {
-          source: 'location-room-scene-check',
-          triggerType: input.tick.triggerType,
-          narrative: true,
-          beatId: beat.id,
-          sceneCheck: true,
-          sceneCheckId,
-          messageDomain: 'narrative',
-          messageKind: 'gm_outcome',
-          ttrpgPhase: gameMasterOutput.ttrpgPhase,
-          rollFacts: {
-            actorTokenId: resolution.actorTokenId,
-            actionIntent: resolution.actionIntent,
-            checkType: resolution.roll.checkType,
-            checkLabel: resolution.roll.checkLabel,
-            d20: resolution.roll.roll.total,
-            modifier: resolution.roll.modifier,
-            total: resolution.roll.total,
-            dc: resolution.roll.dc,
-            tier: resolution.roll.tier,
-          },
-          sceneCheckEscalation,
+    const outcomeMessageInput: CreateLocationRoomMessageInput = {
+      roomId: input.room.id,
+      locationId: input.room.locationId,
+      tickId: input.tick.id,
+      authorKind: 'game_master',
+      tokenId: null,
+      officialAgentId: outcome.gameMasterAgentId,
+      authorName: GAME_MASTER_AUTHOR_NAME,
+      content: outcome.publicNarration,
+      visibility: 'public',
+      dedupeKey: `scene_check:${beat.id}:gm_outcome`,
+      metadata: {
+        source: 'location-room-scene-check',
+        triggerType: input.tick.triggerType,
+        narrative: true,
+        beatId: beat.id,
+        sceneCheck: true,
+        sceneCheckId,
+        messageDomain: 'narrative',
+        messageKind: 'gm_outcome',
+        ttrpgPhase: gameMasterOutput.ttrpgPhase,
+        rollFacts: {
+          actorTokenId: resolution.actorTokenId,
+          actionIntent: resolution.actionIntent,
+          checkType: resolution.roll.checkType,
+          checkLabel: resolution.roll.checkLabel,
+          d20: resolution.roll.roll.total,
+          modifier: resolution.roll.modifier,
+          total: resolution.roll.total,
+          dc: resolution.roll.dc,
+          tier: resolution.roll.tier,
         },
-      })
-      outcomeMessageId = outcomeMessage.id
+        sceneCheckEscalation,
+      },
     }
-    messageIds = messageIdsWith(messageIds, outcomeMessageId)
+
+    let gameMasterMessageId = typeof beat.metadata.gameMasterMessageId === 'string' && beat.metadata.gameMasterMessageId.trim()
+      ? beat.metadata.gameMasterMessageId.trim()
+      : null
+    const batchItems: Array<{ role: 'gm_beat' | 'character_action' | 'roll_card' | 'gm_outcome'; input: CreateLocationRoomMessageInput }> = []
+    if (gameMasterBeatMessageInput && !gameMasterMessageId) {
+      batchItems.push({ role: 'gm_beat', input: gameMasterBeatMessageInput })
+    }
+    if (!actionMessageId) {
+      batchItems.push({ role: 'character_action', input: characterActionMessageInput })
+    }
+    if (!rollCardMessageId) {
+      batchItems.push({ role: 'roll_card', input: rollCardMessageInput })
+    }
+    if (!outcomeMessageId) {
+      batchItems.push({ role: 'gm_outcome', input: outcomeMessageInput })
+    }
+
+    if (batchItems.length > 0) {
+      const publishedMessages = await this.repository.appendMessagesBatch(batchItems.map((item) => item.input))
+      batchItems.forEach((item, index) => {
+        const messageId = publishedMessages[index]?.id
+        if (!messageId) return
+        if (item.role === 'gm_beat') gameMasterMessageId = messageId
+        if (item.role === 'character_action') actionMessageId = messageId
+        if (item.role === 'roll_card') rollCardMessageId = messageId
+        if (item.role === 'gm_outcome') outcomeMessageId = messageId
+      })
+    }
+
+    if (!actionMessageId || !rollCardMessageId || !outcomeMessageId) {
+      throw new Error('Location room scene-check publish did not return all public message ids')
+    }
+
+    const messageIds = [actionMessageId, rollCardMessageId, outcomeMessageId]
 
     const sceneCheckTtrpgPatch = preserveUnrelatedCombatTriggerForSceneCheck({
       metadata: sceneAdventureMetadata,
@@ -1498,6 +1521,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       await this.narrativeRepository.patchBeatMetadata(beat.id, mergeNarrativeSceneCheckMetadata({
         ...beat.metadata,
         ...sceneCheckEscalationExtra,
+        ...(gameMasterMessageId ? { gameMasterMessageId } : {}),
       }, {
         messageIds: {
           ...storedSceneCheck.messageIds,
@@ -1531,6 +1555,7 @@ export class DefaultLocationRoomNarrativeCoordinator implements LocationRoomNarr
       await this.narrativeRepository.markBeatCompleted(beat.id)
     } catch (error) {
       await this.narrativeRepository.markBeatFailed(beat.id, error).catch(() => null)
+      throw error
     }
 
     return {

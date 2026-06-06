@@ -419,6 +419,32 @@ function makeRoomRepository(): jest.Mocked<LocationRoomRepository> & { messages:
       messages.push(message)
       return message
     }),
+    appendMessagesBatch: jest.fn(async (inputs) => {
+      const appended: LocationRoomMessage[] = []
+      for (const input of inputs) {
+        const existing = messages.find((message) =>
+          message.tickId === input.tickId &&
+          message.authorKind === input.authorKind &&
+          message.metadata.dedupeKey === input.dedupeKey
+        )
+        if (existing) {
+          appended.push(existing)
+          continue
+        }
+        const message = makeMessage(`msg-${messages.length + 1}`, {
+          tickId: input.tickId ?? null,
+          authorKind: input.authorKind,
+          tokenId: input.tokenId ?? null,
+          officialAgentId: input.officialAgentId ?? null,
+          authorName: input.authorName,
+          content: input.content,
+          metadata: { ...(input.metadata ?? {}), dedupeKey: input.dedupeKey },
+        })
+        messages.push(message)
+        appended.push(message)
+      }
+      return appended
+    }),
     markTickCompleted: jest.fn(),
     markTickSkipped: jest.fn(),
     markTickFailed: jest.fn(),

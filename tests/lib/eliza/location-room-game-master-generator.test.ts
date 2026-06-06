@@ -53,6 +53,7 @@ import {
 } from '@/lib/eliza/locationRooms/officialTurnGenerator'
 import type {
   LocationRoom,
+  LocationRoomLocationDetails,
   LocationRoomMessage,
   LocationRoomParticipant,
   LocationRoomTick,
@@ -126,7 +127,7 @@ function room(overrides: Partial<LocationRoom> = {}): LocationRoom {
   }
 }
 
-function tick(): LocationRoomTick {
+function tick(overrides: Partial<LocationRoomTick> = {}): LocationRoomTick {
   return {
     id: 'tick-1',
     roomId: 'room-1',
@@ -147,6 +148,7 @@ function tick(): LocationRoomTick {
     lastError: null,
     createdAt: now,
     updatedAt: now,
+    ...overrides,
   }
 }
 
@@ -273,6 +275,73 @@ function spatialNarrativeState(): LocationRoomNarrativeState {
   }
 }
 
+function crowsDenLocationDetails(overrides: Partial<LocationRoomLocationDetails> = {}): LocationRoomLocationDetails {
+  return {
+    id: '11',
+    name: "The Crow's Den",
+    chainLocationId: '11',
+    active: true,
+    metadata: {
+      summary: "The Crow's Den is a rotting tavern where a sealed cellar door, twitching bell rope, black feathers, and salt scratches frame the first playable mystery.",
+      publicDescription: 'A haunted tavern taproom with rafters, a bar, shutters, and a cellar stair that answers careful choices.',
+      narrativePremise: 'Characters begin in the Crow\'s Den taproom and choose how to investigate the bell rope, rafters, salt marks, or sealed cellar route.',
+      adventureCatalog: {
+        defaults: {
+          arcSummary: 'The tavern tests trespassers with bell omens, rafter watchers, and a cellar route that opens only when answered.',
+          currentStakes: 'The first choice determines whether the bell, rafters, or cellar answers first.',
+          openingDecision: {
+            id: 'crows-den-opening',
+            prompt: 'Which visible tavern hook do the characters answer first?',
+            options: [
+              { id: 'bell-rope', label: 'Touch the bell rope', summary: 'Force the room to answer from above.' },
+              { id: 'cellar-stair', label: 'Test the cellar stair', summary: 'Risk the sealed route below the taproom.' },
+            ],
+          },
+          discoveries: ['Salt scratches point from the bar toward the cellar stair.'],
+          clocks: [{ id: 'third-toll', label: 'Third toll', value: 0, max: 6, summary: 'The bell grows closer to a third answer.' }],
+        },
+        sections: {
+          '40_places': [{ id: '40.10.taproom', title: 'Taproom Bar', summary: 'The bar, rafters, and cellar stair are the first visible anchors.', tags: ['taproom'] }],
+          '50_items': [{ id: '50.10.bell-rope', title: 'Bell Rope', summary: 'A salt-stiff rope hangs above the bar and twitches at lies.', tags: ['bell'] }],
+          '80_encounters': [{ id: '80.10.rafter-watcher', title: 'Rafter Watcher', summary: 'Something in the rafters reacts when the cellar route is ignored.', tags: ['rafters'] }],
+        },
+      },
+    },
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  }
+}
+
+function weakCrowsDenNarrativeState(): LocationRoomNarrativeState {
+  return {
+    ...narrativeState(),
+    id: 'state-11',
+    roomId: 'room-11',
+    locationId: '11',
+    stateSummary: 'Stale memory mentions a storm near a cottage and a folded map, but it should not control this reset.',
+    currentObjective: 'Start the room from canonical location context.',
+    openThreads: ['Which tavern hook answers first?'],
+    metadata: {
+      ttrpgPhase: 'story',
+      combatReadiness: 'none',
+      threatLevel: 0,
+      adventure: {
+        arcSummary: 'Weak stale memory from a different scene should be overridden.',
+        currentStakes: 'A wrong cottage scene is stale and non-canonical.',
+      },
+      adventureCatalog: {
+        defaults: {
+          arcSummary: 'Stale catalog says a storm, cottage, and map belong here, but live location details must override it.',
+        },
+        sections: {
+          '40_places': [{ id: 'stale-cottage', title: 'Stale Cottage', summary: 'A non-canonical cottage and map from a prior reset.', tags: ['storm'] }],
+        },
+      },
+    },
+  }
+}
+
 function sceneCheckOutcomeInput(tier: 'critical_success' | 'success' | 'partial_success' | 'failure' | 'critical_failure' = 'partial_success') {
   const participants = [participant(1, 'Ash'), participant(2, 'Bone')]
   const request = normalizeSceneCheckRequest({
@@ -360,6 +429,52 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('activeDecision rare')
     expect(prompt).toContain('Most beats keep requestedGameplayAction null')
     expect(prompt).toContain('requestedGameplayAction "start_combat"')
+  })
+
+  it('includes canonical Crow\'s Den grounding in GM beat and scene-check outcome prompts even with weak stale adventure memory', () => {
+    const crowsRoom = room({
+      id: 'room-11',
+      locationId: '11',
+      channelId: 'wagdie-location-11',
+    })
+    const crowsTick = tick({ roomId: 'room-11', locationId: '11' })
+    const crowsLocation = crowsDenLocationDetails()
+    const staleState = weakCrowsDenNarrativeState()
+
+    const beatPrompt = buildGameMasterBeatPrompt({
+      gameMasterAgentId: 'gm-1',
+      room: crowsRoom,
+      tick: crowsTick,
+      participants,
+      speaker: participants[0],
+      recentMessages: [],
+      narrativeState: staleState,
+      location: crowsLocation,
+    })
+
+    expect(beatPrompt).toContain('Canonical location grounding:')
+    expect(beatPrompt).toContain('Location id: 11')
+    expect(beatPrompt).toContain("Location id: 11; Location name: The Crow's Den")
+    expect(beatPrompt).toContain('Canonical grounding overrides stale adventure memory')
+    expect(beatPrompt).toContain('sealed cellar door')
+    expect(beatPrompt).toContain('Which visible tavern hook')
+    expect(beatPrompt).toContain('Taproom Bar')
+    expect(beatPrompt).toContain('Forbidden unless grounded here')
+
+    const outcomePrompt = buildGameMasterSceneCheckOutcomePrompt({
+      ...sceneCheckOutcomeInput('failure'),
+      room: crowsRoom,
+      tick: crowsTick,
+      narrativeState: staleState,
+      location: crowsLocation,
+    })
+
+    expect(outcomePrompt).toContain('Canonical location grounding:')
+    expect(outcomePrompt).toContain('Location id: 11')
+    expect(outcomePrompt).toContain("Location id: 11; Location name: The Crow's Den")
+    expect(outcomePrompt).toContain('sealed cellar door')
+    expect(outcomePrompt).toContain('Rafter Watcher')
+    expect(outcomePrompt).toContain('Canonical grounding overrides stale adventure memory')
   })
 
   it('frames retrieved catalog entries as bounded private sourcebook anchors', () => {
@@ -1764,6 +1879,99 @@ describe('game-master beat generator helpers', () => {
     expect(recoveredFailurePatch.metadata.gmGeneration?.recoveries).toEqual(expect.arrayContaining([
       'scene_check_adventure_patch_defaulted_from_model_prose',
     ]))
+  })
+
+  it('rejects known unsupported off-location drift anchors when canonical grounding is present', () => {
+    const crowsRoom = room({ id: 'room-11', locationId: '11' })
+    const crowsTick = tick({ roomId: 'room-11', locationId: '11' })
+    const crowsLocation = crowsDenLocationDetails()
+    const staleState = weakCrowsDenNarrativeState()
+
+    expect(() => normalizeGameMasterBeatResponse(JSON.stringify({
+      publicNarration: 'A storm hammers the cottage door while a wall map marks the only route, forcing Ash to choose whether to follow the map or bar the door.',
+      speakerInstruction: 'Choose whether Ash follows the marked route or bars the door.',
+      stateSummary: 'The wrong cottage scene tries to take over the room.',
+      currentObjective: 'Choose whether to follow the map route.',
+      openThreads: ['Where does the map lead?'],
+      ttrpgPhase: 'exploration',
+      combatReadiness: 'none',
+      threatLevel: 0,
+      adventurePatch: { currentStakes: 'The map route demands an answer.' },
+    }), {
+      participants,
+      speaker: participants[0],
+      room: crowsRoom,
+      location: crowsLocation,
+      narrativeState: staleState,
+      recentMessages: [],
+    }, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 1000 } })).toThrow('unsupported off-location anchor "storm"')
+
+    const unsupportedOutcomeInput = {
+      ...sceneCheckOutcomeInput('failure'),
+      room: crowsRoom,
+      tick: crowsTick,
+      narrativeState: staleState,
+      location: crowsLocation,
+    }
+    expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'The iron door slams at the mouth of the dark passage, and the failed search leaves a visible cost: the safer route is blocked, pressure rises behind the passage stones, and the group must choose whether to force the door, retreat, or risk a narrower way before the passage closes.',
+      stateSummary: 'The wrong passage blocks the scene.',
+      currentObjective: 'Choose how to answer the blocked passage.',
+      openThreads: ['Will the group force the door?'],
+      adventurePatch: {
+        consequence: { summary: 'The failed check blocks the wrong passage.', status: 'complication', tier: 'failure' },
+      },
+    }), unsupportedOutcomeInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 1000 } })).toThrow('unsupported off-location anchor "iron door"')
+  })
+
+  it('allows known drift sentinel terms when they appear in canonical grounding', () => {
+    const crowsRoom = room({ id: 'room-11', locationId: '11' })
+    const baseLocation = crowsDenLocationDetails()
+    const groundedLocation = {
+      ...baseLocation,
+      metadata: {
+        ...baseLocation.metadata,
+        summary: 'This test location explicitly includes a storm, a cottage map, an iron door, and a dark passage as canonical visible anchors.',
+      },
+    }
+
+    const beatOutput = normalizeGameMasterBeatResponse(JSON.stringify({
+      publicNarration: 'The storm peels at the cottage map beside the taproom door, revealing a route that forces Ash to choose whether to follow it or hold the door.',
+      speakerInstruction: 'Choose whether Ash follows the map route or holds the door.',
+      stateSummary: 'The map route is now visible.',
+      currentObjective: 'Choose whether to follow the map route.',
+      openThreads: ['Where does the route lead?'],
+      ttrpgPhase: 'exploration',
+      combatReadiness: 'none',
+      threatLevel: 0,
+      adventurePatch: { currentStakes: 'The map route demands an answer.' },
+    }), {
+      participants,
+      speaker: participants[0],
+      room: crowsRoom,
+      location: groundedLocation,
+      narrativeState: weakCrowsDenNarrativeState(),
+      recentMessages: [],
+    }, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 1000 } })
+    expect(beatOutput.publicNarration).toContain('cottage map')
+
+    const successInput = {
+      ...sceneCheckOutcomeInput('success'),
+      room: crowsRoom,
+      location: groundedLocation,
+      resolution: {
+        ...sceneCheckOutcomeInput('success').resolution,
+        roll: { ...sceneCheckOutcomeInput('success').resolution.roll, tier: 'success' as const },
+      },
+    }
+    const outcome = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'The iron door opens into the dark passage beside the taproom table, giving the group a safer route to test next.',
+      stateSummary: 'The iron door and dark passage are visible.',
+      currentObjective: 'Choose whether to test the dark passage.',
+      openThreads: ['What waits beyond the iron door?'],
+      adventurePatch: { discoveries: ['The iron door opens into a dark passage.'] },
+    }), successInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 1000 } })
+    expect(outcome.publicNarration).toContain('dark passage')
   })
 
   it('rejects weak or generic failure-tier public scene-check narration', () => {

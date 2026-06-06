@@ -4,7 +4,12 @@ import {
   type CharacterRuntimeAssets,
   type CharacterTraitFilters,
 } from '@/lib/domain/character/character-runtime-assets'
-import { getCharacterImageUrl } from '@/lib/utils/image'
+import {
+  currentImageFromVerifiedBase,
+  getCurrentImageFromCharacter,
+  getVerifiedBaseCharacterImage,
+} from '@/lib/services/assets/character-current-image-service'
+import { getCharacterImageFallback, getCharacterImageUrl } from '@/lib/utils/image'
 import type { Character, CharacterMetadata } from '@/types/character'
 
 type LocalManifestItem = {
@@ -54,6 +59,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function toTokenId(value: unknown): number | null {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null
 }
 
 function toAttributes(metadata: CharacterMetadata | null | undefined): MetadataAttribute[] {
@@ -258,15 +267,46 @@ class CharacterLocalAssetsService implements CharacterRuntimeAssets {
     }
 
     const mergedMetadata = mergeMetadata(localMetadata, character.metadata)
-    const imageUrl = getCharacterImageUrl(character.token_id, mergedMetadata, character.image_url, {
+    const verifiedBase = await getVerifiedBaseCharacterImage(character.token_id)
+    const dbCurrent = getCurrentImageFromCharacter(character)
+    const baseCurrent = verifiedBase ? currentImageFromVerifiedBase(verifiedBase) : null
+    const currentImage = dbCurrent?.currentImage || baseCurrent?.currentImage || null
+    const originalImage =
+      stringOrNull(character.original_image_url) ||
+      stringOrNull(character.metadata?.originalImage) ||
+      verifiedBase?.originalImageUrl ||
+      stringOrNull(localMetadata.originalImage) ||
+      stringOrNull(localMetadata.image)
+
+    if (originalImage) {
+      mergedMetadata.originalImage = originalImage
+    }
+
+    if (currentImage) {
+      mergedMetadata.currentImage = currentImage
+      mergedMetadata.image = currentImage.url
+    }
+
+    const dynamicImageUrl = getCharacterImageUrl(character.token_id, mergedMetadata, character.image_url, {
       infectionStatus: character.infection_status,
       isInfected: character.infected,
     })
+    const fallbackImageUrl = originalImage && dynamicImageUrl === getCharacterImageFallback()
+      ? originalImage
+      : dynamicImageUrl
+    const imageUrl = fallbackImageUrl
 
     return {
       ...character,
       metadata: mergedMetadata,
       image_url: imageUrl,
+      original_image_url: character.original_image_url ?? originalImage ?? null,
+      current_image_url: currentImage?.url ?? null,
+      current_image_version: currentImage?.version ?? null,
+      current_image_kind: currentImage?.kind ?? null,
+      current_image_sha256: currentImage?.sha256 ?? null,
+      current_image_storage: currentImage?.storage ?? null,
+      current_image_updated_at: currentImage?.updatedAt ?? null,
     }
   }
 

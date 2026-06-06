@@ -188,6 +188,19 @@ export class InMemoryLocationRoomRepository {
     return this.room
   }
 
+  async deleteRoomById(): Promise<void> {
+    this.messages.length = 0
+    this.ticks.length = 0
+    this.pendingTick = null
+    this.completedTicks = 0
+    this.skippedTicks = 0
+    this.failedTicks = 0
+    this.room.lastTickAt = null
+    this.room.nextTickAt = null
+    this.room.tickCount = 0
+    this.room.lastError = null
+  }
+
   async listDueRooms(): Promise<LocationRoom[]> {
     return [this.room]
   }
@@ -293,24 +306,101 @@ export class InMemoryLocationRoomRepository {
     return selected
   }
 
-  async appendMessage(input: CreateLocationRoomMessageInput): Promise<LocationRoomMessage> {
-    const message: LocationRoomMessage = {
-      id: `msg-${this.scenario.id}-${++this.messageSequence}`,
+  private normalizeMessageFields(input: CreateLocationRoomMessageInput): {
+    visibility: LocationRoomMessage['visibility']
+    metadata: Record<string, unknown>
+    dedupeKey: string | null
+  } {
+    const visibility = input.visibility ?? 'public'
+    const dedupeKey = input.dedupeKey?.trim() || null
+    const metadata = dedupeKey
+      ? { ...(input.metadata ?? {}), dedupeKey }
+      : { ...(input.metadata ?? {}) }
+    if (!dedupeKey) {
+      delete metadata.dedupeKey
+    }
+    return { visibility, metadata, dedupeKey }
+  }
+
+  private findDedupedMessage(
+    input: CreateLocationRoomMessageInput,
+    visibility: LocationRoomMessage['visibility'],
+    dedupeKey: string | null,
+    candidates: LocationRoomMessage[] = this.messages
+  ): LocationRoomMessage | null {
+    if (!input.tickId || visibility === 'internal') return null
+    return candidates.find((message) => {
+      if (
+        message.roomId !== input.roomId ||
+        message.tickId !== input.tickId ||
+        message.visibility !== visibility ||
+        message.authorKind !== input.authorKind
+      ) {
+        return false
+      }
+      const existingKey = typeof message.metadata.dedupeKey === 'string'
+        ? message.metadata.dedupeKey.trim()
+        : ''
+      return dedupeKey ? existingKey === dedupeKey : existingKey === ''
+    }) ?? null
+  }
+
+  private buildMessage(
+    input: CreateLocationRoomMessageInput,
+    sequence: number,
+    visibility: LocationRoomMessage['visibility'],
+    metadata: Record<string, unknown>
+  ): LocationRoomMessage {
+    return {
+      id: `msg-${this.scenario.id}-${sequence}`,
       roomId: input.roomId,
       locationId: input.locationId,
       tickId: input.tickId ?? null,
-      sequence: this.messageSequence,
-      visibility: input.visibility,
+      sequence,
+      visibility,
       authorKind: input.authorKind,
       tokenId: input.tokenId ?? null,
       officialAgentId: input.officialAgentId ?? null,
       authorName: input.authorName,
       content: input.content,
-      metadata: input.metadata ?? {},
-      createdAt: new Date(new Date(BASE_TIME).getTime() + this.messageSequence * 1000).toISOString(),
+      metadata,
+      createdAt: new Date(new Date(BASE_TIME).getTime() + sequence * 1000).toISOString(),
     }
+  }
+
+  async appendMessage(input: CreateLocationRoomMessageInput): Promise<LocationRoomMessage> {
+    const { visibility, metadata, dedupeKey } = this.normalizeMessageFields(input)
+    const existing = this.findDedupedMessage(input, visibility, dedupeKey)
+    if (existing) return existing
+
+    const message = this.buildMessage(input, ++this.messageSequence, visibility, metadata)
     this.messages.push(message)
     return message
+  }
+
+  async appendMessagesBatch(inputs: CreateLocationRoomMessageInput[]): Promise<LocationRoomMessage[]> {
+    const staged: LocationRoomMessage[] = []
+    const results: LocationRoomMessage[] = []
+    let nextSequence = this.messageSequence
+
+    for (const input of inputs) {
+      const { visibility, metadata, dedupeKey } = this.normalizeMessageFields(input)
+      const existing =
+        this.findDedupedMessage(input, visibility, dedupeKey) ??
+        this.findDedupedMessage(input, visibility, dedupeKey, staged)
+      if (existing) {
+        results.push(existing)
+        continue
+      }
+
+      const message = this.buildMessage(input, ++nextSequence, visibility, metadata)
+      staged.push(message)
+      results.push(message)
+    }
+
+    this.messageSequence = nextSequence
+    this.messages.push(...staged)
+    return results
   }
 
   async markTickCompleted(tickId: string): Promise<LocationRoomTick> {

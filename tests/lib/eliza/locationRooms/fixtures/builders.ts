@@ -177,6 +177,7 @@ export function makeRepository(overrides: Partial<jest.Mocked<LocationRoomReposi
     findRoomById: jest.fn(async () => baseRoom),
     findRoomByLocationId: jest.fn(async () => baseRoom),
     ensureRoomForLocation: jest.fn(async () => baseRoom),
+    deleteRoomById: jest.fn(async () => undefined),
     listDueRooms: jest.fn(async () => [baseRoom]),
     enqueueTick: jest.fn(async (input) => ({
       tick: tick({
@@ -214,6 +215,14 @@ export function makeRepository(overrides: Partial<jest.Mocked<LocationRoomReposi
     })),
     markTickSelected: jest.fn(async (_tickId, tokenId) => tick({ selectedTokenId: tokenId })),
     appendMessage: jest.fn(async () => appended),
+    appendMessagesBatch: jest.fn(async (inputs) => inputs.map((_input, index) => message({
+      id: `msg-batch-${index + 1}`,
+      sequence: index + 3,
+      tokenId: _input.tokenId ?? null,
+      content: _input.content,
+      authorKind: _input.authorKind,
+      metadata: _input.metadata ?? {},
+    }))),
     markTickCompleted: jest.fn(async () => tick({ status: 'completed', completedAt: LOCATION_ROOM_SERVICE_TEST_NOW })),
     markTickSkipped: jest.fn(async () => tick({ status: 'skipped', completedAt: LOCATION_ROOM_SERVICE_TEST_NOW })),
     markTickFailed: jest.fn(async () => tick({ status: 'failed' })),

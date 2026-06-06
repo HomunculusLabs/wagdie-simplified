@@ -7,6 +7,7 @@ import { CharacterActions } from '@/components/characters/detail/CharacterAction
 import { CharacterArtworkCard } from '@/components/characters/detail/CharacterArtworkCard'
 import { CharacterEquipmentSection } from '@/components/characters/detail/CharacterEquipmentSection'
 import { CharacterIdentityStatsPanel } from '@/components/characters/detail/CharacterIdentityStatsPanel'
+import { CharacterImageProvenance } from '@/components/characters/detail/CharacterImageProvenance'
 import { CharacterLoreAppearancesSection } from '@/components/characters/detail/CharacterLoreAppearancesSection'
 import { CharacterStorySection } from '@/components/characters/detail/CharacterStorySection'
 import { CharacterWalletTab } from '@/components/characters/detail/CharacterWalletTab'
@@ -230,6 +231,7 @@ export function CharacterSheetLayout({
                   onImageError={onImageError}
                   frame="inline"
                 />
+                <CharacterImageProvenance character={character} imageDisclosure={imageDisclosure} />
                 <div className={`border border-midnight-light/40 bg-black/25 shadow-inner shadow-black/30 ${shouldCompactLeftRail ? 'space-y-3 p-3' : 'space-y-4 p-4'}`}>
                   <div className="border-b border-midnight-light/30 pb-4">
                     <div className="flex items-start justify-between gap-3">

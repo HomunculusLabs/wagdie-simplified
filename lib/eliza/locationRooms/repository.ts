@@ -116,6 +116,10 @@ function table(name: string): any {
   return getAdminClient().from(name as never)
 }
 
+function rpc(name: string, args: Record<string, unknown>): any {
+  return getAdminClient().rpc(name, args)
+}
+
 function mapRoom(row: RoomRow): LocationRoom {
   return {
     id: row.id,
@@ -223,6 +227,48 @@ function buildRoomInsert(locationId: string) {
   }
 }
 
+function normalizeMessageMetadata(input: CreateLocationRoomMessageInput): {
+  metadata: Record<string, unknown>
+  dedupeKey: string | null
+} {
+  const dedupeKey = input.dedupeKey?.trim() || null
+  const metadata = dedupeKey
+    ? { ...(input.metadata ?? {}), dedupeKey }
+    : { ...(input.metadata ?? {}) }
+  if (!dedupeKey) {
+    delete metadata.dedupeKey
+  }
+
+  return { metadata, dedupeKey }
+}
+
+function buildBatchMessagePayload(input: CreateLocationRoomMessageInput): Record<string, unknown> {
+  const { metadata, dedupeKey } = normalizeMessageMetadata(input)
+
+  return {
+    room_id: input.roomId,
+    location_id: input.locationId,
+    tick_id: input.tickId ?? null,
+    visibility: input.visibility ?? 'public',
+    author_kind: input.authorKind,
+    token_id: input.tokenId ?? null,
+    official_agent_id: input.officialAgentId ?? null,
+    author_name: input.authorName,
+    content: input.content,
+    metadata,
+    dedupeKey,
+  }
+}
+
+function normalizeRpcRows(data: unknown): MessageRow[] {
+  if (Array.isArray(data)) return data as MessageRow[]
+  if (typeof data === 'string') {
+    const parsed = JSON.parse(data) as unknown
+    if (Array.isArray(parsed)) return parsed as MessageRow[]
+  }
+  throw new Error('Location room message batch RPC returned an invalid payload')
+}
+
 export type CreateLocationRoomMessageInput = {
   roomId: string
   locationId: string
@@ -244,6 +290,7 @@ export interface LocationRoomRepository {
   findRoomById(roomId: string): Promise<LocationRoom | null>
   findRoomByLocationId(locationId: string): Promise<LocationRoom | null>
   ensureRoomForLocation(locationId: string): Promise<LocationRoom>
+  deleteRoomById(roomId: string): Promise<void>
   listDueRooms(now: Date, limit: number, locationIds?: string[]): Promise<LocationRoom[]>
   enqueueTick(input: {
     room: LocationRoom
@@ -269,6 +316,7 @@ export interface LocationRoomRepository {
   getPublicAuthorMessageStats(roomId: string): Promise<LocationRoomPublicAuthorMessageStats>
   markTickSelected(tickId: string, tokenId: number): Promise<LocationRoomTick>
   appendMessage(input: CreateLocationRoomMessageInput): Promise<LocationRoomMessage>
+  appendMessagesBatch(inputs: CreateLocationRoomMessageInput[]): Promise<LocationRoomMessage[]>
   markTickCompleted(tickId: string): Promise<LocationRoomTick>
   markTickSkipped(tickId: string, reason: string): Promise<LocationRoomTick>
   markTickFailed(tickId: string, error: string, nextAttemptAt: string): Promise<LocationRoomTick>
@@ -349,6 +397,14 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     if (error) throw new Error(error.message)
     if (!data) throw new Error('Location room insert returned no row')
     return mapRoom(data)
+  }
+
+  async deleteRoomById(roomId: string): Promise<void> {
+    const { error } = (await table(ROOMS_TABLE)
+      .delete()
+      .eq('id', roomId)) as QueryResult<null>
+
+    if (error) throw new Error(error.message)
   }
 
   async listDueRooms(now: Date, limit: number, locationIds: string[] = []): Promise<LocationRoom[]> {
@@ -703,13 +759,7 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
 
   async appendMessage(input: CreateLocationRoomMessageInput): Promise<LocationRoomMessage> {
     const visibility = input.visibility ?? 'public'
-    const dedupeKey = input.dedupeKey?.trim() || null
-    const metadata = dedupeKey
-      ? { ...(input.metadata ?? {}), dedupeKey }
-      : { ...(input.metadata ?? {}) }
-    if (!dedupeKey) {
-      delete metadata.dedupeKey
-    }
+    const { metadata, dedupeKey } = normalizeMessageMetadata(input)
 
     const findExisting = async (): Promise<LocationRoomMessage | null> => {
       if (!input.tickId || visibility === 'internal') return null
@@ -763,6 +813,24 @@ export class SupabaseLocationRoomRepository implements LocationRoomRepository {
     if (error) throw new Error(error.message)
     if (!data) throw new Error('Location room message insert returned no row')
     return mapMessage(data)
+  }
+
+  async appendMessagesBatch(inputs: CreateLocationRoomMessageInput[]): Promise<LocationRoomMessage[]> {
+    if (inputs.length === 0) return []
+
+    const { data, error } = (await rpc('append_location_room_messages_batch', {
+      p_messages: inputs.map(buildBatchMessagePayload),
+    })) as QueryResult<unknown>
+
+    if (error) throw new Error(error.message)
+    if (!data) throw new Error('Location room message batch RPC returned no rows')
+
+    const rows = normalizeRpcRows(data)
+    if (rows.length !== inputs.length) {
+      throw new Error('Location room message batch RPC returned an unexpected row count')
+    }
+
+    return rows.map(mapMessage)
   }
 
   async markTickCompleted(tickId: string): Promise<LocationRoomTick> {

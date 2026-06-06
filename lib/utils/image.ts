@@ -122,6 +122,14 @@ export type CharacterImageDisclosure = {
 type CharacterImageMetadata = {
   image?: string | null
   image_url?: string | null
+  originalImage?: string | null
+  currentImage?: {
+    url?: string | null
+    kind?: string | null
+  } | null
+  asset_import?: {
+    local_path?: string | null
+  } | null
   isSeared?: boolean | null
   searImage?: string | null
   infectedImage?: string | null
@@ -139,20 +147,45 @@ function isMetadataObject(value: unknown): value is CharacterImageMetadata {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
-function isCurrentlyInfected(options: CharacterImageOptions | undefined): boolean {
+function hasExplicitInfectionState(options: CharacterImageOptions | undefined): boolean {
+  return options?.infectionStatus != null || options?.isInfected != null
+}
+
+function isCurrentlyInfected(
+  options: CharacterImageOptions | undefined,
+  metadata?: CharacterImageMetadata | null
+): boolean {
   if (options?.infectionStatus != null) {
     return options.infectionStatus === 'infected'
   }
 
-  return options?.isInfected === true
+  if (options?.isInfected != null) {
+    return options.isInfected === true
+  }
+
+  return !hasExplicitInfectionState(options) && getCurrentImageKind(metadata ?? null) === 'infected'
+}
+
+function getCurrentImageKind(metadata: CharacterImageMetadata | null): string | null {
+  return metadata?.currentImage?.kind?.trim().toLowerCase() || null
+}
+
+function getCurrentMetadataImageCandidates(
+  metadata: CharacterImageMetadata | null,
+  allowedKinds?: Set<string>
+): string[] {
+  if (!metadata?.currentImage || getCurrentImageKind(metadata) === 'placeholder') return []
+  if (allowedKinds && !allowedKinds.has(getCurrentImageKind(metadata) || '')) return []
+  return normalizeImageUrlCandidates(metadata.currentImage.url)
 }
 
 function getInfectedMetadataImageCandidates(
   metadata: CharacterImageMetadata | null,
   options?: CharacterImageOptions
 ): string[] {
-  if (!metadata || !isCurrentlyInfected(options)) return []
+  if (!metadata || !isCurrentlyInfected(options, metadata)) return []
   return [
+    ...getCurrentMetadataImageCandidates(metadata, new Set(['infected'])),
     ...normalizeImageUrlCandidates(metadata.infectedImage),
     ...normalizeImageUrlCandidates(metadata.infected_image_url),
     ...normalizeImageUrlCandidates(metadata.infection?.image_url),
@@ -163,6 +196,7 @@ function getInfectedMetadataImageCandidates(
 function isSearedMetadata(metadata: CharacterImageMetadata | null): boolean {
   return Boolean(
     metadata?.isSeared ||
+    getCurrentImageKind(metadata) === 'seared' ||
     metadata?.searImage ||
     metadata?.searing_materialization?.seared_image_url
   )
@@ -175,6 +209,7 @@ function getSearedMetadataImageCandidates(
   if (!metadata || !isSearedMetadata(metadata)) return []
 
   const materializedCandidates = [
+    ...getCurrentMetadataImageCandidates(metadata, new Set(['seared'])),
     ...normalizeImageUrlCandidates(metadata.searing_materialization?.seared_image_url),
     ...normalizeImageUrlCandidates(metadata.searImage),
     ...normalizeImageUrlCandidates(imageUrl),
@@ -185,6 +220,25 @@ function getSearedMetadataImageCandidates(
     ...(materializedCandidates.length > 0 ? normalizeImageUrlCandidates(metadata.image_url) : []),
     ...(materializedCandidates.length > 0 ? normalizeImageUrlCandidates(metadata.image) : []),
   ]
+}
+
+function getPrimaryCurrentMetadataImageCandidates(metadata: CharacterImageMetadata | null): string[] {
+  const currentKind = getCurrentImageKind(metadata)
+  if (currentKind === 'infected' || currentKind === 'seared' || currentKind === 'placeholder') {
+    return []
+  }
+
+  return getCurrentMetadataImageCandidates(metadata)
+}
+
+function getImportedLocalImageCandidates(metadata: CharacterImageMetadata | null): string[] {
+  const localPath = metadata?.asset_import?.local_path?.trim()
+  if (!localPath || !localPath.startsWith('/images/characters/')) return []
+  return [localPath]
+}
+
+function getOriginalImageFallbackCandidates(metadata: CharacterImageMetadata | null): string[] {
+  return normalizeImageUrlCandidates(metadata?.originalImage)
 }
 
 function dedupeImageUrls(urls: string[]): string[] {
@@ -206,8 +260,10 @@ function dedupeImageUrls(urls: string[]): string[] {
  * Runtime policy:
  * 1. infected dynamic image, when the character is currently infected
  * 2. seared dynamic image, when metadata indicates a materialized sear
- * 3. local downloaded/static asset, when known to exist
- * 4. placeholder
+ * 3. metadata.currentImage.url for verified/base/current read-model state
+ * 4. verified local base asset, when known to exist
+ * 5. metadata.originalImage as an explicit degraded provenance fallback
+ * 6. placeholder
  */
 export function getCharacterImageCandidates(
   tokenId: number,
@@ -221,7 +277,10 @@ export function getCharacterImageCandidates(
   return dedupeImageUrls([
     ...getInfectedMetadataImageCandidates(metadata, options),
     ...getSearedMetadataImageCandidates(metadata, imageUrl),
+    ...getPrimaryCurrentMetadataImageCandidates(metadata),
+    ...getImportedLocalImageCandidates(metadata),
     ...(localImage ? [localImage] : []),
+    ...getOriginalImageFallbackCandidates(metadata),
     getCharacterImageFallback(),
   ])
 }
@@ -252,7 +311,7 @@ export function getCharacterImageDisclosure(
   const candidates = getCharacterImageCandidates(tokenId, metadataOrImage, imageUrl, options)
   const primaryUrl = candidates[0] || getCharacterImageFallback()
   const searedImageUrl = getSearedMetadataImageCandidates(metadata, imageUrl)[0] || null
-  const currentlyInfected = isCurrentlyInfected(options)
+  const currentlyInfected = isCurrentlyInfected(options, metadata)
   const isSearedPrimary = Boolean(searedImageUrl && primaryUrl === searedImageUrl)
 
   return {

@@ -1,3 +1,7 @@
+jest.mock('@/lib/data/local-character-asset-status', () => ({
+  hasLocalCharacterImage: (tokenId: number) => tokenId === 1,
+}))
+
 import {
   getCharacterImageCandidates,
   getCharacterImageDisclosure,
@@ -12,24 +16,72 @@ describe('getCharacterImageUrl', () => {
     }, 'https://example.com/db.png')).toBe('/images/characters/1.png')
   })
 
+  it('uses structured current image before verified local base images', () => {
+    expect(getCharacterImageUrl(1, {
+      currentImage: {
+        url: '/images/characters/current/1.png?v=base-abcdef1234567890',
+        kind: 'base',
+      },
+      originalImage: 'ipfs://original-source-image',
+    })).toBe('/images/characters/current/1.png?v=base-abcdef1234567890')
+  })
+
+  it('uses imported local asset paths before IPFS fallback for unverified normal tokens', () => {
+    expect(getCharacterImageUrl(0, {
+      image: 'ipfs://legacy-metadata-image',
+      originalImage: 'ipfs://preserved-original-image',
+      asset_import: {
+        local_path: '/images/characters/2.png',
+      },
+    })).toBe('/images/characters/2.png')
+  })
+
   it('uses infected image candidates before seared and local images when currently infected', () => {
     expect(getCharacterImageUrl(1, {
       isSeared: true,
+      currentImage: {
+        url: '/images/characters/current/1.png?v=infected-abcdef1234567890',
+        kind: 'infected',
+      },
       searImage: 'https://example.com/seared.png',
       infectedImage: 'https://cdn.example.com/infected.png',
     }, null, {
       infectionStatus: 'infected',
-    })).toBe('https://cdn.example.com/infected.png')
+    })).toBe('/images/characters/current/1.png?v=infected-abcdef1234567890')
   })
 
-  it('uses searing materialization image before legacy sear image and local static image', () => {
+  it('uses infected current image when metadata is self-describing and no status override is supplied', () => {
+    expect(getCharacterImageUrl(1, {
+      currentImage: {
+        url: '/images/characters/current/1.png?v=infected-abcdef1234567890',
+        kind: 'infected',
+      },
+    })).toBe('/images/characters/current/1.png?v=infected-abcdef1234567890')
+  })
+
+  it('does not use infected current image when an explicit healthy status is supplied', () => {
+    expect(getCharacterImageUrl(1, {
+      currentImage: {
+        url: '/images/characters/current/1.png?v=infected-abcdef1234567890',
+        kind: 'infected',
+      },
+    }, null, {
+      infectionStatus: 'healthy',
+    })).toBe('/images/characters/1.png')
+  })
+
+  it('uses structured seared current image before legacy sear image and local static image', () => {
     expect(getCharacterImageCandidates(1, {
-      isSeared: true,
+      currentImage: {
+        url: '/images/characters/current/1.png?v=seared-deadbeef-log0-abcdef1234567890',
+        kind: 'seared',
+      },
       searImage: 'https://example.com/legacy-seared.png',
       searing_materialization: {
         seared_image_url: 'https://storage.googleapis.com/seared-wagdie-images/1/tx-test-log-1.png',
       },
     })).toEqual([
+      '/images/characters/current/1.png?v=seared-deadbeef-log0-abcdef1234567890',
       'https://storage.googleapis.com/seared-wagdie-images/1/tx-test-log-1.png',
       'https://example.com/legacy-seared.png',
       '/images/characters/1.png',
@@ -50,7 +102,19 @@ describe('getCharacterImageUrl', () => {
     })).toBe('/images/characters/1.png')
   })
 
-  it('falls back to the placeholder when a token has no usable dynamic or local image', () => {
+  it('uses originalImage as the explicit degraded fallback before placeholder', () => {
+    expect(getCharacterImageCandidates(0, {
+      image: 'ipfs://legacy-metadata-image',
+      originalImage: 'ipfs://preserved-original-image',
+    }, 'https://example.com/db.png')).toEqual([
+      'https://ipfs.io/ipfs/preserved-original-image',
+      'https://gateway.pinata.cloud/ipfs/preserved-original-image',
+      'https://dweb.link/ipfs/preserved-original-image',
+      '/images/placeholder-character.svg',
+    ])
+  })
+
+  it('falls back to the placeholder when a token has no usable current, original, or local image', () => {
     expect(getCharacterImageUrl(0, {
       image: 'ipfs://bafkreiexample',
     }, 'https://example.com/db.png')).toBe('/images/placeholder-character.svg')

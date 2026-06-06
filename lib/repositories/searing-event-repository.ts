@@ -199,6 +199,45 @@ export class SearingEventRepository {
     return { claimed: true, event: normalizeRow(data) }
   }
 
+  async findCompletedForTokens(tokenIds: number[]): Promise<SearingEventMaterializationRow[]> {
+    if (tokenIds.length === 0) return []
+
+    const { data, error } = await fromTable(this.getClient(), 'searing_events')
+      .select('*')
+      .eq('event_type', 'sear')
+      .eq('materialization_status', 'completed')
+      .in('token_id', tokenIds)
+      .order('block_number', { ascending: false })
+      .order('log_index', { ascending: false })
+
+    if (error) {
+      throw new Error(`Failed to fetch completed searing events: ${error.message}`)
+    }
+
+    return ((data || []) as unknown[]).map(normalizeRow)
+  }
+
+  async updateCompletedImage(
+    id: string,
+    searedImageUrl: string,
+    metadata: Record<string, unknown>
+  ): Promise<SearingEventMaterializationRow> {
+    const { data, error } = await fromTable(this.getClient(), 'searing_events')
+      .update({
+        seared_image_url: searedImageUrl,
+        materialization_metadata: metadata,
+      })
+      .eq('id', id)
+      .select('*')
+      .single()
+
+    if (error) {
+      throw new Error(`Failed to update completed searing event ${id}: ${error.message}`)
+    }
+
+    return normalizeRow(data)
+  }
+
   async markCompleted(
     id: string,
     searedImageUrl: string,

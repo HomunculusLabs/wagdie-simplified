@@ -1,7 +1,7 @@
 # Data Sync and Assets
 
 > Lifecycle: Runbook
-> Last validated: 2026-05-11
+> Last validated: 2026-06-04
 > Canonical sources: `package.json`, `scripts/`, `app/api/sync/*`, `lib/services/sync/*`, `lib/services/searing-materialization-service`, `supabase/migrations/`, `.env.example`
 
 This page groups repeatable data-sync and asset operations without becoming a scripts reference. Use `package.json` for the exact script inventory and each script/route for current behavior.
@@ -115,13 +115,21 @@ See `docs/operations/elizaos-validation.md` before promoting this flow beyond de
 
 ## Character image and metadata workflows
 
+Character images now have two public app-origin paths with different lifecycles:
+
+- `/images/characters/{tokenId}.png` is the permanent base/smart-contract compatibility path. Keep it available; do not deprecate or replace it with the mutable current route.
+- `/images/characters/current/{tokenId}.png?v={version}` is the served current image path for verified base images and altered/seared current images. Versioned URLs are cache-safe and may be backed by `public/` files or durable storage such as GCS.
+
+Served NFT metadata from `/api/characters/metadata/{tokenId}` starts from the original static metadata snapshot, replaces `image` with a verified current app-origin URL when available, and exposes original provenance through `original_image` and `image_provenance`. If no verified/current image is available, the route must fall back to the original static image rather than serving unverified local bytes.
+
 Script categories in `package.json` cover these workflows:
 
 - Import GCS images into local/public character image paths and update character metadata.
 - Point database metadata at local character images.
 - Extract PNG metadata from a GCS bucket dump.
 - Compare extracted image metadata against database rows.
-- Collect local character assets and generate local asset status.
+- Collect local character assets and generate verified local asset status.
+- Repair/backfill current/original image fields and emit marketplace refresh candidates.
 
 Important source files include:
 
@@ -130,8 +138,32 @@ Important source files include:
 - `scripts/extract-png-metadata.ts`
 - `scripts/compare-extracted-metadata.ts`
 - `scripts/collect-character-assets.ts`
+- `scripts/repair-current-character-images.ts`
+- `lib/services/assets/character-current-image-service.ts`
+- `lib/services/character-served-metadata-service.ts`
 
-Common controls visible in script source include `DRY_RUN`, import limits, page sizes, concurrency, image extension filters, local image directories, public prefixes, and missing-image download toggles. Check the script before running because these knobs are intentionally script-specific.
+### Current character image rollout flow
+
+1. Run a verified asset audit with `bun run assets:collect` against a small known-good token range first, then the intended full scope. Inspect `public/metadata/characters/manifest.json` for `verification_status` values including mismatches and unreachable sources.
+2. Deploy the metadata/current image route changes before any production repair writes `/images/characters/current/...` URLs into the read model.
+3. Run `bun run assets:repair-current` in dry-run mode for representative base and seared tokens. Use scoped flags such as `--token`, `--tokens`, or `--range` before considering `--all --yes`.
+4. Backfill base current fields only for verified base images. The stable public base path remains `/images/characters/{tokenId}.png`; the DB/read model current URL should use `/images/characters/current/{tokenId}.png?v=base-{sha16}`.
+5. Repair seared rows after base provenance is populated. Completed searing events should store app-origin current URLs plus backing storage descriptors, not raw `storage.googleapis.com` URLs as the served image.
+6. Run the searing materialization worker (`bun run searing:materialize` or the protected `/api/sync/searing` route) in a limited batch before wider rollout.
+7. Capture the repair script's operator-owned marketplace refresh list. Refresh marketplaces manually for changed tokens; do not add automatic OpenSea refresh behavior to the app or worker.
+
+### Rollout gates and monitoring checks
+
+Track these gates during rollout and before declaring completion:
+
+- `wagdie_characters` rows missing `current_image_url` after expected base/seared repair scope.
+- Completed `searing_events` whose `seared_image_url` is absent or not under `/images/characters/current/`.
+- Manifest entries with `verification_status` other than `verified` for tokens expected to have local base images.
+- Any served metadata response whose `image` points to an unversioned current route, raw GCS URL, or unverified local fallback.
+
+Rollback guidance: keep the additive DB columns, disable or bypass current-image serving if needed, and let served metadata fall back to the original static image. Do not roll back by pointing metadata at unverified `/images/characters/{tokenId}.png` bytes.
+
+Common controls visible in script source include `DRY_RUN`, import limits, page sizes, concurrency, image extension filters, local image directories, public prefixes, missing-image download toggles, token/range selectors, and `--yes` guards for mutation. Check the script before running because these knobs are intentionally script-specific.
 
 ## Lore seed and parity workflows
 

@@ -31,6 +31,17 @@ jest.mock('@/lib/eliza/locationRooms/adminDiagnostics', () => ({
   },
 }))
 
+jest.mock('@/lib/eliza/locationRooms/adminReset', () => {
+  class LocationRoomAdminResetLocationNotFoundError extends Error {}
+
+  return {
+    LocationRoomAdminResetLocationNotFoundError,
+    locationRoomAdminResetService: {
+      resetLocationRoom: jest.fn(),
+    },
+  }
+})
+
 jest.mock('@/lib/auth/admin', () => ({
   isAdmin: jest.fn(),
 }))
@@ -75,6 +86,7 @@ const { GET: getPublicRoom } = require('@/app/api/eliza/location-rooms/[location
 const { POST: postManualTick } = require('@/app/api/eliza/location-rooms/[locationId]/tick/route')
 const { GET: getAdminNarrative } = require('@/app/api/admin/eliza/location-rooms/[locationId]/narrative/route')
 const { GET: getAdminHealth } = require('@/app/api/admin/eliza/location-rooms/[locationId]/health/route')
+const { POST: postAdminReset } = require('@/app/api/admin/eliza/location-rooms/[locationId]/reset/route')
 const { GET: syncGet, POST: syncPost } = require('@/app/api/sync/eliza-location-rooms/route')
 const { requireAdmin, requireAuth } = require('@/lib/api/auth')
 const { isAdmin } = require('@/lib/auth/admin')
@@ -93,6 +105,10 @@ const {
 const { locationRoomRepository } = require('@/lib/eliza/locationRooms/repository')
 const { locationRoomNarrativeRepository } = require('@/lib/eliza/locationRooms/narrativeRepository')
 const { locationRoomAdminDiagnosticsService } = require('@/lib/eliza/locationRooms/adminDiagnostics')
+const {
+  LocationRoomAdminResetLocationNotFoundError,
+  locationRoomAdminResetService,
+} = require('@/lib/eliza/locationRooms/adminReset')
 
 const requireAuthMock = requireAuth as jest.Mock
 const requireAdminMock = requireAdmin as jest.Mock
@@ -101,6 +117,7 @@ const locationRoomServiceMock = locationRoomService as jest.Mocked<typeof locati
 const locationRoomRepositoryMock = locationRoomRepository as jest.Mocked<typeof locationRoomRepository>
 const locationRoomNarrativeRepositoryMock = locationRoomNarrativeRepository as jest.Mocked<typeof locationRoomNarrativeRepository>
 const locationRoomAdminDiagnosticsServiceMock = locationRoomAdminDiagnosticsService as jest.Mocked<typeof locationRoomAdminDiagnosticsService>
+const locationRoomAdminResetServiceMock = locationRoomAdminResetService as jest.Mocked<typeof locationRoomAdminResetService>
 
 function publicRequest(query = '') {
   return new NextRequest(`http://localhost/api/eliza/location-rooms/loc-1${query}`, { method: 'GET' })
@@ -123,6 +140,10 @@ function adminNarrativeRequest(query = '') {
 
 function adminHealthRequest() {
   return new NextRequest('http://localhost/api/admin/eliza/location-rooms/loc-1/health', { method: 'GET' })
+}
+
+function adminResetRequest() {
+  return new NextRequest('http://localhost/api/admin/eliza/location-rooms/loc-1/reset', { method: 'POST' })
 }
 
 function syncRequest(url = 'http://localhost/api/sync/eliza-location-rooms', method = 'GET', headers?: HeadersInit) {
@@ -166,6 +187,53 @@ describe('Eliza location room routes', () => {
       updatedAt: '2026-05-11T12:05:00.000Z',
     })
     locationRoomNarrativeRepositoryMock.listRecentBeatsByRoomId.mockResolvedValue([])
+    locationRoomAdminResetServiceMock.resetLocationRoom.mockResolvedValue({
+      location: { id: 'loc-1', name: 'The Abyss' },
+      previousRoomId: 'room-old',
+      room: {
+        id: 'room-reset',
+        locationId: 'loc-1',
+        officialRoomId: 'official-room-1',
+        officialWorldId: 'official-world-1',
+        officialUserId: 'official-user-1',
+        channelId: 'wagdie-location-loc-1',
+        tickEnabled: true,
+        lastTickAt: null,
+        nextTickAt: null,
+        tickCount: 0,
+        lastError: null,
+        createdAt: '2026-05-23T12:00:00.000Z',
+        updatedAt: '2026-05-23T12:00:00.000Z',
+      },
+      narrativeState: {
+        id: 'state-reset',
+        roomId: 'room-reset',
+        locationId: 'loc-1',
+        stateSummary: '',
+        currentObjective: null,
+        openThreads: [],
+        metadata: {},
+        createdAt: '2026-05-23T12:00:00.000Z',
+        updatedAt: '2026-05-23T12:00:00.000Z',
+      },
+      adventure: {
+        arcSummary: 'The Crow\'s Den starts at the bar.',
+        currentStakes: 'Choose who to trust.',
+        activeDecision: null,
+        consequenceLedger: [],
+        discoveries: ['The rafters listen.'],
+        clocks: [],
+        spatialContext: {
+          currentArea: null,
+          landmarks: [],
+          routes: [],
+          unresolvedSpatialQuestions: [],
+        },
+        lastDeclaredAction: null,
+        lastOutcome: null,
+      },
+      catalogPresent: true,
+    })
     locationRoomAdminDiagnosticsServiceMock.inspectLocation.mockResolvedValue({
       generatedAt: '2026-05-23T12:00:00.000Z',
       location: { id: 'loc-1', name: 'The Abyss', chainLocationId: null, active: null, exists: true },
@@ -491,6 +559,63 @@ describe('Eliza location room routes', () => {
     expect(response.status).toBe(500)
     expect(response.headers.get('Cache-Control')).toBe('no-store')
     await expect(response.json()).resolves.toEqual({ error: 'Failed to load location room health diagnostics' })
+  })
+
+  it('admin reset reseeds a location room through the admin reset service', async () => {
+    const response = await postAdminReset(adminResetRequest(), publicContext())
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    expect(locationRoomAdminResetService.resetLocationRoom).toHaveBeenCalledWith('loc-1')
+    await expect(response.json()).resolves.toMatchObject({
+      message: 'Location room reset and reseeded successfully',
+      location: { id: 'loc-1', name: 'The Abyss' },
+      previousRoomId: 'room-old',
+      room: {
+        id: 'room-reset',
+        locationId: 'loc-1',
+        tickCount: 0,
+        lastTickAt: null,
+        nextTickAt: null,
+      },
+      narrativeState: {
+        roomId: 'room-reset',
+        locationId: 'loc-1',
+        stateSummary: '',
+        currentObjective: null,
+        openThreads: [],
+      },
+      adventure: {
+        arcSummary: 'The Crow\'s Den starts at the bar.',
+        currentStakes: 'Choose who to trust.',
+        discoveries: ['The rafters listen.'],
+      },
+      catalogPresent: true,
+    })
+  })
+
+  it('admin reset requires admin access and does not call the reset service on auth failure', async () => {
+    requireAdminMock.mockResolvedValueOnce(NextResponse.json({ error: 'nope' }, { status: 403 }))
+
+    const response = await postAdminReset(adminResetRequest(), publicContext())
+
+    expect(response.status).toBe(403)
+    expect(response.headers.get('Cache-Control')).toBe('no-store')
+    expect(locationRoomAdminResetService.resetLocationRoom).not.toHaveBeenCalled()
+  })
+
+  it('admin reset maps missing locations and sanitizes unexpected service errors', async () => {
+    locationRoomAdminResetServiceMock.resetLocationRoom
+      .mockRejectedValueOnce(new LocationRoomAdminResetLocationNotFoundError('missing'))
+      .mockRejectedValueOnce(new Error('raw reset failure'))
+
+    const missing = await postAdminReset(adminResetRequest(), publicContext('missing'))
+    const failed = await postAdminReset(adminResetRequest(), publicContext())
+
+    expect(missing.status).toBe(404)
+    await expect(missing.json()).resolves.toEqual({ error: 'Location not found' })
+    expect(failed.status).toBe(500)
+    await expect(failed.json()).resolves.toEqual({ error: 'Failed to reset location room' })
   })
 
   it('admin narrative inspection requires admin access and does not query room state on auth failure', async () => {

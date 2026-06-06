@@ -1,3 +1,7 @@
+import { sha256Hex } from './assets/character-image-verification'
+import { buildCurrentCharacterImagePath, buildSearedCharacterImageVersion } from './assets/character-current-image-urls'
+import type { CharacterCurrentImageStorage } from '../../types/character'
+
 type StorageFile = {
   save: (buffer: Buffer, options?: Record<string, unknown>) => Promise<void>
 }
@@ -11,6 +15,17 @@ type StorageClient = {
 }
 
 type StorageConstructor = new () => StorageClient
+
+export type StoredSearedCharacterImage = {
+  publicPath: string
+  version: string
+  sha256: string
+  storage: CharacterCurrentImageStorage & {
+    type: 'gcs'
+    objectName: string
+    backingUrl: string
+  }
+}
 
 const dynamicImport = new Function('specifier', 'return import(specifier)') as <T>(specifier: string) => Promise<T>
 
@@ -54,10 +69,12 @@ async function loadStorageConstructor(): Promise<StorageConstructor> {
 export class SearingStorageService {
   private readonly bucketName: string
   private readonly prefix: string
+  private readonly storageConstructor?: StorageConstructor
 
-  constructor(options: { bucketName?: string; prefix?: string } = {}) {
+  constructor(options: { bucketName?: string; prefix?: string; storageConstructor?: StorageConstructor } = {}) {
     this.bucketName = options.bucketName || process.env.SEARING_GCS_BUCKET || process.env.GCS_BUCKET_NAME || process.env.GCS_BUCKET || 'seared-wagdie-images'
     this.prefix = trimSlashes(options.prefix ?? process.env.SEARING_GCS_PREFIX ?? '')
+    this.storageConstructor = options.storageConstructor
   }
 
   objectNameForToken(tokenId: number, options: { version?: string } = {}): string {
@@ -73,10 +90,21 @@ export class SearingStorageService {
   async uploadSearedImage(
     tokenId: number,
     image: Buffer,
-    options: { version?: string } = {}
-  ): Promise<string> {
-    const objectName = this.objectNameForToken(tokenId, options)
-    const Storage = await loadStorageConstructor()
+    options: { version?: string; transactionHash?: string; logIndex?: number } = {}
+  ): Promise<StoredSearedCharacterImage> {
+    const sha256 = sha256Hex(image)
+    const version = options.version || (
+      options.transactionHash && Number.isInteger(options.logIndex)
+        ? buildSearedCharacterImageVersion(options.transactionHash, options.logIndex as number, sha256)
+        : undefined
+    )
+
+    if (!version) {
+      throw new Error('A seared current image version or transaction/log context is required')
+    }
+
+    const objectName = this.objectNameForToken(tokenId, { version })
+    const Storage = this.storageConstructor || await loadStorageConstructor()
     const storage = new Storage()
     const file = storage.bucket(this.bucketName).file(objectName)
 
@@ -88,7 +116,18 @@ export class SearingStorageService {
       },
     })
 
-    return this.publicUrlForObject(objectName)
+    const backingUrl = this.publicUrlForObject(objectName)
+
+    return {
+      publicPath: buildCurrentCharacterImagePath(tokenId, version),
+      version,
+      sha256,
+      storage: {
+        type: 'gcs',
+        objectName,
+        backingUrl,
+      },
+    }
   }
 }
 

@@ -59,7 +59,7 @@ describe('CharacterMaterializationRepository', () => {
 
     const character = await repository.findCharacter(7)
 
-    expect(runtimeAssets.hydrateCharacter).toHaveBeenCalledWith(row)
+    expect(runtimeAssets.hydrateCharacter).toHaveBeenCalledWith(expect.objectContaining(row))
     expect(character).toMatchObject({
       token_id: 7,
       metadata: staleMetadata,
@@ -105,19 +105,35 @@ describe('CharacterMaterializationRepository', () => {
         new_trait: 'Searing Mark',
         makesBald: false,
       },
-      searedImageUrl: 'https://example.com/seared.png',
+      searedImageUrl: '/images/characters/current/7.png?v=seared-abcdef12-log1-0123456789abcdef',
+      searedImageVersion: 'seared-abcdef12-log1-0123456789abcdef',
+      searedImageSha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      searedImageStorage: {
+        type: 'gcs',
+        objectName: '7/seared-abcdef12-log1-0123456789abcdef.png',
+        backingUrl: 'https://storage.googleapis.com/seared-wagdie-images/7/seared-abcdef12-log1-0123456789abcdef.png',
+      },
       searedMetadata: { name: 'Test Concord' },
       materializedAt: '2026-05-28T00:00:00.000Z',
     })
 
     expect(update).toHaveBeenCalledWith(expect.objectContaining({
-      image_url: 'https://example.com/seared.png',
+      image_url: '/images/characters/current/7.png?v=seared-abcdef12-log1-0123456789abcdef',
+      current_image_url: '/images/characters/current/7.png?v=seared-abcdef12-log1-0123456789abcdef',
+      current_image_version: 'seared-abcdef12-log1-0123456789abcdef',
+      current_image_kind: 'seared',
+      current_image_sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      current_image_storage: expect.objectContaining({ type: 'gcs' }),
       metadata: expect.objectContaining({
         attributes: staleMetadata.attributes,
         customDbOnlyField: 'preserve me',
-        image: 'https://example.com/seared.png',
+        image: '/images/characters/current/7.png?v=seared-abcdef12-log1-0123456789abcdef',
+        currentImage: expect.objectContaining({
+          url: '/images/characters/current/7.png?v=seared-abcdef12-log1-0123456789abcdef',
+          kind: 'seared',
+        }),
         isSeared: true,
-        searImage: 'https://example.com/seared.png',
+        searImage: '/images/characters/current/7.png?v=seared-abcdef12-log1-0123456789abcdef',
       }),
     }))
   })
@@ -154,16 +170,25 @@ describe('CharacterMaterializationRepository', () => {
         new_trait: 'Searing Mark',
         makesBald: false,
       },
-      searedImageUrl: 'https://example.com/seared.png',
+      searedImageUrl: '/images/characters/current/7.png?v=seared-abcdef12-log1-0123456789abcdef',
+      searedImageVersion: 'seared-abcdef12-log1-0123456789abcdef',
+      searedImageSha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      searedImageStorage: {
+        type: 'gcs',
+        objectName: '7/seared-abcdef12-log1-0123456789abcdef.png',
+        backingUrl: 'https://storage.googleapis.com/seared-wagdie-images/7/seared-abcdef12-log1-0123456789abcdef.png',
+      },
       searedMetadata: { name: 'Test Concord' },
       materializedAt: '2026-05-28T00:00:00.000Z',
     })
 
     expect(update).toHaveBeenCalledWith(expect.objectContaining({
       image_url: 'https://example.com/infected-db.png',
+      current_image_url: null,
+      current_image_kind: null,
       metadata: expect.objectContaining({
         image: undefined,
-        searImage: 'https://example.com/seared.png',
+        searImage: '/images/characters/current/7.png?v=seared-abcdef12-log1-0123456789abcdef',
       }),
     }))
   })

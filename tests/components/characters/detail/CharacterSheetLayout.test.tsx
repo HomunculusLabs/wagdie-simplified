@@ -292,4 +292,76 @@ describe('CharacterSheetLayout', () => {
       showLoreNav: true,
     }))
   })
+
+  it('shows current, original, and canonical source image provenance when available', () => {
+    render(
+      <CharacterSheetLayout
+        {...baseProps}
+        character={{
+          ...baseCharacter,
+          metadata: {
+            currentImage: {
+              url: '/images/characters/current/123.png?v=seared-deadbeef-log0-abcdef1234567890',
+              version: 'seared-deadbeef-log0-abcdef1234567890',
+              kind: 'seared',
+              source: 'searing-materialization',
+            },
+            originalImage: 'ipfs://bafyoriginalsource',
+          },
+          current_image_url: '/images/characters/current/123.png?v=seared-deadbeef-log0-abcdef1234567890',
+          current_image_kind: 'seared',
+          current_image_version: 'seared-deadbeef-log0-abcdef1234567890',
+        } as any}
+        imageDisclosure={{
+          primaryUrl: '/images/characters/current/123.png?v=seared-deadbeef-log0-abcdef1234567890',
+          candidates: [],
+          searedImageUrl: '/images/characters/current/123.png?v=seared-deadbeef-log0-abcdef1234567890',
+          hasSearedImage: true,
+          isSearedPrimary: true,
+          isCurrentlyInfected: false,
+          isSearedImageHiddenByInfection: false,
+        }}
+      />
+    )
+
+    expect(screen.getByLabelText(/image provenance/i)).toBeInTheDocument()
+    expect(screen.getByText(/current \/ altered image/i)).toBeInTheDocument()
+    expect(screen.getByText(/preserved original image/i)).toBeInTheDocument()
+    expect(screen.getByText(/canonical ipfs\/source image/i)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /seared-deadbeef-log0/i })).toHaveAttribute(
+      'href',
+      '/images/characters/current/123.png?v=seared-deadbeef-log0-abcdef1234567890'
+    )
+    expect(screen.getAllByRole('link', { name: /bafyoriginalsource/i }).at(-1)).toHaveAttribute(
+      'href',
+      'https://ipfs.io/ipfs/bafyoriginalsource'
+    )
+  })
+
+  it('does not label an original-image gateway fallback as current artwork', () => {
+    render(
+      <CharacterSheetLayout
+        {...baseProps}
+        character={{
+          ...baseCharacter,
+          metadata: {
+            originalImage: 'ipfs://bafyoriginalsource',
+          },
+        } as any}
+        imageDisclosure={{
+          primaryUrl: 'https://ipfs.io/ipfs/bafyoriginalsource',
+          candidates: [],
+          searedImageUrl: null,
+          hasSearedImage: false,
+          isSearedPrimary: false,
+          isCurrentlyInfected: false,
+          isSearedImageHiddenByInfection: false,
+        }}
+      />
+    )
+
+    expect(screen.queryByText(/current \/ altered image/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/preserved original image/i)).toBeInTheDocument()
+    expect(screen.getByText(/canonical ipfs\/source image/i)).toBeInTheDocument()
+  })
 })

@@ -42,6 +42,13 @@ Sources: `app/api/character/` and `app/api/characters/`
 
 Area includes character browse/detail data, metadata, animation metadata, traits/origins/alignments, nested concord data, staking status, searing preview/sync, events, and character update flows. Business logic should live in services/repositories where practical rather than directly in route files.
 
+Character metadata and images use an original/current split:
+
+- `/api/characters/metadata/[tokenId]` serves NFT metadata built from the original static snapshot plus current read-model state. `image` is a verified current app-origin URL when one exists; `original_image` and `image_provenance` preserve the canonical source/original image. When current image resolution fails, the route falls back to the original static image rather than unverified local bytes.
+- `/images/characters/{tokenId}.png` is the permanent base/smart-contract compatibility image path. It represents the local mirrored base image and must remain available for base URI compatibility.
+- `/images/characters/current/{tokenId}.png?v={version}` is the mutable-state current image route. Use `base-{sha16}` versions for verified base images and `seared-{tx8}-log{logIndex}-{sha16}` versions for materialized sears. Versioned responses are intended to be cache-safe; unversioned current requests should not be treated as immutable.
+- Current/seared images should be app-origin URLs even when their durable backing object is in GCS. API responses and served metadata should not expose raw GCS URLs as the primary current image after repair/materialization.
+
 ### Concords
 
 Source: `app/api/concords/`
@@ -94,6 +101,7 @@ Area provides tweet/lore-feed data for UI surfaces that still consume tweet-shap
 - Middleware can proxy `/api/*` to `WAGDIE_API_BASE_URL` for UI-only local development; local API handlers are bypassed when that proxy is active.
 - Middleware also sets CSRF cookies on page requests and skips that cookie for public animated NFT pages.
 - `next.config.js` adds CORS headers for fonts, character images, animated character pages, and character metadata responses.
+- Character image display helpers prefer infected art, then seared/current altered art, then structured `metadata.currentImage.url`, then verified base assets, then explicit `metadata.originalImage` provenance fallback before the placeholder.
 - API contracts should be verified against route tests and route handlers before documenting request/response details.
 
 ## Adding or changing routes

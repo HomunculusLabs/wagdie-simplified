@@ -20,6 +20,7 @@
     "images:compare-metadata": "npx ts-node --project scripts/tsconfig.json scripts/compare-extracted-metadata.ts",
     "opensea:refresh": "npx ts-node --project scripts/tsconfig.json scripts/refresh-opensea-metadata.ts",
     "assets:collect": "npx ts-node --project scripts/tsconfig.json scripts/collect-character-assets.ts",
+    "assets:repair-current": "npx ts-node --project scripts/tsconfig.json scripts/repair-current-character-images.ts",
     "searing:materialize": "npx ts-node --project scripts/tsconfig.json scripts/materialize-searing-events.ts",
     "lore:seed-base": "npx ts-node --project scripts/tsconfig.json scripts/lore/seed-base-lore.ts",
     "lore:verify-base-parity": "npx ts-node --project scripts/tsconfig.json scripts/lore/verify-base-lore-parity.ts",

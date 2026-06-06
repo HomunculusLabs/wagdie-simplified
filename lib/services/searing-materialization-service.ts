@@ -30,6 +30,7 @@ import {
   searingStorageService,
   type SearingStorageService,
 } from './searing-storage'
+import { buildSearedCharacterImageVersion } from './assets/character-current-image-urls'
 
 export type SearingMaterializationStatus = 'completed' | 'completed_without_image' | 'failed' | 'skipped' | 'processing'
 
@@ -88,15 +89,24 @@ function isEventBefore(a: SearingEventMaterializationRow, b: SearingEventMateria
 }
 
 function storageVersionForEvent(event: SearingEventMaterializationRow, image: Buffer): string {
-  const digest = createHash('sha256').update(image).digest('hex').slice(0, 16)
-  return `tx-${event.transaction_hash.replace(/^0x/i, '')}-log-${event.log_index}-${digest}`
+  const digest = createHash('sha256').update(image).digest('hex')
+  return buildSearedCharacterImageVersion(event.transaction_hash, event.log_index, digest)
 }
 
 function isVersionedSearedImageUrl(event: SearingEventMaterializationRow, imageUrl: string | null): boolean {
   if (!imageUrl) return false
 
   try {
-    const url = new URL(imageUrl)
+    const url = new URL(imageUrl, 'https://wagdie.local')
+    const version = url.searchParams.get('v')
+    if (
+      url.pathname === `/images/characters/current/${event.token_id}.png` &&
+      typeof version === 'string' &&
+      /^seared-[a-f0-9]{8}-log\d+-[a-f0-9]{16}$/i.test(version)
+    ) {
+      return true
+    }
+
     const decodedPath = decodeURIComponent(url.pathname)
     return decodedPath.includes(`/${event.token_id}/`) && !decodedPath.endsWith(`/${event.token_id}.png`)
   } catch {
@@ -440,9 +450,10 @@ export class SearingMaterializationService {
       validateSearingLayerResolution(resolution)
 
       const composed = await this.composer.compose(resolution.layers)
-      const searedImageUrl = await this.storage.uploadSearedImage(event.token_id, composed.image, {
+      const searedImage = await this.storage.uploadSearedImage(event.token_id, composed.image, {
         version: storageVersionForEvent(event, composed.image),
       })
+      const searedImageUrl = searedImage.publicPath
       const materializedAt = new Date().toISOString()
       const searedMetadata = buildSearedMetadata(concord, resolution)
 
@@ -450,6 +461,9 @@ export class SearingMaterializationService {
         tokenId: event.token_id,
         concord,
         searedImageUrl,
+        searedImageVersion: searedImage.version,
+        searedImageSha256: searedImage.sha256,
+        searedImageStorage: searedImage.storage,
         searedMetadata,
         materializedAt,
       })
@@ -473,6 +487,17 @@ export class SearingMaterializationService {
         })),
         layer_urls: composed.layerUrls,
         materialized_at: materializedAt,
+        current_image: {
+          url: searedImage.publicPath,
+          version: searedImage.version,
+          kind: 'seared',
+          sha256: searedImage.sha256,
+          source: 'searing-materialization',
+          updatedAt: materializedAt,
+          storage: searedImage.storage,
+        },
+        storage: searedImage.storage,
+        backing_url: searedImage.storage.backingUrl,
       })
 
       return {

@@ -44,6 +44,7 @@ import {
   type LocationRoom,
   type PublicLocationRoomGameplayRolls,
   type LocationRoomCombatReadiness,
+  type LocationRoomLocationDetails,
   type LocationRoomEncounterSeed,
   type LocationRoomMessage,
   type LocationRoomParticipant,
@@ -143,6 +144,7 @@ export type GenerateGameMasterBeatInput = {
   recentMessages: LocationRoomMessage[]
   narrativeState: LocationRoomNarrativeState
   progressionContext?: GameMasterBeatProgressionContext
+  location?: LocationRoomLocationDetails | null
 }
 
 export type GenerateGameMasterSceneCheckOutcomeInput = {
@@ -157,6 +159,7 @@ export type GenerateGameMasterSceneCheckOutcomeInput = {
   sceneCheckId: string
   resolution: SceneCheckResolution
   publicRolls: PublicLocationRoomGameplayRolls
+  location?: LocationRoomLocationDetails | null
 }
 
 export type GameMasterSceneCheckOutcomeOutput = {
@@ -207,6 +210,22 @@ const GM_PROMPT_ENCOUNTER_SEED_MAX_CHARS = 300
 const GM_PROMPT_CONTRACT_MARKER = 'Return only JSON with this contract:'
 const GM_SCENE_CHECK_OUTCOME_CONTRACT_MARKER = 'Return only a JSON object with this exact scene-check outcome contract:'
 const OFFICIAL_ELIZA_PROMPT_TRUNCATION_NOTICE = '\n\n[Earlier context truncated to fit the Official ElizaOS safety budget.]\n\n'
+const LOCATION_GROUNDING_PREMISE_FIELDS = [
+  'summary',
+  'description',
+  'publicDescription',
+  'lore',
+  'premise',
+  'scenePremise',
+  'narrativePremise',
+] as const
+const KNOWN_OFF_LOCATION_DRIFT_SENTINELS = [
+  { label: 'storm', pattern: /\bstorms?(?:['’]s|s['’])?\b/i },
+  { label: 'cottage', pattern: /\bcottages?(?:['’]s|s['’])?\b/i },
+  { label: 'map', pattern: /\bmaps?(?:['’]s|s['’])?\b/i },
+  { label: 'iron door', pattern: /\biron\s+doors?(?:['’]s|s['’])?\b/i },
+  { label: 'dark passage', pattern: /\bdark\s+passages?(?:['’]s|s['’])?\b/i },
+] as const
 
 function countSentenceLikeSegments(value: string): number {
   return value
@@ -812,7 +831,7 @@ export function buildFallbackGameMasterBeat(
 
 export function normalizeGameMasterBeatResponse(
   raw: string,
-  input: Pick<GenerateGameMasterBeatInput, 'participants' | 'speaker'>,
+  input: Pick<GenerateGameMasterBeatInput, 'participants' | 'speaker'> & LocationGroundingInput,
   options: {
     gameMasterAgentId: string
     limits?: GameMasterBeatLimits
@@ -901,6 +920,8 @@ export function normalizeGameMasterBeatResponse(
     currentObjective,
     openThreads,
   }
+
+  validateKnownOffLocationDrift(publicNarration, input, 'Game-master beat response publicNarration')
 
   validateGameMasterBeatProgressionContract({
     publicNarration,
@@ -1175,6 +1196,165 @@ function formatCompactSpatialContext(context: LocationRoomSpatialContext): strin
   ]
 }
 
+type LocationGroundingInput = {
+  room?: Pick<LocationRoom, 'locationId'>
+  location?: LocationRoomLocationDetails | null
+  narrativeState?: LocationRoomNarrativeState
+  recentMessages?: LocationRoomMessage[]
+}
+
+function catalogFromNarrativeMetadata(metadata: Record<string, unknown> | undefined): ReturnType<typeof normalizeLocationAdventureCatalog> {
+  if (!metadata) return undefined
+  const nestedLocationMetadata = isPlainRecord(metadata.locationMetadata)
+    ? metadata.locationMetadata
+    : null
+  return normalizeLocationAdventureCatalog(metadata.adventureCatalog ?? nestedLocationMetadata?.adventureCatalog)
+}
+
+function groundingCatalogs(input: LocationGroundingInput): ReturnType<typeof normalizeLocationAdventureCatalog>[] {
+  const liveLocationCatalog = normalizeLocationAdventureCatalog(input.location?.metadata?.adventureCatalog)
+  const catalogs = input.location
+    ? [liveLocationCatalog]
+    : [catalogFromNarrativeMetadata(input.narrativeState?.metadata)]
+
+  return catalogs.filter((catalog): catalog is NonNullable<typeof catalog> => Boolean(catalog))
+}
+
+function locationPremiseLines(location: LocationRoomLocationDetails | null | undefined): string[] {
+  if (!location) return []
+  const metadata = isPlainRecord(location.metadata) ? location.metadata : {}
+  return LOCATION_GROUNDING_PREMISE_FIELDS
+    .map((field) => {
+      const text = trimToLimit(metadata[field], 420)
+      return text ? `- ${field}: ${truncatePromptValue(text, 420)}` : null
+    })
+    .filter((line): line is string => Boolean(line))
+}
+
+function catalogGroundingSegments(catalog: ReturnType<typeof normalizeLocationAdventureCatalog>): string[] {
+  if (!catalog) return []
+  const segments: string[] = []
+  const defaults = catalog.defaults
+  if (defaults.arcSummary) segments.push(defaults.arcSummary)
+  if (defaults.currentStakes) segments.push(defaults.currentStakes)
+  if (defaults.openingDecision) {
+    segments.push(defaults.openingDecision.prompt)
+    segments.push(...defaults.openingDecision.options.map((option) => [option.label, option.summary].filter(Boolean).join(' ')))
+  }
+  segments.push(...defaults.discoveries)
+  segments.push(...defaults.clocks.flatMap((clock) => [clock.label, clock.summary]))
+  for (const entries of Object.values(catalog.sections)) {
+    for (const entry of entries) {
+      if (entry.revealConditions.length > 0) continue
+      segments.push([entry.title, entry.summary, entry.tags.join(' ')].filter(Boolean).join(' '))
+    }
+  }
+  return segments.filter(Boolean)
+}
+
+function catalogDefaultLines(catalog: ReturnType<typeof normalizeLocationAdventureCatalog>): string[] {
+  if (!catalog) return []
+  const defaults = catalog.defaults
+  const lines: string[] = []
+  if (defaults.openingDecision) {
+    const options = defaults.openingDecision.options
+      .map((option) => `${option.label}${option.summary ? ` (${option.summary})` : ''}`)
+      .join(' | ')
+    lines.push(`Opening decision: ${truncatePromptValue(`${defaults.openingDecision.prompt}; options ${options}`, 360)}`)
+  }
+  if (defaults.arcSummary) lines.push(`Arc summary: ${truncatePromptValue(defaults.arcSummary, 360)}`)
+  if (defaults.currentStakes) lines.push(`Current stakes: ${truncatePromptValue(defaults.currentStakes, 260)}`)
+  if (defaults.discoveries.length > 0) {
+    lines.push(`Discoveries: ${truncatePromptValue(defaults.discoveries.join(' | '), 320)}`)
+  }
+  if (defaults.clocks.length > 0) {
+    lines.push(`Clocks: ${truncatePromptValue(defaults.clocks.map((clock) => `${clock.label} ${clock.value}/${clock.max}: ${clock.summary}`).join(' | '), 360)}`)
+  }
+  return lines
+}
+
+function buildCanonicalLocationGroundingLines(input: LocationGroundingInput): string[] {
+  if (!input.location) return []
+
+  const locationId = truncatePromptValue(input.room?.locationId ?? input.location.id, 80)
+  const locationName = truncatePromptValue(input.location.name || 'Unknown', 120)
+  const catalogs = groundingCatalogs(input)
+  const premiseText = locationPremiseLines(input.location)
+    .map((line) => line.replace(/^- [^:]+:\s*/, ''))
+    .join(' | ')
+  const catalogDefaults = catalogs.flatMap(catalogDefaultLines).slice(0, 3).join(' | ')
+  const catalogAnchors = catalogs
+    .flatMap((catalog) => Object.values(catalog.sections).flatMap((entries) => entries))
+    .filter((entry) => entry.revealConditions.length === 0)
+    .map((entry) => entry.title ?? entry.summary)
+    .slice(0, 4)
+    .join(' | ')
+
+  return [
+    'Canonical location grounding:',
+    `Location id: ${locationId}; Location name: ${locationName}`,
+    'Canonical grounding overrides stale adventure memory when they conflict.',
+    'Forbidden unless grounded here/spatial/catalog/transcript: storm, cottage, map, iron door, dark passage.',
+    `Premise: ${premiseText ? truncatePromptValue(premiseText, 130) : 'None provided.'}`,
+    `Visible catalog anchors: ${catalogAnchors ? truncatePromptValue(catalogAnchors, 140) : 'None provided.'}`,
+    `Catalog defaults: ${catalogDefaults ? truncatePromptValue(catalogDefaults, 140) : 'None provided.'}`,
+  ]
+}
+
+function groundingSpatialSegments(input: LocationGroundingInput): string[] {
+  if (!input.narrativeState) return []
+  const spatial = normalizeAdventureMemory(input.narrativeState.metadata).spatialContext
+  return [
+    spatial.currentArea,
+    ...spatial.landmarks,
+    ...spatial.routes,
+    ...spatial.unresolvedSpatialQuestions,
+  ].filter((value): value is string => Boolean(value?.trim()))
+}
+
+function buildAllowedGroundingText(input: LocationGroundingInput): { active: boolean; text: string } {
+  const premise = locationPremiseLines(input.location)
+  const catalogSegments = groundingCatalogs(input).flatMap(catalogGroundingSegments)
+  const spatialSegments = groundingSpatialSegments(input)
+  const transcriptSegments = (input.recentMessages ?? []).map((message) => message.content)
+  const locationSegments = [input.room?.locationId, input.location?.id, input.location?.name]
+    .filter((value): value is string => Boolean(value?.trim()))
+  const active = Boolean(input.location) || premise.length > 0 || catalogSegments.length > 0 || spatialSegments.length > 0
+
+  return {
+    active,
+    text: [
+      ...locationSegments,
+      ...premise,
+      ...catalogSegments,
+      ...spatialSegments,
+      ...transcriptSegments,
+    ].join(' '),
+  }
+}
+
+function validateKnownOffLocationDrift(
+  publicNarration: string | null | undefined,
+  input: LocationGroundingInput,
+  label: string
+): void {
+  const narration = normalizeGenerationResponseText(publicNarration ?? '').replace(/\s+/g, ' ').trim()
+  if (!narration) return
+  const grounding = buildAllowedGroundingText(input)
+  if (!grounding.active) return
+
+  for (const sentinel of KNOWN_OFF_LOCATION_DRIFT_SENTINELS) {
+    if (!sentinel.pattern.test(narration)) continue
+    sentinel.pattern.lastIndex = 0
+    if (sentinel.pattern.test(grounding.text)) {
+      sentinel.pattern.lastIndex = 0
+      continue
+    }
+    sentinel.pattern.lastIndex = 0
+    throw new Error(`${label} uses unsupported off-location anchor "${sentinel.label}" absent from canonical grounding`)
+  }
+}
+
 function formatAdventureMemoryLines(input: Pick<GenerateGameMasterBeatInput, 'narrativeState' | 'speaker'>): string[] {
   const adventure = normalizeAdventureMemory(input.narrativeState.metadata)
   const rawCatalog = input.narrativeState.metadata.adventureCatalog ??
@@ -1254,6 +1434,8 @@ export function buildGameMasterBeatPrompt(input: GenerateGameMasterBeatInput): s
     `Channel id: ${input.room.channelId}`,
     `Tick id: ${input.tick.id}`,
     `Selected speaker: ${input.speaker.name} (#${input.speaker.tokenId})`,
+    '',
+    ...buildCanonicalLocationGroundingLines(input),
     '',
     'Eligible current participants:',
     formatParticipants(input.participants),
@@ -1355,6 +1537,8 @@ export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMaster
     `Location id: ${input.room.locationId}`,
     `Tick id: ${input.tick.id}`,
     '',
+    ...buildCanonicalLocationGroundingLines(input),
+    '',
     'Backend-computed roll facts:',
     ...formatSceneCheckRollFacts(input),
     '',
@@ -1449,7 +1633,7 @@ function validateSceneCheckOutcomeAdventurePatch(
 
 export function normalizeGameMasterSceneCheckOutcomeResponse(
   raw: string,
-  input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'narrativeState' | 'resolution' | 'sceneCheckId'> & { recentMessages?: LocationRoomMessage[] },
+  input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'narrativeState' | 'resolution' | 'sceneCheckId'> & LocationGroundingInput,
   options: { gameMasterAgentId: string; limits?: GameMasterBeatLimits }
 ): GameMasterSceneCheckOutcomeOutput {
   const limits = options.limits ?? elizaConfig.locationRooms.narrative
@@ -1498,6 +1682,7 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
       recoveries.push('scene_check_escalation_normalized')
     }
   }
+  validateKnownOffLocationDrift(publicNarration, input, 'Game-master scene-check outcome response publicNarration')
   validateSceneCheckOutcomePublicNarration(input.resolution.roll.tier, publicNarration)
   if (hasDuplicateRecentOutcomeOpening(publicNarration, input.recentMessages)) {
     throw new Error('Game-master scene-check outcome response reuses a recent outcome opening')
@@ -1834,6 +2019,7 @@ function buildGameMasterBeatRepairPrompt(
     `Tick id: ${input.tick.id}`,
     `Selected speaker: ${truncatePromptValue(input.speaker.name, 80)} (#${input.speaker.tokenId})`,
     `Eligible token ids: ${formatRepairEligibleTokenIds(input.participants)}`,
+    ...buildCanonicalLocationGroundingLines(input),
     `State summary: ${truncatePromptValue(input.narrativeState.stateSummary || 'No established continuity yet.', 260)}`,
     `Current objective: ${truncatePromptValue(input.narrativeState.currentObjective || 'None.', 180)}`,
     `Open threads: ${truncatePromptValue(input.narrativeState.openThreads.join(' | ') || 'None.', 260)}`,
@@ -1907,6 +2093,8 @@ function buildGameMasterSceneCheckOutcomeRepairPrompt(
     '',
     'Backend-computed roll facts:',
     ...formatSceneCheckRollFacts(input),
+    '',
+    ...buildCanonicalLocationGroundingLines(input),
     '',
     `Current state: ${truncatePromptValue(input.narrativeState.stateSummary || 'The room scene continues.', 260)}`,
     `Current objective: ${truncatePromptValue(input.narrativeState.currentObjective || 'None.', 180)}`,

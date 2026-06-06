@@ -6,6 +6,30 @@
 export type InfectionStatus = 'healthy' | 'infected' | 'cured'
 export type StakingStatus = 'unstaked' | 'staked'
 export type CharacterClass = 'Warrior' | 'Mage' | 'Rogue' | 'Cleric'
+export type CharacterCurrentImageKind = 'base' | 'seared' | 'infected' | 'placeholder' | 'repair'
+export type CharacterCurrentImageSource =
+  | 'verified-local-base'
+  | 'searing-materialization'
+  | 'infection-materialization'
+  | 'repair'
+
+export interface CharacterCurrentImageStorage {
+  /** Omitted while DB current_image_storage is the unset default '{}'. */
+  type?: 'public-static' | 'gcs'
+  objectName?: string
+  backingUrl?: string
+  localPath?: string
+}
+
+export interface CharacterCurrentImage {
+  url: string
+  version: string
+  kind: CharacterCurrentImageKind
+  sha256?: string
+  source: CharacterCurrentImageSource
+  updatedAt?: string
+  storage?: CharacterCurrentImageStorage
+}
 
 export interface Character {
   token_id: number
@@ -33,6 +57,14 @@ export interface Character {
   infection_status?: InfectionStatus
   staking_status?: StakingStatus
   image_url?: string
+  original_image_url?: string | null
+  original_metadata_sha256?: string | null
+  current_image_url?: string | null
+  current_image_version?: string | null
+  current_image_kind?: CharacterCurrentImageKind | null
+  current_image_sha256?: string | null
+  current_image_storage?: CharacterCurrentImageStorage | null
+  current_image_updated_at?: string | null
   burned?: boolean
   /** Legacy: use infection_status instead. */
   infected?: boolean
@@ -44,6 +76,8 @@ export interface Character {
 export interface CharacterMetadata {
   name?: string
   image?: string
+  originalImage?: string
+  currentImage?: CharacterCurrentImage
   tokenId?: string
   description?: string
   isSeared?: boolean
