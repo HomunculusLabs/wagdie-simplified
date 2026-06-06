@@ -1969,7 +1969,7 @@ function compactBeatRepairInstruction(kind: GameMasterRepairPromptKind, input: G
       ? '- publicNarration is required, concrete, public-safe, and non-empty.'
       : '- publicNarration may be null unless a visible room transition is needed.',
     openingRequired
-      ? '- Opening publicNarration must be 3-5 sentences with sensory detail, 2-3 interactable hooks, stakes, and an unresolved prompt.'
+      ? `- Opening publicNarration must be at least ${OPENING_PUBLIC_NARRATION_MIN_CHARS} characters and ${OPENING_PUBLIC_NARRATION_MIN_SENTENCES}-5 complete sentences with sensory detail, 2-3 interactable hooks, stakes, and an unresolved prompt.`
       : '- Keep publicNarration concise and anchored to a concrete object, route, or threat.',
     '- publicNarration has no character dialogue or "X says/asks/answers".',
     '- publicNarration must include an actionable choice/interaction term such as choose, risk, cost, blocked, reveal, route, door, stair, open, inspect, search, follow, retreat, approach, or before.',
@@ -1987,7 +1987,7 @@ function compactBeatRepairSchema(input: GenerateGameMasterBeatInput): string {
   const openingRequired = input.progressionContext?.requireOpeningPublicNarration === true
   const publicNarrationValue = input.progressionContext?.requirePublicNarration
     ? openingRequired
-      ? 'A concrete door, stair, route, mark, or other location feature changes in sentence one. A second visible hook offers two actionable options using words like inspect, open, follow, search, approach, or retreat. A third sentence names the risk or cost before the room chooses. End with an unresolved choice the selected speaker can act on.'
+      ? 'Write at least 280 characters across three complete sentences. A concrete door, stair, route, mark, or other location feature changes in sentence one. A second visible hook offers two actionable options using words like inspect, open, follow, search, approach, or retreat. A third sentence names the risk or cost before the room chooses. End with an unresolved choice the selected speaker can act on.'
       : 'A concrete door, stair, route, mark, or threat blocks, reveals, opens, or changes. The room must choose whether to inspect, open, follow, search, approach, or retreat before the risk grows.'
     : null
   const speakerName = truncatePromptValue(input.speaker.name, 80)
@@ -2020,6 +2020,7 @@ function buildGameMasterBeatRepairPrompt(
   return clampGameMasterPrompt([
     'Repair the failed WAGDIE game-master beat with one compact JSON object.',
     `Failure category: ${category}`,
+    `Failure detail: ${truncatePromptValue(diagnostics.initialErrorMessage || 'Validation failed without a detailed message.', 260)}`,
     `Previous response length: ${diagnostics.initialResponseLength ?? 0}`,
     `Repair kind: ${kind}`,
     '',
