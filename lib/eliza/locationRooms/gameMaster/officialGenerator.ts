@@ -2065,10 +2065,12 @@ function compactSceneCheckRepairInstruction(kind: GameMasterRepairPromptKind, in
 function compactSceneCheckRepairSchema(input: GenerateGameMasterSceneCheckOutcomeInput): string {
   const tier = input.resolution.roll.tier
   const negativeTier = tier === 'partial_success' || tier === 'failure' || tier === 'critical_failure'
+  const actorName = truncatePromptValue(input.resolution.actorName || input.speaker.name, 80)
+  const action = truncatePromptValue(input.characterAction, 180)
   return JSON.stringify({
     publicNarration: negativeTier
-      ? 'The resolved check visibly changes a concrete object, route, or threat, names the cost, and leaves a changed next choice.'
-      : 'The resolved check visibly changes a concrete object, route, or clue and leaves the next choice clear.',
+      ? `Sentence one ties ${actorName}'s resolved action (${action}) to a concrete visible location feature. Sentence two makes the cost visible by changing, blocking, exposing, or threatening a specific object, route, or creature. Sentence three leaves a changed next choice with at least two concrete options.`
+      : `Sentence one ties ${actorName}'s resolved action (${action}) to a concrete visible location feature. Sentence two reveals what became safer, clearer, or newly reachable. Sentence three leaves the next choice clear.`,
     stateSummary: 'Continuity now includes the concrete result of the resolved check.',
     currentObjective: 'Choose how to answer the changed situation.',
     openThreads: ['What does the changed situation force the room to choose next?'],
@@ -2076,17 +2078,19 @@ function compactSceneCheckRepairSchema(input: GenerateGameMasterSceneCheckOutcom
       currentStakes: 'The check result changes what is safe, available, or urgent.',
       consequence: {
         summary: negativeTier
-          ? 'The check leaves a durable complication in the scene.'
-          : 'The check resolves part of the scene in the room’s favor.',
+          ? 'The resolved check creates a durable visible complication tied to a specific scene feature.'
+          : 'The resolved check resolves part of the scene in the room’s favor.',
         status: negativeTier ? 'complication' : 'resolved',
         tier,
       },
     },
     escalation: {
-      decision: 'none',
+      decision: negativeTier ? 'danger' : 'none',
       dangerKind: 'unknown',
-      reason: 'The check result changes the next choice without starting combat.',
-      threatLevel: 0,
+      reason: negativeTier
+        ? 'The failed or costly check increases visible danger without starting combat.'
+        : 'The check result changes the next choice without starting combat.',
+      threatLevel: negativeTier ? 1 : 0,
       encounterSeed: null,
       catalogEntryIds: [],
     },
