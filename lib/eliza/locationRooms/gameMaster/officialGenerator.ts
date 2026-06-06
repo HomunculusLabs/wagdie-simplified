@@ -95,6 +95,8 @@ export type GameMasterGenerationDiagnostics = {
   recoveries?: GameMasterGenerationRecoveryKey[]
   initialErrorCategory?: string
   repairErrorCategory?: string
+  initialErrorMessage?: string
+  repairErrorMessage?: string
   transportStage?: string
   initialResponseLength?: number
   repairResponseLength?: number
@@ -1923,7 +1925,7 @@ function categorizeBeatResponseError(error: unknown): string {
 }
 
 function diagnosticsForInitialFailure(raw: string, error: unknown): GameMasterGenerationDiagnostics {
-  return repairAttemptedGenerationDiagnostics(raw, categorizeBeatResponseError(error), responseFlags(raw))
+  return repairAttemptedGenerationDiagnostics(raw, categorizeBeatResponseError(error), responseFlags(raw), error)
 }
 
 type GameMasterRepairPromptKind =
@@ -2313,18 +2315,20 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
         repairText,
         responseFlags(repairText)
       ),
-      buildRepairCollectionFailureDiagnostics: (diagnostics, repairText) => repairTransportFailureDiagnostics(
+      buildRepairCollectionFailureDiagnostics: (diagnostics, repairText, repairError) => repairTransportFailureDiagnostics(
         diagnostics,
         repairText,
         'repair_transport_error',
         'repair_collect_stream',
-        responseFlags(repairText)
+        responseFlags(repairText),
+        repairError
       ),
       buildRepairValidationFailureDiagnostics: (diagnostics, repairText, repairError) => repairValidationFailureDiagnostics(
         diagnostics,
         repairText,
         categorizeBeatResponseError(repairError),
-        responseFlags(repairText)
+        responseFlags(repairText),
+        repairError
       ),
       createRepairCollectionError: ({ diagnostics, cause }) => new GameMasterBeatGenerationError(
         `Game-master beat repair failed (initial: ${diagnostics.initialErrorCategory}, repair: ${diagnostics.repairErrorCategory})`,
@@ -2452,18 +2456,20 @@ export class OfficialGameMasterBeatGenerator implements GameMasterBeatGenerator 
         repairText,
         responseFlags(repairText)
       ),
-      buildRepairCollectionFailureDiagnostics: (diagnostics, repairText) => repairTransportFailureDiagnostics(
+      buildRepairCollectionFailureDiagnostics: (diagnostics, repairText, repairError) => repairTransportFailureDiagnostics(
         diagnostics,
         repairText,
         'repair_transport_error',
         'repair_collect_stream',
-        responseFlags(repairText)
+        responseFlags(repairText),
+        repairError
       ),
       buildRepairValidationFailureDiagnostics: (diagnostics, repairText, repairError) => repairValidationFailureDiagnostics(
         diagnostics,
         repairText,
         categorizeBeatResponseError(repairError),
-        responseFlags(repairText)
+        responseFlags(repairText),
+        repairError
       ),
       createRepairCollectionError: ({ diagnostics, cause }) => new GameMasterSceneCheckOutcomeGenerationError(
         `Game-master scene-check outcome repair failed (initial: ${diagnostics.initialErrorCategory}, repair: ${diagnostics.repairErrorCategory})`,

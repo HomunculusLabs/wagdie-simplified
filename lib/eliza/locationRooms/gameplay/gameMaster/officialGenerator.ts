@@ -87,6 +87,8 @@ export type GameplayEncounterProposalGenerationDiagnostics = {
   repaired: boolean
   initialErrorCategory?: GameplayEncounterProposalGenerationErrorCategory
   repairErrorCategory?: GameplayEncounterProposalGenerationErrorCategory
+  initialErrorMessage?: string
+  repairErrorMessage?: string
   transportStage?: 'initial_collect' | 'repair_collect'
   initialResponseLength?: number
   repairResponseLength?: number
@@ -158,6 +160,8 @@ export type GameplayOutcomeGenerationDiagnostics = {
   repaired: boolean
   initialErrorCategory?: GameplayOutcomeGenerationErrorCategory
   repairErrorCategory?: GameplayOutcomeGenerationErrorCategory
+  initialErrorMessage?: string
+  repairErrorMessage?: string
   transportStage?: 'initial_collect' | 'repair_collect'
   initialResponseLength?: number
   repairResponseLength?: number
@@ -585,7 +589,7 @@ function diagnosticsForOutcomeInitialFailure(
   raw: string,
   error: unknown
 ): GameplayOutcomeGenerationDiagnostics {
-  return repairAttemptedGenerationDiagnostics(raw, categorizeOutcomeNarrationError(error), responseFlags(raw))
+  return repairAttemptedGenerationDiagnostics(raw, categorizeOutcomeNarrationError(error), responseFlags(raw), error)
 }
 
 function attachOutcomeGenerationDiagnostics(
@@ -1016,7 +1020,7 @@ function diagnosticsForProposalInitialFailure(
   raw: string,
   error: unknown
 ): GameplayEncounterProposalGenerationDiagnostics {
-  return repairAttemptedGenerationDiagnostics(raw, categorizeEncounterProposalError(error), proposalResponseFlags(raw))
+  return repairAttemptedGenerationDiagnostics(raw, categorizeEncounterProposalError(error), proposalResponseFlags(raw), error)
 }
 
 function attachProposalGenerationDiagnostics(
@@ -1404,12 +1408,13 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
           repairText,
           proposalResponseFlags(repairText)
         ),
-        buildRepairCollectionFailureDiagnostics: (diagnostics, repairText) => repairTransportFailureDiagnostics(
+        buildRepairCollectionFailureDiagnostics: (diagnostics, repairText, repairError) => repairTransportFailureDiagnostics(
           diagnostics,
           repairText,
           'repair_transport_error',
           'repair_collect',
-          proposalResponseFlags(repairText)
+          proposalResponseFlags(repairText),
+          repairError
         ),
         buildRepairValidationFailureDiagnostics: (diagnostics, repairText, repairError) => {
           const repairGenerationError = toEncounterProposalGenerationError(repairError)
@@ -1417,7 +1422,8 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
             diagnostics,
             repairText,
             repairGenerationError.diagnostics.initialErrorCategory ?? 'validation_error',
-            proposalResponseFlags(repairText)
+            proposalResponseFlags(repairText),
+            repairError
           )
         },
         createRepairCollectionError: ({ diagnostics, cause }) => new GameMasterGameplayEncounterProposalGenerationError(
@@ -1524,18 +1530,20 @@ export class OfficialGameMasterGameplayGenerator implements GameMasterGameplayGe
         repairText,
         responseFlags(repairText)
       ),
-      buildRepairCollectionFailureDiagnostics: (diagnostics, repairText) => repairTransportFailureDiagnostics(
+      buildRepairCollectionFailureDiagnostics: (diagnostics, repairText, repairError) => repairTransportFailureDiagnostics(
         diagnostics,
         repairText,
         'repair_transport_error',
         'repair_collect',
-        responseFlags(repairText)
+        responseFlags(repairText),
+        repairError
       ),
       buildRepairValidationFailureDiagnostics: (diagnostics, repairText, repairError) => repairValidationFailureDiagnostics(
         diagnostics,
         repairText,
         categorizeOutcomeNarrationError(repairError),
-        responseFlags(repairText)
+        responseFlags(repairText),
+        repairError
       ),
       createRepairCollectionError: ({ diagnostics, cause }) => new GameMasterGameplayOutcomeGenerationError(
         `Gameplay outcome narration repair failed (initial: ${diagnostics.initialErrorCategory}, repair: ${diagnostics.repairErrorCategory})`,

@@ -14,6 +14,7 @@ import {
   sanitizeOfficialElizaText,
 } from '@/lib/eliza/official/text'
 import { extractGameMasterJsonObject } from './gameMasterGenerator'
+import { sanitizeGenerationDiagnosticError } from './generation/diagnostics'
 import { GAMEPLAY_CHECK_TYPES } from './gameplay/types'
 import { normalizeSceneCheckProposal } from './sceneChecks/rules'
 import { SCENE_CHECK_ACTION_INTENTS } from './sceneChecks/types'
@@ -250,6 +251,7 @@ function officialTurnDiagnosticsForInitialFailure(raw: string, error: unknown): 
     repairAttempted: true,
     repaired: false,
     initialErrorCategory: categorizeOfficialTurnResponseError(error),
+    ...(sanitizeGenerationDiagnosticError(error) ? { initialErrorMessage: sanitizeGenerationDiagnosticError(error) } : {}),
     initialResponseLength: raw.length,
     initialResponseFlags: officialTurnResponseFlags(raw),
   }
@@ -546,6 +548,9 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
           repairAttempted: true,
           repaired: false,
           repairErrorCategory: 'repair_transport_error',
+          ...(sanitizeGenerationDiagnosticError(repairTransportError)
+            ? { repairErrorMessage: sanitizeGenerationDiagnosticError(repairTransportError) }
+            : {}),
           transportStage: 'repair_collect_stream',
           repairResponseLength: repairText.length,
           repairResponseFlags: officialTurnResponseFlags(repairText),
@@ -585,6 +590,9 @@ export class ElizaOfficialLocationRoomTurnGenerator implements OfficialLocationR
           repairAttempted: true,
           repaired: false,
           repairErrorCategory: categorizeOfficialTurnResponseError(repairError),
+          ...(sanitizeGenerationDiagnosticError(repairError)
+            ? { repairErrorMessage: sanitizeGenerationDiagnosticError(repairError) }
+            : {}),
           repairResponseLength: repairText.length,
           repairResponseFlags: officialTurnResponseFlags(repairText),
         }

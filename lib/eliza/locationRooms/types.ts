@@ -574,6 +574,8 @@ export type LocationRoomPublicGenerationDiagnostics = {
   repaired: boolean
   initialErrorCategory?: string
   repairErrorCategory?: string
+  initialErrorMessage?: string
+  repairErrorMessage?: string
   transportStage?: string
   initialResponseLength?: number
   repairResponseLength?: number

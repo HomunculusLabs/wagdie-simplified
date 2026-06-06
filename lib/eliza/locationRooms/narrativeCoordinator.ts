@@ -57,6 +57,7 @@ import {
   adjudicateSceneCheck,
   resolveSceneCheck,
 } from './sceneChecks/rules'
+import { sanitizeGenerationDiagnosticError } from './generation/diagnostics'
 import { projectPublicSceneCheckRolls } from './sceneChecks/publicRolls'
 import { extractRecentSceneCheckPattern } from './sceneChecks/recentPatterns'
 import type {
@@ -461,6 +462,10 @@ function normalizeDiagnosticsLength(value: unknown): number | undefined {
   return Math.max(0, Math.min(100000, Math.floor(value)))
 }
 
+function normalizeDiagnosticsMessage(value: unknown): string | undefined {
+  return sanitizeGenerationDiagnosticError(value, 700)
+}
+
 function normalizeDiagnosticsFlags(value: unknown): GameMasterGenerationResponseFlags | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const flags = value as Partial<Record<keyof GameMasterGenerationResponseFlags, unknown>>
@@ -489,6 +494,12 @@ function sanitizeGameMasterGenerationDiagnostics(value: unknown): GameMasterGene
       : {}),
     ...(normalizeDiagnosticsCategory(source.repairErrorCategory)
       ? { repairErrorCategory: normalizeDiagnosticsCategory(source.repairErrorCategory) }
+      : {}),
+    ...(normalizeDiagnosticsMessage(source.initialErrorMessage)
+      ? { initialErrorMessage: normalizeDiagnosticsMessage(source.initialErrorMessage) }
+      : {}),
+    ...(normalizeDiagnosticsMessage(source.repairErrorMessage)
+      ? { repairErrorMessage: normalizeDiagnosticsMessage(source.repairErrorMessage) }
       : {}),
     ...(normalizeDiagnosticsTransportStage(source.transportStage)
       ? { transportStage: normalizeDiagnosticsTransportStage(source.transportStage) }
@@ -565,6 +576,12 @@ function sanitizeOfficialTurnGenerationDiagnostics(value: unknown): LocationRoom
       : {}),
     ...(normalizeOfficialTurnDiagnosticsCategory(source.repairErrorCategory)
       ? { repairErrorCategory: normalizeOfficialTurnDiagnosticsCategory(source.repairErrorCategory) }
+      : {}),
+    ...(normalizeDiagnosticsMessage(source.initialErrorMessage)
+      ? { initialErrorMessage: normalizeDiagnosticsMessage(source.initialErrorMessage) }
+      : {}),
+    ...(normalizeDiagnosticsMessage(source.repairErrorMessage)
+      ? { repairErrorMessage: normalizeDiagnosticsMessage(source.repairErrorMessage) }
       : {}),
     ...(normalizeOfficialTurnDiagnosticsTransportStage(source.transportStage)
       ? { transportStage: normalizeOfficialTurnDiagnosticsTransportStage(source.transportStage) }

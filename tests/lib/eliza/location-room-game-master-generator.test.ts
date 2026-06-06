@@ -1360,6 +1360,7 @@ describe('game-master beat generator helpers', () => {
       repairAttempted: true,
       repaired: true,
       initialErrorCategory: 'missing_json_object',
+      initialErrorMessage: expect.stringContaining('did not contain a JSON object'),
       initialResponseLength: 'not json'.length,
       repairResponseLength: expect.any(Number),
       initialResponseFlags: expect.objectContaining({ hasJsonObject: false }),
@@ -1420,6 +1421,8 @@ describe('game-master beat generator helpers', () => {
         repaired: false,
         initialErrorCategory: 'missing_json_object',
         repairErrorCategory: 'progression_contract',
+        initialErrorMessage: expect.stringContaining('did not contain a JSON object'),
+        repairErrorMessage: expect.stringMatching(/openThreads|publicNarration|currentObjective|progression/i),
         initialResponseLength: 'not json'.length,
         repairResponseLength: expect.any(Number),
       }),
@@ -1598,6 +1601,7 @@ describe('game-master beat generator helpers', () => {
         repairAttempted: true,
         repaired: true,
         initialErrorCategory: 'missing_json_object',
+        initialErrorMessage: expect.stringContaining('did not contain a JSON object'),
       }),
     }))
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
@@ -1644,6 +1648,8 @@ describe('game-master beat generator helpers', () => {
         repaired: false,
         initialErrorCategory: 'missing_json_object',
         repairErrorCategory: 'invalid_declared_action',
+        initialErrorMessage: expect.stringContaining('did not contain a JSON object'),
+        repairErrorMessage: expect.stringContaining('declaredAction'),
       }),
     })
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
@@ -2214,6 +2220,8 @@ describe('game-master beat generator helpers', () => {
         repaired: false,
         initialErrorCategory: 'missing_json_object',
         repairErrorCategory: 'progression_contract',
+        initialErrorMessage: expect.stringContaining('did not contain a JSON object'),
+        repairErrorMessage: expect.stringMatching(/publicNarration|openThreads|consequence|changed next choice/i),
       }),
     })
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
