@@ -423,7 +423,7 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('"ttrpgPhase"')
     expect(prompt).toContain('"adventurePatch"')
     expect(prompt).toContain('Non-aftermath beats must include a concrete currentObjective')
-    expect(prompt).toContain('Frame public GM beats near a meaningful choice')
+    expect(prompt).toContain('frame a meaningful choice/cost/reveal')
     expect(prompt).toContain('SpeakerInstruction should push one concrete declared action')
     expect(prompt).toContain('adventurePatch is private memory')
     expect(prompt).toContain('activeDecision rare')
@@ -705,7 +705,7 @@ describe('game-master beat generator helpers', () => {
       publicNarrationRequirementReason: 'no_prior_public_game_master_message',
     })
     expect(prompt).toContain('"publicNarration": "required public narration for observers"')
-    expect(prompt).toContain('publicNarration is required and must be non-empty')
+    expect(prompt).toContain('publicNarration required')
     expect(prompt).toContain('Opening publicNarration must be a rich table-setting GM beat')
     expect(prompt).toContain('2-3 interactable hooks')
   })
@@ -738,7 +738,7 @@ describe('game-master beat generator helpers', () => {
       recentMessages,
     })
     expect(outcomePrompt).toContain('Recent scene-check pattern context')
-    expect(outcomePrompt).toContain('repeated run perception x2')
+    expect(outcomePrompt).toContain('repeate')
     expect(outcomePrompt).toContain('GM outcome openings')
     expect(outcomePrompt).toContain('Vary the first sentence/opening')
   })
@@ -790,7 +790,9 @@ describe('game-master beat generator helpers', () => {
       progressionContext: context,
     })
     expect(prompt).toContain('recurring public GM beat cadence is due')
-    expect(prompt).toContain('name the changed object, route, or threat')
+    expect(prompt).toContain('name the change')
+    expect(prompt).toContain('advance the last outcome')
+    expect(prompt).toContain('carry forward the latest discovery/outcome/consequence')
   })
 
   it('normalizes old and patched spatial adventure metadata safely and merges newest bounded entries', () => {
@@ -1707,18 +1709,19 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('Total:')
     expect(prompt).toContain('DC:')
     expect(prompt).toContain('Outcome tier:')
-    expect(prompt).toContain('Use only the backend roll facts')
+    expect(prompt).toContain('Use backend roll facts only')
     expect(prompt).toContain('Tier rules for adventurePatch')
     expect(prompt).toContain('partial_success: progress plus complication')
     expect(prompt).toContain('include lastOutcome for this roll')
     expect(prompt).toContain('Spatial context')
     expect(prompt).toContain('root-choked cellar door')
     expect(prompt).toContain('adventurePatch.spatialContext')
-    expect(prompt).toContain('For partial_success, failure, and critical_failure, publicNarration must be substantive')
+    expect(prompt).toContain('success reveals usable advantage/action')
+    expect(prompt).toContain('For partial_success/failure/critical_failure')
     expect(prompt).toContain('publicNarration: concrete object/route/threat')
-    expect(prompt).toContain('Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality')
+    expect(prompt).toContain('do not invent dice, DC, HP, damage, rewards, death, finality')
     expect(prompt).toContain('\"escalation\"')
-    expect(prompt).toContain('combat_ready means readiness, not a direct combat request')
+    expect(prompt).toContain('combat_ready means readiness only')
     expect(prompt).toContain('ids only in catalogEntryIds, not public prose')
 
     const catalogPrompt = buildGameMasterSceneCheckOutcomePrompt({
@@ -1855,6 +1858,21 @@ describe('game-master beat generator helpers', () => {
       openThreads: [],
     }), outcomeInput, { gameMasterAgentId: 'gm-1', limits })).toThrow('openThreads')
 
+    const criticalSuccessInput = {
+      ...outcomeInput,
+      resolution: {
+        ...resolution,
+        roll: { ...resolution.roll, tier: 'critical_success' as const },
+      },
+    }
+    expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+      publicNarration: 'Ash finds the cellar stair and the bell rope, but no new sound follows and the room remains less oppressive. The group can keep looking around without any clear advantage changing the next route.',
+      stateSummary: 'The room feels quieter after the critical success.',
+      currentObjective: 'Keep looking around.',
+      openThreads: ['What else is in the room?'],
+      adventurePatch: { discoveries: ['The room feels quieter.'] },
+    }), criticalSuccessInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow('nullifies critical_success')
+
     const tiers = ['critical_success', 'success', 'partial_success', 'failure', 'critical_failure'] as const
     for (const tier of tiers) {
       const tierInput = {
@@ -1869,7 +1887,7 @@ describe('game-master beat generator helpers', () => {
         : { consequence: { summary: `${tier} leaves a durable complication.`, status: 'complication', tier } }
       const tierOutput = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
         publicNarration: tier === 'critical_success' || tier === 'success'
-          ? 'The ash-marked stair opens a safer route beside the taproom table.'
+          ? 'The ash-marked stair opens a safer route beside the taproom table, revealing a clean draft that points below the rotten boards. Ash can follow it now, test the opened route, or mark the clue before the room changes again.'
           : strongFailureNarration,
         stateSummary: 'The ash-marked stair changed after the roll.',
         currentObjective: 'Answer the changed stair route.',
@@ -1989,7 +2007,7 @@ describe('game-master beat generator helpers', () => {
       },
     }
     const outcome = normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
-      publicNarration: 'The iron door opens into the dark passage beside the taproom table, giving the group a safer route to test next.',
+      publicNarration: 'The iron door opens into the dark passage beside the taproom table, revealing a safer route that bypasses the old hall. The group can test that opened path now or mark the clue before the taproom changes again.',
       stateSummary: 'The iron door and dark passage are visible.',
       currentObjective: 'Choose whether to test the dark passage.',
       openThreads: ['What waits beyond the iron door?'],

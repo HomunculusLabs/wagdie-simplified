@@ -1136,7 +1136,7 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     '- JSON only; no markdown/prose outside object.',
     '- speakerInstruction/stateSummary required; use eligible token ids.',
     `- selectedSpeakerTokenId must be ${input.speaker.tokenId}.`,
-    '- PublicNarration public-safe: concrete object/route/threat, no character dialogue; Frame public GM beats near a meaningful choice, cost, reveal, route, obstacle, or action; no generic/passive atmosphere-only copy.',
+    '- PublicNarration public-safe: concrete object/route/threat, no character dialogue; frame a meaningful choice/cost/reveal/route/obstacle/action. After scene checks, advance the last outcome; do not restate old options.',
     ...(input.progressionContext?.requireOpeningPublicNarration
       ? [
         '- Opening publicNarration must be a rich table-setting GM beat: 3-5 sentences and roughly 300-650 characters.',
@@ -1151,7 +1151,7 @@ function buildGameMasterBeatContractLines(input: Pick<GenerateGameMasterBeatInpu
     '- Keep publicNarration natural GM prose, no hidden memory labels; clockUpdates use absolute values.',
     '- Use adventurePatch.spatialContext additively for visible currentArea/landmarks/routes/questions; keep entries public-safe/bounded.',
     ...(input.progressionContext?.requirePublicNarration
-      ? ['- publicNarration is required and must be non-empty; if cadence-only, cut/reframe and name the changed object, route, or threat around a cost, reveal, or obstacle without forcing combat.']
+      ? ['- publicNarration required; if cadence-only, carry forward the latest discovery/outcome/consequence via a changed object, route, cost, reveal, or obstacle.']
       : ['- publicNarration should be null for routine post-opener beats; use it only for visible transition/escalation, combat handoff, or explicitly necessary public narration.']),
     ...(input.progressionContext?.requireEscalationBeyondOpening
       ? ['- Do not leave repeated activity in flat story/none/0 state; visibly escalate without forcing start_combat.']
@@ -1503,19 +1503,17 @@ function buildGameMasterSceneCheckOutcomeContractLines(): string[] {
     '{ "publicNarration":"public GM consequence", "stateSummary":"updated continuity", "currentObjective":"updated objective", "openThreads":["thread"], "adventurePatch":{"currentStakes":"risk","consequence":{"summary":"durable consequence","status":"open | resolved | advantage | complication","tier":"success"},"discoveries":["clue"],"clockUpdates":[],"spatialContext":{"currentArea":null,"landmarks":[],"routes":[],"unresolvedSpatialQuestions":[]}}, "escalation":{"decision":"none | danger | combat_ready","dangerKind":"trap | hazard | pursuit | social_threat | monster_pressure | environment | unknown","reason":"brief reason","threatLevel":0,"encounterSeed":{"title":"title","summary":"pressure","stakes":"stakes"},"catalogEntryIds":["80.10"]} }',
     '',
     'Rules:',
-    '- Output JSON only: no markdown fences, no commentary, no prose outside the object.',
-    '- Use only the backend roll facts above for dice, modifier, total, DC, and outcome tier.',
-    '- Do not invent, alter, or mention different dice, DCs, HP, damage, rewards, death, finality, wallets, or private chain data.',
-    '- Narrate a consequence that fits the outcome tier and preserves future player agency; no character dialogue; natural prose, not an adventure-state panel.',
+    '- JSON only; no markdown/commentary outside the object.',
+    '- Use backend roll facts only; do not invent dice, DC, HP, damage, rewards, death, finality, wallets, or chain data.',
+    '- Tiered payoff/consequence preserves agency: success reveals usable advantage/action; failure creates visible cost. No dialogue; natural prose.',
     '- Vary the first sentence/opening from recent GM outcome openings while preserving roll facts; do not reuse an exact opening.',
-    '- For partial_success, failure, and critical_failure, publicNarration must be substantive (roughly 180+ characters), show a visible consequence such as cost, complication, blocked route, lost opportunity, harder choice, hostile response, obligation, or a concrete danger, and leave a changed situation or next choice rather than finality.',
+    '- For partial_success/failure/critical_failure: publicNarration roughly 180+ chars, visible cost/blocked route/lost chance/danger, and changed next choice.',
     '- publicNarration: concrete object/route/threat; no pressure-only opening.',
     '- Treat adventurePatch as private roll memory; activeDecision rare; include lastOutcome for this roll.',
     '- escalation is raw intent; backend will normalize it. Use decision none, danger, or combat_ready case-by-case.',
-    '- Scene-check outcomes must never request combat directly: do not output requestedGameplayAction or lastCombatTriggerBeatId.',
-    '- combat_ready means readiness, not a direct combat request; a later GM beat may request start_combat, and backend promotion may start combat on a later eligible auto tick.',
-    '- Prefer listed 80_encounters and 30_monsters catalog candidates for encounterSeed/catalogEntryIds when the roll creates danger or combat readiness.',
-    '- Catalog candidates are private anchors for discoveries/danger/seeds; ids only in catalogEntryIds, not public prose.',
+    '- Never request combat directly; do not output requestedGameplayAction or lastCombatTriggerBeatId.',
+    '- combat_ready means readiness only; later GM/backend may start combat.',
+    '- Prefer listed catalog candidates for danger/combat readiness; ids only in catalogEntryIds, not public prose.',
     '- Use adventurePatch.spatialContext additively when the roll reveals, opens, blocks, narrows, or questions visible areas/routes/landmarks.',
     '- Tier rules for adventurePatch: critical_success/success add progress or discovery; partial_success: progress plus complication; failure/critical_failure require a consequence and changed next choice.',
     '- publicNarration, stateSummary, currentObjective, openThreads, and tier-appropriate adventurePatch are required.',
@@ -1560,8 +1558,12 @@ export function buildGameMasterSceneCheckOutcomePrompt(input: GenerateGameMaster
 }
 
 const FAILURE_TIER_PUBLIC_NARRATION_MIN_CHARS = 180
+const SUCCESS_TIER_PUBLIC_NARRATION_MIN_CHARS = 120
 const FAILURE_TIER_CONSEQUENCE_PATTERN = /\b(cost|costs|complication|complicates|pressure|danger|dangerous|blocked|blocks|lost opportunity|opportunity is lost|harder choice|hostile response|obligation|setback|threat|risk|price|consequence|route narrows|route closes|choice narrows|clock advances|attention turns|exposed|scarce|worse)\b/i
 const FAILURE_TIER_AGENCY_PATTERN = /\b(now|next|must choose|can still|may still|leaves|leaving|offers|opens|forces a choice|choice|choose|decide|approach|route|path|answer|respond|press on|withdraw|bargain|risk|option|which way|what they do)\b/i
+const SUCCESS_TIER_PAYOFF_PATTERN = /\b(reveal|reveals|revealed|discerns|discerned|notices|finds|learns|shows|points|opens|opened|unlocks|exposes|clarifies|clearer|safer|advantage|usable|shortcut|control|controls|disarms|silences|bypasses|names|identifies|tracks|lead|clue)\b/i
+const SUCCESS_TIER_AGENCY_PATTERN = /\b(next|now|choose|choice|option|route|path|door|stair|follow|inspect|search|open|approach|use|take|test|press|before|can)\b/i
+const SUCCESS_TIER_NULLIFYING_PATTERN = /\b(no new sound|nothing happens|nothing changes|unchanging|unchanged|no change|only darkness|less oppressive|but no|but nothing|still unclear|still unknown|no clear|empty silence)\b/i
 const SCENE_CHECK_OUTCOME_UNSAFE_PATTERN = /\b(hp|hit points?|damage|reward|rewards|dies?|death|fatal|fatality|finality|permanent end|no way forward|cannot continue|wallet|private chain|chain data)\b/i
 
 function normalizeSceneCheckPublicNarrationForValidation(value: string): string {
@@ -1585,10 +1587,22 @@ function validateSceneCheckOutcomePublicNarration(
   }
 
   if (!isFailureTier(tier)) {
+    if (normalized.length < SUCCESS_TIER_PUBLIC_NARRATION_MIN_CHARS) {
+      throw new Error(`Game-master scene-check outcome response publicNarration is too short for ${tier} payoff narration`)
+    }
     validateConcreteNarrativeText(normalized, {
       label: 'Game-master scene-check outcome response publicNarration',
       requireConcreteAnchor: true,
     })
+    if (SUCCESS_TIER_NULLIFYING_PATTERN.test(normalized)) {
+      throw new Error(`Game-master scene-check outcome response publicNarration nullifies ${tier} instead of paying it off`)
+    }
+    if (!SUCCESS_TIER_PAYOFF_PATTERN.test(normalized)) {
+      throw new Error(`Game-master scene-check outcome response publicNarration missing usable payoff language for ${tier}`)
+    }
+    if (!SUCCESS_TIER_AGENCY_PATTERN.test(normalized)) {
+      throw new Error(`Game-master scene-check outcome response publicNarration must leave a usable next action after ${tier}`)
+    }
     return
   }
 
@@ -2061,7 +2075,7 @@ function compactSceneCheckRepairInstruction(kind: GameMasterRepairPromptKind, in
     '- Never output requestedGameplayAction or lastCombatTriggerBeatId in scene-check outcome repair.',
     tier === 'partial_success' || tier === 'failure' || tier === 'critical_failure'
       ? '- For this tier, publicNarration must be substantive, name a visible consequence/cost, and leave a changed next choice.'
-      : '- For this tier, publicNarration must still be concrete and anchored to the resolved action.',
+      : '- For this tier, publicNarration must pay off the success: name the concrete discovery/advantage, what becomes safer/clearer/opened/controlled, and the usable next action it creates. Do not nullify success with nothing-happens language.',
     '- publicNarration has no character dialogue or "X says/asks/answers".',
     '- combat_ready means danger readiness only; it does not start combat.',
   ]
@@ -2075,7 +2089,7 @@ function compactSceneCheckRepairSchema(input: GenerateGameMasterSceneCheckOutcom
   return JSON.stringify({
     publicNarration: negativeTier
       ? `Sentence one ties ${actorName}'s resolved action (${action}) to a concrete visible location feature. Sentence two makes the cost visible by changing, blocking, exposing, or threatening a specific object, route, or creature. Sentence three leaves a changed next choice with at least two concrete options.`
-      : `Sentence one ties ${actorName}'s resolved action (${action}) to a concrete visible location feature. Sentence two reveals what became safer, clearer, or newly reachable. Sentence three leaves the next choice clear.`,
+      : `Sentence one ties ${actorName}'s resolved action (${action}) to a concrete visible location feature and names the discovery or advantage. Sentence two reveals what became safer, clearer, opened, controlled, or newly reachable. Sentence three leaves a usable next action without saying nothing happened.`,
     stateSummary: 'Continuity now includes the concrete result of the resolved check.',
     currentObjective: 'Choose how to answer the changed situation.',
     openThreads: ['What does the changed situation force the room to choose next?'],
