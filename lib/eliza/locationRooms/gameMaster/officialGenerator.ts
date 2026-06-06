@@ -1980,11 +1980,14 @@ function compactBeatRepairInstruction(kind: GameMasterRepairPromptKind, input: G
 }
 
 function compactBeatRepairSchema(input: GenerateGameMasterBeatInput): string {
+  const openingRequired = input.progressionContext?.requireOpeningPublicNarration === true
   const publicNarrationValue = input.progressionContext?.requirePublicNarration
-    ? 'The visible room changes around a concrete object, route, or threat, leaving the next choice unresolved.'
+    ? openingRequired
+      ? 'A concrete location feature changes in sentence one. A second visible hook offers something to inspect, open, follow, or avoid. A third sentence names the danger or cost if the room hesitates. End with an unresolved choice the selected speaker can act on.'
+      : 'The visible room changes around a concrete object, route, or threat, leaving the next choice unresolved.'
     : null
   const speakerName = truncatePromptValue(input.speaker.name, 80)
-  const needsEscalation = input.progressionContext?.requireEscalationBeyondOpening === true
+  const needsEscalation = input.progressionContext?.requireEscalationBeyondOpening === true || openingRequired
   return JSON.stringify({
     publicNarration: publicNarrationValue,
     speakerInstruction: `Have ${speakerName} choose a concrete next action in their own voice.`,
