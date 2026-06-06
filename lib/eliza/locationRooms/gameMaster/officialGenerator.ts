@@ -1972,6 +1972,8 @@ function compactBeatRepairInstruction(kind: GameMasterRepairPromptKind, input: G
       ? '- Opening publicNarration must be 3-5 sentences with sensory detail, 2-3 interactable hooks, stakes, and an unresolved prompt.'
       : '- Keep publicNarration concise and anchored to a concrete object, route, or threat.',
     '- publicNarration has no character dialogue or "X says/asks/answers".',
+    '- publicNarration must include an actionable choice/interaction term such as choose, risk, cost, blocked, reveal, route, door, stair, open, inspect, search, follow, retreat, approach, or before.',
+    '- Avoid passive atmosphere-only narration. A visible thing must force a next action, route choice, cost, reveal, or obstacle.',
     escalationRequired
       ? '- Do not leave repeated activity in flat story/none/0 state; use exploration/threat, foreshadow, or threatLevel >= 1 without forcing combat.'
       : '- Prefer narrative pressure over combat unless the current fiction clearly requires structured combat.',
@@ -1985,8 +1987,8 @@ function compactBeatRepairSchema(input: GenerateGameMasterBeatInput): string {
   const openingRequired = input.progressionContext?.requireOpeningPublicNarration === true
   const publicNarrationValue = input.progressionContext?.requirePublicNarration
     ? openingRequired
-      ? 'A concrete location feature changes in sentence one. A second visible hook offers something to inspect, open, follow, or avoid. A third sentence names the danger or cost if the room hesitates. End with an unresolved choice the selected speaker can act on.'
-      : 'The visible room changes around a concrete object, route, or threat, leaving the next choice unresolved.'
+      ? 'A concrete door, stair, route, mark, or other location feature changes in sentence one. A second visible hook offers two actionable options using words like inspect, open, follow, search, approach, or retreat. A third sentence names the risk or cost before the room chooses. End with an unresolved choice the selected speaker can act on.'
+      : 'A concrete door, stair, route, mark, or threat blocks, reveals, opens, or changes. The room must choose whether to inspect, open, follow, search, approach, or retreat before the risk grows.'
     : null
   const speakerName = truncatePromptValue(input.speaker.name, 80)
   const needsEscalation = input.progressionContext?.requireEscalationBeyondOpening === true || openingRequired
@@ -1995,7 +1997,7 @@ function compactBeatRepairSchema(input: GenerateGameMasterBeatInput): string {
     speakerInstruction: `Have ${speakerName} choose a concrete next action in their own voice.`,
     stateSummary: 'Continuity now includes the visible changed object, route, or threat.',
     currentObjective: 'Choose how to answer the changed situation.',
-    openThreads: ['What does the changed situation force the room to choose next?'],
+    openThreads: ['Which concrete route, object, or threat does the room choose to inspect, open, follow, search, approach, or retreat from next?'],
     ttrpgPhase: needsEscalation ? 'exploration' : 'story',
     combatReadiness: needsEscalation ? 'foreshadow' : 'none',
     threatLevel: needsEscalation ? 1 : 0,
