@@ -1371,10 +1371,15 @@ describe('game-master beat generator helpers', () => {
     const repairPrompt = messaging.sendSessionMessage.mock.calls[1][0].content
     expect(repairPrompt).toContain('Repair kind: json_only')
     expect(repairPrompt).toContain('Return only JSON with this contract')
+    expect(repairPrompt).toContain('Return exactly one JSON object: first character { and last character }')
+    expect(repairPrompt).toContain('Use one exact enum string per enum field; never output pipe-separated choice lists')
     expect(repairPrompt).toContain('selectedSpeakerTokenId must be 1')
     expect(repairPrompt).toContain('publicNarration is required, concrete, public-safe, and non-empty')
     expect(repairPrompt).toContain('Non-aftermath beats require currentObjective')
     expect(repairPrompt).toContain('"adventurePatch"')
+    expect(repairPrompt).toContain('"ttrpgPhase":"story"')
+    expect(repairPrompt).not.toContain('story | exploration')
+    expect(repairPrompt).not.toContain('none | foreshadow')
     expect(repairPrompt).not.toContain('Recent public transcript')
     expect(repairPrompt).not.toContain('Adventure memory: active')
     expect(repairPrompt).not.toContain('activeDecision is rare')
@@ -1593,8 +1598,12 @@ describe('game-master beat generator helpers', () => {
       }),
     }))
     expect(messaging.sendSessionMessage).toHaveBeenCalledTimes(2)
-    expect(messaging.sendSessionMessage.mock.calls[1][0].content).toContain('Repair the failed WAGDIE character turn')
-    expect(messaging.sendSessionMessage.mock.calls[1][0].content).not.toContain('not json')
+    const repairPrompt = messaging.sendSessionMessage.mock.calls[1][0].content
+    expect(repairPrompt).toContain('Repair the failed WAGDIE character turn')
+    expect(repairPrompt).toContain('Do not return only publicSpeech')
+    expect(repairPrompt).toContain('declaredAction.summary must name a concrete next action using an action verb')
+    expect(repairPrompt).toContain('Valid example: {"publicSpeech"')
+    expect(repairPrompt).not.toContain('not json')
   })
 
   it('throws a typed Official character turn error after failed hidden repair', async () => {
@@ -2160,6 +2169,12 @@ describe('game-master beat generator helpers', () => {
     const repairPrompt = messaging.sendSessionMessage.mock.calls[1][0].content
     expect(repairPrompt).toContain('Repair kind: generic')
     expect(repairPrompt).toContain('Return only a JSON object with this exact scene-check outcome contract')
+    expect(repairPrompt).toContain('Return exactly one JSON object: first character { and last character }')
+    expect(repairPrompt).toContain('Use one exact enum string per enum field; never output pipe-separated choice lists')
+    expect(repairPrompt).toContain('"decision":"none"')
+    expect(repairPrompt).toContain('"status":"complication"')
+    expect(repairPrompt).not.toContain('none | danger | combat_ready')
+    expect(repairPrompt).not.toContain('open | resolved | advantage | complication')
     expect(repairPrompt).toContain('Backend-computed roll facts')
     expect(repairPrompt).not.toContain('Escalation candidates')
     expect(repairPrompt).not.toContain('Recent public transcript')

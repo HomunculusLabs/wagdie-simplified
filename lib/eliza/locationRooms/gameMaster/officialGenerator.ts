@@ -1959,7 +1959,9 @@ function compactBeatRepairInstruction(kind: GameMasterRepairPromptKind, input: G
           : kind === 'speaker_or_token'
             ? `The prior JSON used an invalid speaker/token. selectedSpeakerTokenId must be ${input.speaker.tokenId}; token lists may only use: ${formatRepairEligibleTokenIds(input.participants)}.`
             : 'Return one corrected compact JSON object only.',
-    '- JSON only; no markdown, commentary, or prose outside the object.',
+    '- Return exactly one JSON object: first character { and last character }. No markdown, commentary, or prose outside the object.',
+    '- Use one exact enum string per enum field; never output pipe-separated choice lists.',
+    '- Do not copy schema placeholder text literally; replace it with concrete scene content.',
     `- selectedSpeakerTokenId must be ${input.speaker.tokenId}.`,
     publicRequired
       ? '- publicNarration is required, concrete, public-safe, and non-empty.'
@@ -1979,22 +1981,23 @@ function compactBeatRepairInstruction(kind: GameMasterRepairPromptKind, input: G
 
 function compactBeatRepairSchema(input: GenerateGameMasterBeatInput): string {
   const publicNarrationValue = input.progressionContext?.requirePublicNarration
-    ? 'required concrete public GM narration'
+    ? 'The visible room changes around a concrete object, route, or threat, leaving the next choice unresolved.'
     : null
   const speakerName = truncatePromptValue(input.speaker.name, 80)
+  const needsEscalation = input.progressionContext?.requireEscalationBeyondOpening === true
   return JSON.stringify({
     publicNarration: publicNarrationValue,
-    speakerInstruction: `Private direction for ${speakerName} in their own voice`,
-    stateSummary: 'Updated continuity summary',
-    currentObjective: 'Current objective or null',
-    openThreads: ['Unresolved thread'],
-    ttrpgPhase: 'story | exploration | threat | aftermath',
-    combatReadiness: 'none | foreshadow | ready',
-    threatLevel: 0,
+    speakerInstruction: `Have ${speakerName} choose a concrete next action in their own voice.`,
+    stateSummary: 'Continuity now includes the visible changed object, route, or threat.',
+    currentObjective: 'Choose how to answer the changed situation.',
+    openThreads: ['What does the changed situation force the room to choose next?'],
+    ttrpgPhase: needsEscalation ? 'exploration' : 'story',
+    combatReadiness: needsEscalation ? 'foreshadow' : 'none',
+    threatLevel: needsEscalation ? 1 : 0,
     requestedGameplayAction: null,
     encounterSeed: null,
     sceneCheckRequest: null,
-    adventurePatch: { currentStakes: 'What changed or now matters' },
+    adventurePatch: { currentStakes: 'A concrete room detail now creates pressure or a choice.' },
     featuredTokenIds: [input.speaker.tokenId],
     selectedSpeakerTokenId: input.speaker.tokenId,
   })
@@ -2043,7 +2046,9 @@ function compactSceneCheckRepairInstruction(kind: GameMasterRepairPromptKind, in
         : kind === 'progression'
           ? 'The prior JSON failed consequence/progression rules. Make the consequence visible and preserve next choice.'
           : 'Return one corrected compact JSON object only.',
-    '- JSON only; no markdown, commentary, or prose outside the object.',
+    '- Return exactly one JSON object: first character { and last character }. No markdown, commentary, or prose outside the object.',
+    '- Use one exact enum string per enum field; never output pipe-separated choice lists.',
+    '- Do not copy schema placeholder text literally; replace it with concrete scene content.',
     '- Use only the backend roll facts provided here; do not invent dice, DC, HP, rewards, death, wallets, or finality.',
     '- Never output requestedGameplayAction or lastCombatTriggerBeatId in scene-check outcome repair.',
     tier === 'partial_success' || tier === 'failure' || tier === 'critical_failure'
@@ -2055,23 +2060,29 @@ function compactSceneCheckRepairInstruction(kind: GameMasterRepairPromptKind, in
 }
 
 function compactSceneCheckRepairSchema(input: GenerateGameMasterSceneCheckOutcomeInput): string {
+  const tier = input.resolution.roll.tier
+  const negativeTier = tier === 'partial_success' || tier === 'failure' || tier === 'critical_failure'
   return JSON.stringify({
-    publicNarration: 'Public GM consequence of the resolved check',
-    stateSummary: 'Updated continuity summary',
-    currentObjective: 'Updated objective',
-    openThreads: ['Unresolved thread'],
+    publicNarration: negativeTier
+      ? 'The resolved check visibly changes a concrete object, route, or threat, names the cost, and leaves a changed next choice.'
+      : 'The resolved check visibly changes a concrete object, route, or clue and leaves the next choice clear.',
+    stateSummary: 'Continuity now includes the concrete result of the resolved check.',
+    currentObjective: 'Choose how to answer the changed situation.',
+    openThreads: ['What does the changed situation force the room to choose next?'],
     adventurePatch: {
-      currentStakes: 'Changed situation',
+      currentStakes: 'The check result changes what is safe, available, or urgent.',
       consequence: {
-        summary: 'Durable consequence',
-        status: 'open | resolved | advantage | complication',
-        tier: input.resolution.roll.tier,
+        summary: negativeTier
+          ? 'The check leaves a durable complication in the scene.'
+          : 'The check resolves part of the scene in the room’s favor.',
+        status: negativeTier ? 'complication' : 'resolved',
+        tier,
       },
     },
     escalation: {
-      decision: 'none | danger | combat_ready',
+      decision: 'none',
       dangerKind: 'unknown',
-      reason: 'Brief reason',
+      reason: 'The check result changes the next choice without starting combat.',
       threatLevel: 0,
       encounterSeed: null,
       catalogEntryIds: [],
