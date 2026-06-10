@@ -4,6 +4,7 @@ import type {
   LocationRoomGameplayRunSummary,
   LocationRoomParticipant,
   LocationRoomTick,
+  LocationRoomTickPublicOutputOutcome,
   ProcessLocationRoomTickResult,
 } from '../types'
 import type { LocationRoomRepository } from '../repository'
@@ -31,11 +32,11 @@ import { logLocationRoomRouteDecision, type LocationRoomRouteDiagnostic } from '
 import { MAX_TICK_ATTEMPTS, MIN_ELIGIBLE_PARTICIPANTS, nextRetryAt, routeSafeError } from './support'
 import {
   gameplayRunStartedByActor,
-  hasMinimumPlayableGameplayParticipants,
   isCombatReadySourceBeat,
   isUnconsumedCombatTrigger,
   manualCombatTriggerId,
   nullableMetadataId,
+  resolveGameplayRunContinuationContext,
   terminalEncounterRunStatus,
   toGameplayRunSummary,
 } from './gameplayRouting'
@@ -67,6 +68,34 @@ function filterParticipantsAvailableForRoomSpeech(
   gameplayState: GameplayRoomState | null
 ): LocationRoomParticipant[] {
   return participants.filter((participant) => isParticipantAvailableForRoomSpeech(participant, gameplayState))
+}
+
+function classifyPublicOutputOutcome(result: ProcessLocationRoomTickResult): LocationRoomTickPublicOutputOutcome | undefined {
+  const messageIds = result.messageIds ?? []
+  const publicMessageAppended = Boolean(result.messageId || messageIds.length > 0 || result.publicGameMasterBeatAppended)
+  if (publicMessageAppended) return 'public_message_appended'
+
+  if (result.status === 'failed') return 'failed_retry'
+  if (result.status === 'dead') return 'failed_terminal'
+  if (result.status === 'completed') {
+    if (result.gameplayRun && result.gameplayRun.status !== 'active') return 'terminal_run_closed'
+    return 'intentional_no_output'
+  }
+
+  if (result.status === 'skipped') {
+    if (result.reason === 'insufficient_participants' || result.reason === 'insufficient_living_gameplay_participants') {
+      return 'blocked_waiting_for_participants'
+    }
+    if (result.gameplayRun && result.gameplayRun.status !== 'active') return 'terminal_run_closed'
+    return 'intentional_no_output'
+  }
+
+  return undefined
+}
+
+function withPublicOutputOutcome(result: ProcessLocationRoomTickResult): ProcessLocationRoomTickResult {
+  const publicOutputOutcome = classifyPublicOutputOutcome(result)
+  return publicOutputOutcome ? { ...result, publicOutputOutcome } : result
 }
 
 export class LocationRoomTickProcessor {
@@ -483,7 +512,8 @@ export class LocationRoomTickProcessor {
       console.error('[Eliza Location Rooms] gameplay run lifecycle update failed', error)
       return undefined
     })
-    return gameplayRun ? { ...result, gameplayRun } : result
+    const resultWithRun = gameplayRun ? { ...result, gameplayRun } : result
+    return withPublicOutputOutcome(resultWithRun)
   }
 
   private async processClaimedTickUnsafe(
@@ -505,27 +535,124 @@ export class LocationRoomTickProcessor {
     await ensureLocationRoomGameplayConfigReady(room.locationId, this.gameMasterAgentResolver)
 
     const gameplayEnabledForLocation = isLocationRoomGameplayEnabledForLocation(room.locationId)
-    const gameplayStateForEligibility = gameplayEnabledForLocation
+    const participants = await this.membership.listEligibleParticipantsByLocation(room.locationId)
+    const gameplayStateForNarrativeSpeech = gameplayEnabledForLocation
       ? await this.gameplayRepository.findStateByRoomId(room.id).catch(() => null)
       : null
-    const participants = filterParticipantsAvailableForRoomSpeech(
-      await this.membership.listEligibleParticipantsByLocation(room.locationId),
-      gameplayStateForEligibility
-    )
-    if (participants.length < MIN_ELIGIBLE_PARTICIPANTS) {
+    const turnIntent = tick.turnIntent ?? 'auto'
+    const gameplayGateResult: LocationRoomRouteDiagnostic['gameplayGateResult'] = gameplayEnabledForLocation ? 'enabled' : 'disabled'
+    let activeEncounter: GameplayEncounter | null = null
+    let activeEncounterId: string | null = null
+    let combatTriggerId: string | null = null
+    let preRouteSceneCheckRequestPresent = false
+    let preRouteSceneCheckProposalPresent = false
+    let preRouteSceneCheckProposalErrorPresent = false
+    let hasRetryableGameplayTurn = false
+    const skippedCombatRouteReason = gameplayEnabledForLocation
+      ? 'no_active_encounter_or_combat_trigger'
+      : 'gameplay_disabled_for_location'
+
+    if (gameplayEnabledForLocation && tick.gameplayRunId) {
+      const continuation = await resolveGameplayRunContinuationContext({
+        gameplayRepository: this.gameplayRepository,
+        room,
+      })
+      activeEncounter = continuation.encounter
+      activeEncounterId = activeEncounter?.id ?? null
+      const shouldCheckRetryTurn = !activeEncounter || activeEncounter.status !== 'active'
+      const retryTurn = shouldCheckRetryTurn
+        ? await this.gameplayRepository.findTurnByTickId(tick.id)
+        : null
+      hasRetryableGameplayTurn = Boolean(retryTurn?.encounterId)
+
+      if (!hasRetryableGameplayTurn) {
+        const terminalRunStatus = activeEncounter ? terminalEncounterRunStatus(activeEncounter.status) : null
+        if (activeEncounter && terminalRunStatus) {
+          await this.markTerminalEncounterAftermath({
+            room,
+            encounter: activeEncounter,
+            now,
+            source: 'gameplay-run-preflight-terminal',
+          })
+          const skipReason = `encounter_${activeEncounter.status}`
+          logLocationRoomRouteDecision({
+            tickId: tick.id,
+            roomId: room.id,
+            locationId: room.locationId,
+            turnIntent,
+            triggerType: tick.triggerType,
+            gameplayGateResult,
+            activeEncounterId,
+            combatTriggerId,
+            sceneCheckRequestPresent: false,
+            sceneCheckProposalPresent: false,
+            sceneCheckProposalErrorPresent: false,
+            selectedRoute: 'skip',
+            skipReason,
+            publicOutputOutcome: 'terminal_run_closed',
+          })
+          await this.repository.markTickSkipped(tick.id, skipReason)
+          await this.repository.updateRoomAfterProcessedTick(room, {
+            tickIntervalMinutes: elizaConfig.locationRooms.activeNarrativeTickIntervalMinutes,
+            now,
+          })
+          return {
+            tickId: tick.id,
+            gameplayRunId: tick.gameplayRunId,
+            status: 'skipped',
+            selectedTokenId: null,
+            reason: skipReason,
+          }
+        }
+
+        if (!activeEncounter) {
+          logLocationRoomRouteDecision({
+            tickId: tick.id,
+            roomId: room.id,
+            locationId: room.locationId,
+            turnIntent,
+            triggerType: tick.triggerType,
+            gameplayGateResult,
+            activeEncounterId,
+            combatTriggerId,
+            sceneCheckRequestPresent: false,
+            sceneCheckProposalPresent: false,
+            sceneCheckProposalErrorPresent: false,
+            selectedRoute: 'skip',
+            skipReason: 'no_active_gameplay_encounter',
+            publicOutputOutcome: 'terminal_run_closed',
+          })
+          await this.repository.markTickSkipped(tick.id, 'no_active_gameplay_encounter')
+          await this.repository.updateRoomAfterProcessedTick(room, {
+            tickIntervalMinutes: elizaConfig.locationRooms.activeNarrativeTickIntervalMinutes,
+            now,
+          })
+          return {
+            tickId: tick.id,
+            gameplayRunId: tick.gameplayRunId,
+            status: 'skipped',
+            selectedTokenId: null,
+            reason: 'no_active_gameplay_encounter',
+          }
+        }
+      }
+    }
+
+    if (participants.length < MIN_ELIGIBLE_PARTICIPANTS && !hasRetryableGameplayTurn) {
       logLocationRoomRouteDecision({
         tickId: tick.id,
         roomId: room.id,
         locationId: room.locationId,
-        turnIntent: tick.turnIntent ?? 'auto',
+        turnIntent,
         triggerType: tick.triggerType,
-        gameplayGateResult: gameplayEnabledForLocation ? 'enabled' : 'disabled',
-        activeEncounterId: null,
+        gameplayGateResult,
+        activeEncounterId,
         combatTriggerId: null,
         sceneCheckRequestPresent: false,
         sceneCheckProposalPresent: false,
         selectedRoute: 'skip',
         skipReason: 'insufficient_participants',
+        publicOutputOutcome: 'blocked_waiting_for_participants',
       })
       await this.repository.markTickSkipped(tick.id, 'Fewer than two eligible participants')
       await this.repository.updateRoomAfterProcessedTick(room, {
@@ -534,6 +661,7 @@ export class LocationRoomTickProcessor {
       })
       return {
         tickId: tick.id,
+        gameplayRunId: tick.gameplayRunId,
         status: 'skipped',
         selectedTokenId: null,
         reason: 'insufficient_participants',
@@ -545,20 +673,11 @@ export class LocationRoomTickProcessor {
       elizaConfig.locationRooms.transcriptWindow
     )
 
-    const turnIntent = tick.turnIntent ?? 'auto'
-    const gameplayGateResult: LocationRoomRouteDiagnostic['gameplayGateResult'] = gameplayEnabledForLocation ? 'enabled' : 'disabled'
-    let activeEncounterId: string | null = null
-    let combatTriggerId: string | null = null
-    let preRouteSceneCheckRequestPresent = false
-    let preRouteSceneCheckProposalPresent = false
-    let preRouteSceneCheckProposalErrorPresent = false
-    const skippedCombatRouteReason = gameplayEnabledForLocation
-      ? 'no_active_encounter_or_combat_trigger'
-      : 'gameplay_disabled_for_location'
-
     if (gameplayEnabledForLocation) {
-      const activeEncounter = await this.gameplayRepository.findActiveEncounterByRoomId(room.id)
-      activeEncounterId = activeEncounter?.id ?? null
+      if (!tick.gameplayRunId) {
+        activeEncounter = await this.gameplayRepository.findActiveEncounterByRoomId(room.id)
+        activeEncounterId = activeEncounter?.id ?? null
+      }
       let encounterTrigger: LocationRoomGameplayEncounterTrigger | null = null
       if (turnIntent === 'combat' && tick.triggerType !== 'admin' && !tick.gameplayRunId) {
         throw new LocationRoomManualTickIntentForbiddenError()
@@ -589,7 +708,7 @@ export class LocationRoomTickProcessor {
       }
       combatTriggerId = encounterTrigger?.triggerId ?? null
 
-      if (activeEncounter || encounterTrigger) {
+      if (activeEncounter || encounterTrigger || hasRetryableGameplayTurn) {
         logLocationRoomRouteDecision({
           tickId: tick.id,
           roomId: room.id,
@@ -603,13 +722,13 @@ export class LocationRoomTickProcessor {
           sceneCheckProposalPresent: preRouteSceneCheckProposalPresent,
           sceneCheckProposalErrorPresent: preRouteSceneCheckProposalErrorPresent,
           selectedRoute: 'combat',
-          routeSource: activeEncounter ? 'active_encounter' : 'combat_trigger',
+          routeSource: activeEncounter || hasRetryableGameplayTurn ? 'active_encounter' : 'combat_trigger',
           skipReason: null,
         })
         const runContext = await this.ensureGameplayRunForCombat({
           room,
           tick,
-          source: activeEncounter ? 'active_encounter' : 'combat_trigger',
+          source: activeEncounter || hasRetryableGameplayTurn ? 'active_encounter' : 'combat_trigger',
           ...(encounterTrigger ? { encounterTrigger } : {}),
         })
         context.effectiveGameplayRunId = runContext.run.id
@@ -656,41 +775,49 @@ export class LocationRoomTickProcessor {
         }
       }
 
-      if (tick.gameplayRunId) {
-        logLocationRoomRouteDecision({
-          tickId: tick.id,
-          roomId: room.id,
-          locationId: room.locationId,
-          turnIntent,
-          triggerType: tick.triggerType,
-          gameplayGateResult,
-          activeEncounterId,
-          combatTriggerId,
-          sceneCheckRequestPresent: preRouteSceneCheckRequestPresent,
-          sceneCheckProposalPresent: preRouteSceneCheckProposalPresent,
-          sceneCheckProposalErrorPresent: preRouteSceneCheckProposalErrorPresent,
-          selectedRoute: 'skip',
-          skipReason: 'no_active_gameplay_encounter',
-        })
-        await this.repository.markTickSkipped(tick.id, 'no_active_gameplay_encounter')
-        await this.repository.updateRoomAfterProcessedTick(room, {
-          tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
-          now,
-        })
-        return {
-          tickId: tick.id,
-          gameplayRunId: tick.gameplayRunId,
-          status: 'skipped',
-          selectedTokenId: null,
-          reason: 'no_active_gameplay_encounter',
-        }
-      }
     }
 
     const narrativeEnabled = elizaConfig.locationRooms.narrative.enabled
+    const shouldUseGameplaySpeechEligibility = Boolean(
+      gameplayStateForNarrativeSpeech &&
+      gameplayStateForNarrativeSpeech.status !== 'aftermath'
+    )
+    const narrativeParticipants = shouldUseGameplaySpeechEligibility && gameplayStateForNarrativeSpeech
+      ? filterParticipantsAvailableForRoomSpeech(participants, gameplayStateForNarrativeSpeech)
+      : participants
+    if (narrativeParticipants.length < MIN_ELIGIBLE_PARTICIPANTS) {
+      logLocationRoomRouteDecision({
+        tickId: tick.id,
+        roomId: room.id,
+        locationId: room.locationId,
+        turnIntent,
+        triggerType: tick.triggerType,
+        gameplayGateResult,
+        activeEncounterId,
+        combatTriggerId,
+        sceneCheckRequestPresent: preRouteSceneCheckRequestPresent,
+        sceneCheckProposalPresent: preRouteSceneCheckProposalPresent,
+        sceneCheckProposalErrorPresent: preRouteSceneCheckProposalErrorPresent,
+        selectedRoute: 'skip',
+        skipReason: 'insufficient_living_gameplay_participants',
+        combatRouteSkipReason: skippedCombatRouteReason,
+        publicOutputOutcome: 'blocked_waiting_for_participants',
+      })
+      await this.repository.markTickSkipped(tick.id, 'insufficient_living_gameplay_participants')
+      await this.repository.updateRoomAfterProcessedTick(room, {
+        tickIntervalMinutes: elizaConfig.locationRooms.tickIntervalMinutes,
+        now,
+      })
+      return {
+        tickId: tick.id,
+        status: 'skipped',
+        selectedTokenId: null,
+        reason: 'insufficient_living_gameplay_participants',
+      }
+    }
     const speaker = narrativeEnabled && tick.selectedTokenId != null
-      ? participants.find((participant) => participant.tokenId === tick.selectedTokenId)
-      : selectLocationRoomSpeaker(participants, recentMessages)
+      ? narrativeParticipants.find((participant) => participant.tokenId === tick.selectedTokenId)
+      : selectLocationRoomSpeaker(narrativeParticipants, recentMessages)
 
     if (!speaker) {
       throw new Error('Selected narrative speaker is no longer eligible for this location room')
@@ -708,7 +835,7 @@ export class LocationRoomTickProcessor {
           room,
           tick,
           speaker,
-          participants,
+          participants: narrativeParticipants,
           recentMessages,
         })
         if (!narrativeResult.messageId) {
@@ -771,7 +898,7 @@ export class LocationRoomTickProcessor {
       const generated = await this.turnGenerator.generateTurn({
         room,
         speaker,
-        participants,
+        participants: narrativeParticipants,
         recentMessages,
       })
       const content = normalizeLocationRoomGeneratedContent(generated.content)

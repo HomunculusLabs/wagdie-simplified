@@ -289,6 +289,142 @@ export type AdventureCatalogRetrievalContext = {
   clocks?: LocationRoomAdventureClock[] | null
 }
 
+export type LocationRoomPublicContinuityBeat = {
+  id: string
+  sequence?: number | null
+  authorName?: string | null
+  tokenId?: number | null
+  summary: string
+  createdAt?: string | null
+}
+
+/** Public-safe compact continuity projection for prompts; no wallet, backend, mechanics, or private labels. */
+export type LocationRoomPublicContinuityMemory = {
+  roomSummary: string | null
+  currentObjective: string | null
+  openThreads: string[]
+  recentPublicBeats: LocationRoomPublicContinuityBeat[]
+  unresolvedConsequences: string[]
+}
+
+export type LocationRoomGmPlanningPressure = 'low' | 'medium' | 'high' | 'terminal'
+
+export type LocationRoomGmPlanningState = {
+  nextBeatIntent: string | null
+  pressure: LocationRoomGmPlanningPressure
+  reservedReveals: string[]
+  doNotRepeat: string[]
+  pacingNotes: string[]
+}
+
+/** Public-safe repetition guard for character voice/action generation; phrases/actions are normalized public prose. */
+export type LocationRoomCharacterPhraseActionMemory = {
+  tokenId: number
+  publicName: string | null
+  recentPhrases: string[]
+  recentActions: string[]
+  lastActionIntent: string | null
+  lastSourceId: string | null
+  updatedAt: string | null
+}
+
+export type LocationRoomCombatTerminalStatus = 'victory' | 'defeat' | 'fled' | 'abandoned' | 'unknown'
+
+/** Public-safe terminal encounter facts used to keep resolved threats absorbing in later narration. */
+export type LocationRoomCombatTerminalSummary = {
+  encounterId: string
+  status: LocationRoomCombatTerminalStatus
+  publicTitle: string | null
+  publicSummary: string | null
+  defeatedMonsterIdentities: string[]
+  survivingMonsterIdentities: string[]
+  characterOutcomes: string[]
+  aftermathHooks: string[]
+  terminalAt: string | null
+}
+
+export type LocationRoomStructuredNarrativeMemory = {
+  publicContinuity: LocationRoomPublicContinuityMemory
+  gmPlanning: LocationRoomGmPlanningState
+  characterMemories: LocationRoomCharacterPhraseActionMemory[]
+  combatTerminalSummaries: LocationRoomCombatTerminalSummary[]
+  spatialState: LocationRoomSpatialContext
+}
+
+export type LocationRoomStructuredNarrativeMemoryPatch = Partial<{
+  publicContinuity: Partial<LocationRoomPublicContinuityMemory>
+  gmPlanning: Partial<LocationRoomGmPlanningState>
+  characterMemories: LocationRoomCharacterPhraseActionMemory[]
+  combatTerminalSummaries: LocationRoomCombatTerminalSummary[]
+  spatialState: LocationRoomSpatialContext
+}>
+
+export type LocationRoomContentCardSource = 'location_catalog' | 'gm_book' | 'monster_identity' | 'system_default'
+
+/** Public-facing location affordance card; card prose must not contain private/mechanical routing labels. */
+export type LocationRoomLocationAffordanceCard = {
+  id: string
+  title: string
+  publicSummary: string
+  sensoryDetails: string[]
+  actionAffordances: string[]
+  boundaries: string[]
+  tags: string[]
+  source: LocationRoomContentCardSource
+  catalogEntryIds: string[]
+}
+
+/** Public identity card for a threat; private labels are guardrails only and must not be emitted as prose. */
+export type LocationRoomMonsterPublicIdentityCard = {
+  id: string
+  publicName: string
+  publicEpithets: string[]
+  publicDescription: string
+  tells: string[]
+  threatSignals: string[]
+  defeatCues: string[]
+  forbiddenPrivateLabels: string[]
+  source: LocationRoomContentCardSource
+  catalogEntryIds: string[]
+}
+
+/** Public example for matching backend roll tier truth to prose tone without changing facts. */
+export type LocationRoomTierPayoffExampleCard = {
+  id: string
+  tier: LocationRoomAdventureOutcomeTier
+  actionIntent: string | null
+  publicExample: string
+  consequenceShape: string | null
+  source: LocationRoomContentCardSource
+}
+
+export type LocationRoomForbiddenLabelCard = {
+  id: string
+  label: string
+  reason: string
+  publicAlternatives: string[]
+  severity: 'block' | 'warn'
+  source: LocationRoomContentCardSource
+}
+
+/** Public aftermath template for terminal combat states; forbid resurrecting terminal threats. */
+export type LocationRoomAftermathTemplateCard = {
+  id: string
+  terminalStatus: LocationRoomCombatTerminalStatus
+  template: string
+  continuationHooks: string[]
+  forbiddenClaims: string[]
+  source: LocationRoomContentCardSource
+}
+
+export type LocationRoomGmContentBook = {
+  locationAffordances: LocationRoomLocationAffordanceCard[]
+  monsterPublicIdentities: LocationRoomMonsterPublicIdentityCard[]
+  tierPayoffExamples: LocationRoomTierPayoffExampleCard[]
+  forbiddenLabels: LocationRoomForbiddenLabelCard[]
+  aftermathTemplates: LocationRoomAftermathTemplateCard[]
+}
+
 function hasStringValue<T extends readonly string[]>(values: T, value: unknown): value is T[number] {
   return typeof value === 'string' && values.includes(value as T[number])
 }

@@ -10,7 +10,6 @@ import {
 } from '../../generation/json'
 import {
   acceptedGenerationDiagnostics,
-  buildGenerationResponseFlags,
   repairAttemptedGenerationDiagnostics,
   repairedGenerationDiagnostics,
   repairTransportFailureDiagnostics,
@@ -21,6 +20,7 @@ import {
   runGenerationRepair,
   type GenerationRepairRunnerResult,
 } from '../../generation/repairRunner'
+import { findPublicNarrativeContractViolation } from '../../generation/publicOutputContract'
 import type {
   LocationRoom,
   LocationRoomEncounterSeed,
@@ -581,7 +581,7 @@ function categorizeOutcomeNarrationError(error: unknown): GameplayOutcomeGenerat
   if (/did not contain a JSON object/i.test(message)) return 'missing_json_object'
   if (/invalid JSON/i.test(message)) return 'invalid_json'
   if (/missing publicNarration|required/i.test(message)) return 'missing_required_field'
-  if (/weak|generic|consequence|filler|specific combat target|location or catalog anchor|visible tactic|battlefield state/i.test(message)) return 'weak_narration'
+  if (/weak|generic|consequence|filler|specific combat target|location or catalog anchor|visible tactic|battlefield state|leaks private|unsupported by roll-tier/i.test(message)) return 'weak_narration'
   return 'validation_error'
 }
 
@@ -623,6 +623,10 @@ function selectedOutcomeMonsterName(input: GenerateGameplayOutcomeNarrationInput
 function includesWordish(haystack: string, value: string | null | undefined): boolean {
   const normalized = value?.replace(/\s+/g, ' ').trim().toLowerCase()
   return Boolean(normalized && haystack.includes(normalized))
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 function outcomeLocationAnchorTerms(input: GenerateGameplayOutcomeNarrationInput, targetNames: Array<string | null>): string[] {
@@ -668,13 +672,22 @@ export function validateGameplayOutcomeNarrationQuality(
 ): { ok: true } | { ok: false; error: string } {
   const narration = output.publicNarration.replace(/\s+/g, ' ').trim()
   if (!narration) return { ok: false, error: 'Gameplay outcome narration is empty' }
-  if (CHARACTER_DIALOGUE_NARRATION_PATTERN.test(narration)) {
-    return { ok: false, error: 'Gameplay outcome narration must not narrate character dialogue' }
-  }
-
   const lower = narration.toLowerCase()
   const deltas = input.mechanicalSummary.mechanicalDeltas as Record<string, unknown>
   const actionRoll = isRecord(deltas.actionRoll) ? deltas.actionRoll : null
+  const sharedPublicViolation = findPublicNarrativeContractViolation(narration, {
+    label: 'Gameplay outcome narration',
+    contextualCheckId: typeof actionRoll?.contextualCheckId === 'string' ? actionRoll.contextualCheckId : null,
+    contextualCheckLabel: typeof actionRoll?.checkLabel === 'string' ? actionRoll.checkLabel : null,
+    contextualCheckSource: typeof actionRoll?.checkSource === 'string' ? actionRoll.checkSource : null,
+    allowCharacterDialogue: false,
+  })
+  if (sharedPublicViolation?.category === 'voice_hygiene') {
+    return { ok: false, error: 'Gameplay outcome narration must not narrate character dialogue' }
+  }
+  if (sharedPublicViolation?.category === 'publicness') {
+    return { ok: false, error: `Gameplay outcome narration leaks private ${sharedPublicViolation.reason}` }
+  }
   const actionDamage = isRecord(deltas.actionDamage) ? deltas.actionDamage : null
   const healing = isRecord(deltas.healing) ? deltas.healing : null
   const retaliation = isRecord(deltas.monsterRetaliation) ? deltas.monsterRetaliation : null
@@ -697,6 +710,8 @@ export function validateGameplayOutcomeNarrationQuality(
     (typeof actionRoll?.tier === 'string' && lower.includes(String(actionRoll.tier).replace(/_/g, ' ')))
 
   const damageAmount = numericValue(actionDamage?.amount) ?? 0
+  const actionTier = typeof actionRoll?.tier === 'string' ? actionRoll.tier : null
+  const actionTierDisallowsContact = (actionTier === 'failure' || actionTier === 'critical_failure' || actionTier === 'partial_success') && damageAmount <= 0
   const healingAmount = numericValue(healing?.amount) ?? 0
   const retaliationHit = typeof retaliation?.hit === 'boolean' ? retaliation.hit : null
   const retaliationAmount = numericValue(retaliation?.amount) ?? 0
@@ -707,7 +722,7 @@ export function validateGameplayOutcomeNarrationQuality(
   const hasSpecificTarget = requiredTargetNames.some((name) => includesWordish(lower, name)) ||
     (requiredTargetNames.length === 0 && includesWordish(lower, input.encounterBefore.publicTitle))
   const locationAnchors = outcomeLocationAnchorTerms(input, requiredTargetNames)
-  const visibleTactic = /\b(strikes?|cuts?|slashes?|drives?|pins?|blocks?|guards?|shields?|hooks?|shoves?|pulls?|draws?|circles?|ducks?|braces?|parries?|counters?|retaliates?|presses?|forces?|heals?|restores?|drags?|carries?|retreats?|withdraws?|flee(?:s|ing)?|runs?|dives?|weaves?|sidesteps?|throws?|grabs?|holds?)\b/i.test(narration)
+  const visibleTactic = /\b(strikes?|hits?|lands?|grazes?|clips?|cuts?|slashes?|drives?|pins?|blocks?|guards?|shields?|hooks?|shoves?|pulls?|draws?|circles?|ducks?|braces?|parries?|counters?|retaliates?|presses?|forces?|heals?|restores?|drags?|carries?|retreats?|withdraws?|flee(?:s|ing)?|runs?|dives?|weaves?|sidesteps?|throws?|grabs?|holds?)\b/i.test(narration)
   const battlefieldStateChange = /\b(line|ground|space|opening|cover|route|threshold|door|wall|floor|table|rafters?|stairs?|bridge|circle|formation|position|distance|path|exit|back|aside|off-balance|pinned|blocked|exposed|separated|cornered|reels?|staggers?|breaks?|splinters?|buckles?|collapses?|opens?|closes?|shifts?)\b/i.test(narration)
   const encounterStatusAfter = input.mechanicalSummary.encounterStatusAfter || input.encounterAfter.status
   const terminal = encounterStatusAfter !== 'active' || input.encounterAfter.status !== 'active'
@@ -720,11 +735,18 @@ export function validateGameplayOutcomeNarrationQuality(
     return { ok: false, error: 'Gameplay outcome narration lacks a specific combat target anchor' }
   }
 
-  if (!hasAnyAnchorTerm(narration, locationAnchors)) {
+  const sharedMotionViolation = findPublicNarrativeContractViolation(narration, {
+    label: 'Gameplay outcome narration',
+    requireConcreteGrounding: true,
+    requireNarrativeMotion: true,
+    groundingTerms: locationAnchors,
+    allowGenericCheckWord: true,
+  })
+  if (!hasAnyAnchorTerm(narration, locationAnchors) || sharedMotionViolation?.category === 'grounding') {
     return { ok: false, error: 'Gameplay outcome narration lacks a concrete location or catalog anchor' }
   }
 
-  if (!visibleTactic) {
+  if (!visibleTactic || sharedMotionViolation?.category === 'narrative_motion') {
     return { ok: false, error: 'Gameplay outcome narration lacks a visible tactic' }
   }
 
@@ -732,11 +754,27 @@ export function validateGameplayOutcomeNarrationQuality(
     return { ok: false, error: 'Gameplay outcome narration lacks changed battlefield state' }
   }
 
-  if (/\b(kills?|slays?|dead|dies|death|corpse|finality)\b/i.test(narration) && !deaths) {
-    return { ok: false, error: 'Gameplay outcome narration invents death not present in backend facts' }
+  const contactVerbPattern = '(?:hits?|lands?|grazes?|clips?|catches?|cuts?|wounds?|tears?|slashes?|strikes?|drives? into|bites? into|connects?)'
+  const actorPattern = actorName ? escapeRegExp(actorName.toLowerCase()) : null
+  const targetPattern = targetMonsterName ? escapeRegExp(targetMonsterName.toLowerCase()) : null
+  const actorTargetContact = actorPattern && targetPattern
+    ? new RegExp(`\\b${actorPattern}\\b.{0,96}\\b${contactVerbPattern}\\b.{0,96}\\b${targetPattern}\\b|\\b${actorPattern}\\b.{0,96}\\b${targetPattern}\\b.{0,96}\\b${contactVerbPattern}\\b`, 'i')
+    : null
+  const targetFirstContact = targetPattern
+    ? new RegExp(`\\b${targetPattern}\\b.{0,96}\\b(?:is |gets |becomes |is left )?(?:hit|landed on|grazed|clipped|caught|cut|wounded|torn|slashed|struck|bitten|pierced)\\b|\\b${contactVerbPattern}\\b.{0,96}\\b${targetPattern}\\b`, 'i')
+    : null
+  const weaponSubjectContact = targetPattern
+    ? new RegExp(`\\b(?:blade|sword|axe|arrow|spear|knife|dagger|strike|attack|swing|blow|shot)\\b.{0,96}\\b${contactVerbPattern}\\b.{0,96}\\b${targetPattern}\\b`, 'i')
+    : null
+  if (actionTierDisallowsContact && (actorTargetContact?.test(lower) || targetFirstContact?.test(lower) || weaponSubjectContact?.test(lower))) {
+    return { ok: false, error: 'Gameplay outcome narration describes acting-character contact unsupported by roll-tier mechanics' }
   }
 
-  if (/\b(victory|wins?|won|fight is won|battle is won|danger collapses|no standing threat|ends? the fight|ending the fight)\b/i.test(narration) && !victory) {
+  if (/\b(kills?|slays?|dead|dies|death|corpse|finality|disabled|destroyed|falls still|goes limp)\b/i.test(narration) && !deaths && !victory) {
+    return { ok: false, error: 'Gameplay outcome narration invents death or disablement not present in backend facts' }
+  }
+
+  if (/\b(victory|wins?|won|fight is won|battle is won|danger collapses|no standing threat|the fight is over|ends? the fight|ending the fight)\b/i.test(narration) && !victory) {
     return { ok: false, error: 'Gameplay outcome narration invents victory not present in backend facts' }
   }
 
@@ -820,6 +858,9 @@ function buildGameplayOutcomeNarrationRepairPrompt(
     `Encounter status after mechanics: ${input.mechanicalSummary.encounterStatusAfter}`,
     '',
     'Roll card owns structured mechanics; prose should describe visible consequence only.',
+    'Failure and critical failure with 0 action damage must not read as the acting character hitting, grazing, cutting, wounding, clipping, connecting with, or driving into the target.',
+    'Partial success may show a glancing hit only when backend action damage is positive. Death, disablement, victory, or fight-over language is allowed only when backend facts below explicitly support it.',
+    'Never leak private labels or mechanics in public prose: no contextual check ids/labels, DC, check, roll card, backend, mechanical, encounter site, or Bell Bait.',
     'The repaired combat prose must name a specific target, include a concrete location/catalog anchor, show a visible tactic, leave the battlefield visibly changed, and avoid character dialogue.',
     `Public roll-card summary: ${rollSummary}`,
     '',
@@ -843,8 +884,9 @@ function buildGameplayOutcomeNarrationRepairPrompt(
     '- Name a visible consequence: contact, miss, damage, healing, retaliation, protection, movement, death, victory, flee state, or other backend-supported result.',
     '- Name the target/actor, include an anchor such as the encounter title, seeded landmark, route, or catalog monster/place, show the tactic, and state what line/ground/cover/route/position changes.',
     '- No character dialogue; preserve character speech for the character action message.',
-    '- Do not invent HP, XP, rewards, finality, new dice, new checks, or monster abilities.',
-    '- Do not repeat the roll-card numbers unless needed for plain language; the roll card remains the structured mechanics surface.',
+    '- Do not invent HP, XP, rewards, finality, death, disablement, victory, new dice, new checks, or monster abilities.',
+    '- If the action tier is failure or critical failure and action damage is 0, do not narrate the actor hitting, grazing, clipping, cutting, wounding, connecting with, or driving into the target.',
+    '- Do not repeat the roll-card numbers, contextual check ids/labels, DCs, or the words backend, mechanical, roll card, check, encounter site, or Bell Bait.',
     '- Avoid generic filler such as "the room shifts", "pressure remains", or "the encounter is not over".',
   ].join('\n')
 }
@@ -1278,6 +1320,9 @@ export function buildGameplayOutcomeNarrationPrompt(input: GenerateGameplayOutco
     'Narrate only the backend-computed result. Do not assign HP, death, XP, rewards, dice, or mechanics beyond the facts provided.',
     'The roll card is the structured mechanics surface; your prose should describe visible fictional consequence without re-explaining every number.',
     'Combat prose must be kinetic and consequence-first: every success lands, moves, breaks, pins, drives back, reveals leverage, or changes position; every failure costs ground, invites retaliation, separates allies, worsens danger, or forces a hard choice.',
+    'Failure and critical failure with 0 action damage must not read as the acting character hitting, grazing, clipping, cutting, wounding, connecting with, or driving into the target. Partial success may show a glancing hit only when backend action damage is positive.',
+    'Death, disablement, victory, or fight-over language is allowed only when backend facts explicitly report death or a terminal victory state.',
+    'Never leak private labels or mechanics in public prose: no contextual check ids/labels, DC, check, roll card, backend, mechanical, encounter site, or Bell Bait.',
     'Every combat outcome must name a specific target/actor, include a concrete location/catalog anchor from the encounter title, seed, spatial context, or visible landmark, show a visible tactic, and state the changed battlefield state (line, ground, cover, route, position, or exit).',
     'No character dialogue in GM outcome prose; preserve character speech for the character action message.',
     'Avoid passive filler such as "the room shifts", "pressure remains", or restating that the encounter is not over. Name the visible action and the immediate consequence.',

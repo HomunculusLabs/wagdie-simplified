@@ -329,6 +329,11 @@ function activeMonsterIds(encounter: GameplayEncounter): string[] {
     .map((monster) => monster.id)
 }
 
+function hasDefeatedMonsterRoster(encounter: GameplayEncounter): boolean {
+  const monsters = parseGameplayMonsters(encounter.monsterState)
+  return monsters.length > 0 && monsters.every((monster) => monster.status === 'dead' || monster.hp <= 0)
+}
+
 function terminalCompletedAt(status: string, now: Date): string | null | undefined {
   return status === 'active' ? null : nowIso(now)
 }
@@ -665,7 +670,8 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
           lastGameplayTriggerTickId: input.tick.id,
         }),
       })
-      const { encounterProposalGenerationFailure: _encounterProposalGenerationFailure, ...gameplayMetadata } = gameplayState.metadata
+      const gameplayMetadata = { ...gameplayState.metadata }
+      delete gameplayMetadata.encounterProposalGenerationFailure
       gameplayState = await this.gameplayRepository.updateState(input.room, {
         status: 'active_encounter',
         activeEncounterId: encounter.id,
@@ -702,7 +708,68 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
 
     const turnHasStoredMechanics = hasStoredMechanics(turn)
     let messageIds = [...turn.publicMessageIds]
-    if (createdEncounterThisTick) {
+    if (encounter.status !== 'active' && !turnHasStoredMechanics) {
+      return {
+        status: 'skipped',
+        selectedTokenId: null,
+        reason: 'no_active_gameplay_encounter',
+      }
+    }
+    if (encounter.status === 'active' && hasDefeatedMonsterRoster(encounter) && !turnHasStoredMechanics) {
+      encounter = await this.gameplayRepository.updateEncounter(encounter.id, {
+        status: 'victory',
+        completedAt: nowIso(input.now),
+      })
+      gameplayState = await this.gameplayRepository.updateState(input.room, {
+        status: 'aftermath',
+        activeEncounterId: null,
+        metadata: {
+          ...gameplayState.metadata,
+          lastResolvedTurnId: turn.id,
+          lastTerminalEncounterId: encounter.id,
+          lastTerminalEncounterStatus: encounter.status,
+          lastTerminalEncounterAt: nowIso(input.now),
+        },
+      })
+      narrativeState = await this.narrativeRepository.updateState(input.room, {
+        metadata: mergeNarrativeTtrpgMetadata(narrativeState.metadata, {
+          ttrpgPhase: 'aftermath',
+          combatReadiness: 'none',
+          threatLevel: null,
+          requestedGameplayAction: null,
+        }, {
+          source: GAMEPLAY_SOURCE,
+          lastGameplayEncounterId: encounter.id,
+          lastGameplayEncounterStatus: encounter.status,
+          lastGameplayTerminalStatus: encounter.status,
+          lastTickId: input.tick.id,
+        }),
+      })
+      turn = await this.gameplayRepository.storeTurnOutcome(turn.id, {
+        status: 'completed',
+        selectedTokenId: null,
+        action: {},
+        diceResults: [],
+        mechanicalDeltas: { encounterStatusAfter: encounter.status },
+        publicMessageIds: messageIds,
+        outcomeSummary: null,
+        metadata: {
+          ...turn.metadata,
+          gameMasterAgentId,
+          terminalEncounterStatus: encounter.status,
+          terminalizedWithoutAction: true,
+        },
+        completedAt: nowIso(input.now),
+      })
+      return {
+        status: 'completed',
+        selectedTokenId: null,
+        ...(turn.publicMessageIds[0] ? { messageId: turn.publicMessageIds[0] } : {}),
+        messageIds: turn.publicMessageIds,
+        encounterStatusAfter: encounter.status,
+      }
+    }
+    if (createdEncounterThisTick && setupNarration) {
       const setup = await this.repository.appendMessage({
         roomId: input.room.id,
         locationId: input.room.locationId,
@@ -866,7 +933,8 @@ export class DefaultLocationRoomGameplayCoordinator implements LocationRoomGamep
 
         action = generatedValidation.action
         actionOfficialAgentId = generated.officialAgentId
-        const { actionGenerationFailure: _actionGenerationFailure, ...turnMetadata } = turn.metadata
+        const turnMetadata = { ...turn.metadata }
+        delete turnMetadata.actionGenerationFailure
         turn = await this.gameplayRepository.storeTurnOutcome(turn.id, {
           status: 'action_recorded',
           selectedTokenId: speaker.tokenId,

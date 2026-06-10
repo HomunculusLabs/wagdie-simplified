@@ -11,7 +11,6 @@ import {
 } from '../generation/json'
 import {
   acceptedGenerationDiagnostics,
-  buildGenerationResponseFlags,
   repairAttemptedGenerationDiagnostics,
   repairedGenerationDiagnostics,
   repairTransportFailureDiagnostics,
@@ -19,6 +18,10 @@ import {
   type GenerationResponseFlags,
 } from '../generation/diagnostics'
 import { runGenerationRepair } from '../generation/repairRunner'
+import {
+  findPublicNarrativeContractViolation,
+  assertPublicNarrativeContract,
+} from '../generation/publicOutputContract'
 import {
   OFFICIAL_ELIZA_MESSAGE_MAX_BYTES,
   clampOfficialElizaText,
@@ -575,8 +578,6 @@ const GENERIC_NARRATIVE_PHRASES = [
 
 const CONCRETE_NARRATIVE_ANCHOR_PATTERN = /\b(?:altar|arch|ash|bar|beam|bell|bell rope|bench|blade|boat|book|bridge|candle|cart|cask|casks|cave|cellar|chain|chamber|chest|corridor|courtyard|crate|crow|crows|dock|door|doorway|feather|feathers|floor|floorboard|floorboards|forest|fountain|gate|glyph|grate|hall|idol|key|landing|lantern|lanterns|ledge|lever|lock|mark|marks|mask|mirror|passage|path|pit|platform|pool|rafter|rafters|river|road|rookery|roof|rope|route|salt|scratch|scratches|seam|shelf|shrine|shutter|shutters|stair|stairs|statue|stream|symbol|table|taproom|threshold|throne|torch|tower|track|tracks|tree|tunnel|wagon|wall|well|window)\b/i
 const SCENE_FRAME_INTERACTION_PATTERN = /\b(?:choose|choice|option|decision|decide|risk|cost|price|obstacle|block|blocked|blocks|reveal|reveals|revealed|clue|route|path|paths|door|exit|threshold|stair|gate|latch|press|bargain|retreat|withdraw|protect|exploit|follow|confront|intercept|open|test|search|inspect|examine|ask|question|force|move|cross|descend|climb|pull|cut|take|grab|listen|watch|approach|answer|answers|before|now|must)\b/i
-const CHARACTER_DIALOGUE_NARRATION_PATTERN = /\b(?:says?|said|asks?|asked|answers?|answered|replies?|replied|whispers?|whispered|shouts?|shouted|calls?|called|cries?|cried|mutters?|muttered|murmurs?|murmured|tells?|told|speaks?|spoke)\b[\s,:;'"“”‘’.-]{0,24}(?:["“”‘’']|that\b|to\b)|(?:["“”][^"“”]{2,160}["“”]\s*,?\s*)\b(?:says?|said|asks?|asked|answers?|answered|replies?|replied|whispers?|whispered|shouts?|shouted|calls?|called|cries?|cried|mutters?|muttered|murmurs?|murmured)\b/i
-
 function weakGenericNarrativePhrase(value: string): string | null {
   const normalized = value.toLowerCase().replace(/\s+/g, ' ')
   return GENERIC_NARRATIVE_PHRASES.find((phrase) => normalized.includes(phrase)) ?? null
@@ -589,8 +590,18 @@ function validateConcreteNarrativeText(
   const normalized = normalizeGenerationResponseText(value).replace(/\s+/g, ' ').trim()
   if (!normalized) return
 
-  if (CHARACTER_DIALOGUE_NARRATION_PATTERN.test(normalized)) {
+  const sharedViolation = findPublicNarrativeContractViolation(normalized, {
+    label: options.label,
+    allowCharacterDialogue: false,
+  })
+  if (sharedViolation?.category === 'voice_hygiene') {
     throw new Error(`${options.label} must not narrate character dialogue or report what a character says`)
+  }
+  if (sharedViolation?.category === 'publicness') {
+    throw new Error(`${options.label} leaks private ${sharedViolation.reason}`)
+  }
+  if (sharedViolation?.category === 'grounding') {
+    throw new Error(`${options.label} must name a concrete visible object, route, or threat anchor`)
   }
 
   const hasAnchor = CONCRETE_NARRATIVE_ANCHOR_PATTERN.test(normalized)
@@ -1213,7 +1224,9 @@ function catalogFromNarrativeMetadata(metadata: Record<string, unknown> | undefi
   return normalizeLocationAdventureCatalog(metadata.adventureCatalog ?? nestedLocationMetadata?.adventureCatalog)
 }
 
-function groundingCatalogs(input: LocationGroundingInput): ReturnType<typeof normalizeLocationAdventureCatalog>[] {
+type NormalizedAdventureCatalog = NonNullable<ReturnType<typeof normalizeLocationAdventureCatalog>>
+
+function groundingCatalogs(input: LocationGroundingInput): NormalizedAdventureCatalog[] {
   const liveLocationCatalog = normalizeLocationAdventureCatalog(input.location?.metadata?.adventureCatalog)
   const catalogs = input.location
     ? [liveLocationCatalog]
@@ -1233,8 +1246,7 @@ function locationPremiseLines(location: LocationRoomLocationDetails | null | und
     .filter((line): line is string => Boolean(line))
 }
 
-function catalogGroundingSegments(catalog: ReturnType<typeof normalizeLocationAdventureCatalog>): string[] {
-  if (!catalog) return []
+function catalogGroundingSegments(catalog: NormalizedAdventureCatalog): string[] {
   const segments: string[] = []
   const defaults = catalog.defaults
   if (defaults.arcSummary) segments.push(defaults.arcSummary)
@@ -1247,15 +1259,14 @@ function catalogGroundingSegments(catalog: ReturnType<typeof normalizeLocationAd
   segments.push(...defaults.clocks.flatMap((clock) => [clock.label, clock.summary]))
   for (const entries of Object.values(catalog.sections)) {
     for (const entry of entries) {
-      if (entry.revealConditions.length > 0) continue
+      if ((entry.revealConditions ?? []).length > 0) continue
       segments.push([entry.title, entry.summary, entry.tags.join(' ')].filter(Boolean).join(' '))
     }
   }
   return segments.filter(Boolean)
 }
 
-function catalogDefaultLines(catalog: ReturnType<typeof normalizeLocationAdventureCatalog>): string[] {
-  if (!catalog) return []
+function catalogDefaultLines(catalog: NormalizedAdventureCatalog): string[] {
   const defaults = catalog.defaults
   const lines: string[] = []
   if (defaults.openingDecision) {
@@ -1287,7 +1298,7 @@ function buildCanonicalLocationGroundingLines(input: LocationGroundingInput): st
   const catalogDefaults = catalogs.flatMap(catalogDefaultLines).slice(0, 3).join(' | ')
   const catalogAnchors = catalogs
     .flatMap((catalog) => Object.values(catalog.sections).flatMap((entries) => entries))
-    .filter((entry) => entry.revealConditions.length === 0)
+    .filter((entry) => (entry.revealConditions ?? []).length === 0)
     .map((entry) => entry.title ?? entry.summary)
     .slice(0, 4)
     .join(' | ')
@@ -1577,10 +1588,29 @@ function isFailureTier(tier: SceneCheckResolution['roll']['tier']): boolean {
 }
 
 function validateSceneCheckOutcomePublicNarration(
-  tier: SceneCheckResolution['roll']['tier'],
+  input: Pick<GenerateGameMasterSceneCheckOutcomeInput, 'resolution' | 'sceneCheckId'>,
   publicNarration: string
 ): void {
+  const tier = input.resolution.roll.tier
   const normalized = normalizeSceneCheckPublicNarrationForValidation(publicNarration)
+
+  const sharedViolation = findPublicNarrativeContractViolation(normalized, {
+    label: 'Game-master scene-check outcome response publicNarration',
+    contextualCheckId: input.sceneCheckId,
+    contextualCheckLabel: input.resolution.roll.checkLabel,
+    contextualCheckSource: input.resolution.roll.checkSource,
+    allowCharacterDialogue: false,
+    disallowUnsafeMechanics: true,
+  })
+  if (sharedViolation?.category === 'publicness') {
+    throw new Error(`Game-master scene-check outcome response publicNarration leaks private ${sharedViolation.reason}`)
+  }
+  if (sharedViolation?.category === 'voice_hygiene') {
+    throw new Error('Game-master scene-check outcome response publicNarration must not narrate character dialogue or report what a character says')
+  }
+  if (sharedViolation?.category === 'fact_alignment') {
+    throw new Error('Game-master scene-check outcome response publicNarration contains unsafe mechanics, reward, fatality, finality, wallet, or private chain language')
+  }
 
   if (SCENE_CHECK_OUTCOME_UNSAFE_PATTERN.test(normalized)) {
     throw new Error('Game-master scene-check outcome response publicNarration contains unsafe mechanics, reward, fatality, finality, wallet, or private chain language')
@@ -1699,7 +1729,7 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
     }
   }
   validateKnownOffLocationDrift(publicNarration, input, 'Game-master scene-check outcome response publicNarration')
-  validateSceneCheckOutcomePublicNarration(input.resolution.roll.tier, publicNarration)
+  validateSceneCheckOutcomePublicNarration(input, publicNarration)
   if (hasDuplicateRecentOutcomeOpening(publicNarration, input.recentMessages)) {
     throw new Error('Game-master scene-check outcome response reuses a recent outcome opening')
   }
@@ -1748,24 +1778,29 @@ export function normalizeGameMasterSceneCheckOutcomeResponse(
 function buildFallbackSceneCheckPublicNarration(input: GenerateGameMasterSceneCheckOutcomeInput): string {
   const roll = input.resolution.roll
   const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
-  const checkLabel = roll.checkLabel.toLowerCase()
-  const outcome = roll.tier.replace(/_/g, ' ')
   const focus = fallbackSceneCheckFocus(input)
-  const rollFacts = `${actor}'s ${checkLabel} check resolves as ${outcome} (${roll.total} vs DC ${roll.dc})`
 
   if (roll.tier === 'critical_success') {
-    return `${rollFacts}. The ${focus} gives up more than the room meant to show: the salt scratches line up with a cold draft from the cellar stair, and a black feather caught in the bell rope points toward the rafters. The group can take the stair before it settles shut, or pull the bell and force whatever is watching above to answer first.`
+    return `${actor}'s careful push breaks the room open in their favor. The ${focus} gives up more than the room meant to show: the salt scratches line up with a cold draft from the cellar stair, and a black feather caught in the bell rope points toward the rafters. The group can take the stair before it settles shut, or pull the bell and force whatever is watching above to answer first.`
   }
   if (roll.tier === 'success') {
-    return `${rollFacts}. The ${focus} resolves into a usable lead: salt has been dragged from the bar toward the cellar stair, and the bell rope trembles only when the rafter shadows shift. The next choice is concrete—follow the salt trail down, or bait the thing in the rafters while the stair remains open.`
+    return `${actor}'s careful search finds a usable lead. The ${focus} resolves into salt dragged from the bar toward the cellar stair, and the bell rope trembles only when the rafter shadows shift. The next choice is concrete—follow the salt trail down, or bait the thing in the rafters while the stair remains open.`
   }
   if (roll.tier === 'partial_success') {
-    return `${rollFacts}. The ${focus} reveals the right direction, but the Crow's Den takes payment for it: the cellar stair opens wider while the bell rope starts to swing on its own. The group has the clue, but waiting lets the rafter-shapes gather above the bar.`
+    return `${actor}'s careful read reveals the right direction, but the Crow's Den takes payment for it: the cellar stair opens wider while the bell rope starts to swing on its own. The group has the clue, but waiting lets the rafter-shapes gather above the bar.`
   }
   if (roll.tier === 'failure') {
-    return `${rollFacts}. The ${focus} gives a false read, and the tavern punishes the mistake: the cellar stair slams down one step, feathers scatter across the bar, and the bell rope twists toward the character who checked it. The easy route is blocked; the next choice is whether to force the stair or confront the rafters.`
+    return `${actor}'s careful read gives a false lead, and the tavern punishes the mistake: the cellar stair slams down one step, feathers scatter across the bar, and the bell rope twists toward ${actor}. The easy route is blocked; the next choice is whether to force the stair or confront the rafters.`
   }
-  return `${rollFacts}. The ${focus} turns openly hostile: the bell rope snaps taut, salt spills into a warning circle, and something heavy drags itself across the rafters above the cellar door. The next choice is ugly: every harder route now points through immediate danger, and either the stair or the watcher above will answer immediately.`
+  return `${actor}'s risky move turns openly hostile: the bell rope snaps taut, salt spills into a warning circle, and something heavy drags itself across the rafters above the cellar door. The next choice is ugly: every harder route now points through immediate danger, and either the stair or the watcher above will answer immediately.`
+}
+
+function fallbackSceneCheckContractSafeNarration(input: GenerateGameMasterSceneCheckOutcomeInput, limit: number): string {
+  const successTier = input.resolution.roll.tier === 'critical_success' || input.resolution.roll.tier === 'success'
+  const fallback = successTier
+    ? 'The cellar stair opens, the salt trail reveals a usable route, and the group gains a clearer choice before the rafters answer.'
+    : 'The bell rope jerks, the cellar stair opens with a visible cost, and the next choice narrows around the moving shadows.'
+  return trimToLimit(fallback, limit) ?? fallback
 }
 
 function fallbackSceneCheckFocus(input: GenerateGameMasterSceneCheckOutcomeInput): string {
@@ -1773,7 +1808,7 @@ function fallbackSceneCheckFocus(input: GenerateGameMasterSceneCheckOutcomeInput
   const match = action.match(/\b(?:door|stair|stairs|route|path|passage|arch|shelf|latch|wall|marks?|scratches|bell|table|bar|tunnel|grate|window|threshold|cellar|landing|rafter|rafters|rookery|crow|crows|feather|feathers|taproom|cask|casks|shutter|shutters|lantern|lanterns|floorboard|floorboards|seam|salt|ash)\b/i)
   return match?.[0]
     ? match[0].replace(/s$/, '')
-    : input.resolution.roll.checkLabel.toLowerCase()
+    : 'visible clue'
 }
 
 function fallbackSceneCheckSpatialContext(input: GenerateGameMasterSceneCheckOutcomeInput): LocationRoomSpatialContext {
@@ -1856,10 +1891,25 @@ export function buildFallbackGameMasterSceneCheckOutcome(
   const actor = input.resolution.actorName ?? `#${input.resolution.actorTokenId}`
   const outcome = roll.tier.replace(/_/g, ' ')
   const adventurePatch = fallbackSceneCheckAdventurePatch(input)
-  const publicNarration = trimToLimit(
+  let publicNarration = trimToLimit(
     buildFallbackSceneCheckPublicNarration(input),
     limits.publicNarrationMaxLength
-  ) ?? 'The scene check resolves, and the bell rope or cellar stair changes the next choice.'
+  ) ?? 'The bell rope and cellar stair change the next choice with a visible cost.'
+  try {
+    assertPublicNarrativeContract(publicNarration, {
+      label: 'Fallback scene-check outcome publicNarration',
+      contextualCheckId: input.sceneCheckId,
+      contextualCheckLabel: input.resolution.roll.checkLabel,
+      contextualCheckSource: input.resolution.roll.checkSource,
+      allowCharacterDialogue: false,
+      requireConcreteGrounding: true,
+      requireNarrativeMotion: true,
+      requirePayoff: input.resolution.roll.tier === 'critical_success' || input.resolution.roll.tier === 'success' ? 'success' : 'consequence',
+      disallowUnsafeMechanics: true,
+    })
+  } catch {
+    publicNarration = fallbackSceneCheckContractSafeNarration(input, limits.publicNarrationMaxLength)
+  }
   const rawEscalation = roll.tier === 'failure' || roll.tier === 'critical_failure'
     ? {
       decision: 'danger',

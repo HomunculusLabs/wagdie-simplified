@@ -601,6 +601,128 @@ describe('location room gameplay coordinator', () => {
     expect(gmGenerator.generateOutcomeNarration).not.toHaveBeenCalled()
   })
 
+  it('terminalizes an active encounter with no living monsters before action generation', async () => {
+    const { coordinator, gameplayRepository, roomRepository, narrativeRepository, gmGenerator, actionGenerator } = makeCoordinator()
+    gameplayRepository.state.status = 'active_encounter'
+    gameplayRepository.state.activeEncounterId = 'encounter-1'
+    gameplayRepository.state.characters = {
+      '1': { tokenId: 1, name: 'Ash', hp: 10, maxHp: 10, status: 'alive', xp: 0, temporaryBoons: [], wounds: [] },
+      '2': { tokenId: 2, name: 'Bone', hp: 10, maxHp: 10, status: 'alive', xp: 0, temporaryBoons: [], wounds: [] },
+    }
+    gameplayRepository.encounters.push({
+      id: 'encounter-1',
+      roomId: 'room-1',
+      locationId: 'loc-1',
+      status: 'active',
+      difficulty: 'normal',
+      roundNumber: 3,
+      publicTitle: 'Bell Maw',
+      publicSummary: 'A maw collapses.',
+      monsterState: [{ id: 'monster-1', name: 'Bell Maw', archetype: 'bell horror', hp: 0, maxHp: 2, ac: 10, attackBonus: 2, damageFormula: '1d4', status: 'dead' }],
+      rewardPlan: {},
+      mechanics: {},
+      metadata: {},
+      lastError: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      completedAt: null,
+    })
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+    })
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      selectedTokenId: null,
+      messageIds: [],
+      encounterStatusAfter: 'victory',
+    })
+    expect(gameplayRepository.encounters[0]).toMatchObject({ status: 'victory', completedAt: now.toISOString() })
+    expect(gameplayRepository.state).toMatchObject({ status: 'aftermath', activeEncounterId: null })
+    expect(gameplayRepository.state.metadata).toEqual(expect.objectContaining({
+      lastTerminalEncounterId: 'encounter-1',
+      lastTerminalEncounterStatus: 'victory',
+    }))
+    expect(gameplayRepository.turns[0]).toMatchObject({
+      status: 'completed',
+      selectedTokenId: null,
+      action: {},
+      diceResults: [],
+      mechanicalDeltas: { encounterStatusAfter: 'victory' },
+      metadata: expect.objectContaining({ terminalizedWithoutAction: true }),
+    })
+    expect(narrativeRepository.updateState).toHaveBeenCalledWith(expect.objectContaining({ id: 'room-1' }), expect.objectContaining({
+      metadata: expect.objectContaining({
+        ttrpgPhase: 'aftermath',
+        combatReadiness: 'none',
+        requestedGameplayAction: null,
+        lastGameplayTerminalStatus: 'victory',
+      }),
+    }))
+    expect(roomRepository.messages).toHaveLength(0)
+    expect(actionGenerator.generateAction).not.toHaveBeenCalled()
+    expect(gmGenerator.generateOutcomeNarration).not.toHaveBeenCalled()
+  })
+
+  it('does not generate a new action for a non-active encounter without stored mechanics', async () => {
+    const { coordinator, gameplayRepository, actionGenerator, gmGenerator } = makeCoordinator()
+    gameplayRepository.turns.push({
+      id: 'turn-1',
+      roomId: 'room-1',
+      locationId: 'loc-1',
+      tickId: 'tick-1',
+      encounterId: 'encounter-1',
+      status: 'planned',
+      selectedTokenId: null,
+      action: {},
+      diceResults: [],
+      mechanicalDeltas: {},
+      publicMessageIds: [],
+      outcomeSummary: null,
+      metadata: {},
+      lastError: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      completedAt: null,
+    })
+    gameplayRepository.encounters.push({
+      id: 'encounter-1',
+      roomId: 'room-1',
+      locationId: 'loc-1',
+      status: 'victory',
+      difficulty: 'normal',
+      roundNumber: 3,
+      publicTitle: 'Bell Maw',
+      publicSummary: 'A maw collapses.',
+      monsterState: [{ id: 'monster-1', name: 'Bell Maw', archetype: 'bell horror', hp: 0, maxHp: 2, ac: 10, attackBonus: 2, damageFormula: '1d4', status: 'dead' }],
+      rewardPlan: {},
+      mechanics: {},
+      metadata: {},
+      lastError: null,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      completedAt: now.toISOString(),
+    })
+
+    const result = await coordinator.processTurn({
+      room: room(),
+      tick: tick(),
+      participants: [participant(1, 'Ash'), participant(2, 'Bone')],
+      recentMessages: [],
+      now,
+    })
+
+    expect(result).toEqual({ status: 'skipped', selectedTokenId: null, reason: 'no_active_gameplay_encounter' })
+    expect(actionGenerator.generateAction).not.toHaveBeenCalled()
+    expect(gmGenerator.generateOutcomeNarration).not.toHaveBeenCalled()
+    expect(gameplayRepository.turns[0]).toMatchObject({ status: 'planned', action: {} })
+  })
+
   it('persists encounter proposal diagnostics before encounter creation fails', async () => {
     const { coordinator, gameplayRepository, roomRepository, gmGenerator } = makeCoordinator()
     const failure = new GameMasterGameplayEncounterProposalGenerationError('proposal repair failed', {
@@ -726,7 +848,8 @@ describe('location room gameplay coordinator', () => {
         characterState: expect.objectContaining({ hp: 4, maxHp: 14, sourceStats: expect.any(Object) }),
       }))
     } finally {
-      ;(elizaConfig.locationRooms.gameplay.stats as { enabled: boolean }).enabled = originalStatsEnabled
+      const statsConfig = elizaConfig.locationRooms.gameplay.stats as { enabled: boolean }
+      statsConfig.enabled = originalStatsEnabled
     }
   })
 
@@ -1375,7 +1498,8 @@ describe('location room gameplay coordinator', () => {
         rewardClaim: expect.objectContaining({ id: 'claim-1', performanceScore: expect.any(Number) }),
       })
     } finally {
-      ;(elizaConfig.locationRooms.gameplay.deathRewards as { enabled: boolean }).enabled = originalEnabled
+      const deathRewardsConfig = elizaConfig.locationRooms.gameplay.deathRewards as { enabled: boolean }
+      deathRewardsConfig.enabled = originalEnabled
     }
   })
 })

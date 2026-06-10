@@ -453,11 +453,21 @@ export type LocationRoomGameplayRunSummary = {
   stopReason?: string | null
 }
 
+export type LocationRoomTickPublicOutputOutcome =
+  | 'public_message_appended'
+  | 'intentional_no_output'
+  | 'blocked_waiting_for_participants'
+  | 'terminal_run_closed'
+  | 'failed_retry'
+  | 'failed_terminal'
+
 export type ProcessLocationRoomTickResult = {
   tickId: string
   gameplayRunId?: string | null
   status: Extract<LocationRoomTickStatus, 'completed' | 'skipped' | 'failed' | 'dead'>
   selectedTokenId: number | null
+  /** Explicit lifecycle/public-output classification for this tick. */
+  publicOutputOutcome?: LocationRoomTickPublicOutputOutcome
   /** Final public message appended for this tick. */
   messageId?: string
   /** Scene-check subflow public message ids when present, in append/order order. */

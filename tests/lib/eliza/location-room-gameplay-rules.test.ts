@@ -367,6 +367,33 @@ describe('location room gameplay foundation rules', () => {
     expect(damage).toMatchObject({ amount: 8, roll: { formula: '2d6', total: 8 } })
   })
 
+  it('keeps failure damage at zero and partial success damage positive', () => {
+    expect(calculateActionDamage({ actionType: 'attack' }, 'critical_failure', () => 0.999))
+      .toMatchObject({ amount: 0, roll: null })
+    expect(calculateActionDamage({ actionType: 'attack' }, 'failure', () => 0.999))
+      .toMatchObject({ amount: 0, roll: null })
+    expect(calculateActionDamage({ actionType: 'attack' }, 'partial_success', () => 0))
+      .toMatchObject({ amount: 1, roll: { formula: '1d6', total: 1 } })
+  })
+
+  it('marks the encounter victorious when backend damage kills every monster', () => {
+    const result = resolveGameplayTurnMechanics({
+      actorTokenId: 1,
+      action: { actionType: 'attack', target: { kind: 'monster', id: 'monster-1' }, publicSpeech: 'I press the attack.', metadata: {} },
+      encounter: { ...testEncounter, monsterState: [{ ...testEncounter.monsterState[0], hp: 1, maxHp: 1 }] },
+      characters: {
+        '1': gameplayCharacter(),
+        '2': gameplayCharacter({ tokenId: 2, name: 'Bone' }),
+      },
+      rng: () => 0.999,
+    })
+
+    expect(result.mechanicalDeltas.monstersAfter).toEqual([
+      expect.objectContaining({ id: 'monster-1', hp: 0, status: 'dead' }),
+    ])
+    expect(result.mechanicalDeltas.encounterStatusAfter).toBe('victory')
+  })
+
   it('keeps legacy fixed action modifiers when stats are disabled', () => {
     const roll = resolveActionRoll(
       { actionType: 'attack', target: { kind: 'monster', id: 'monster-1' } },

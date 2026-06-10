@@ -1,10 +1,17 @@
 #!/usr/bin/env ts-node
 
+import { readFileSync } from 'fs'
+
 import {
   narrativeQualityAttributionMetrics,
   scoreNarrativeQuality,
   type NarrativeQualityMessage,
 } from './location-room-narrative-quality'
+import {
+  evaluateLocationRoomStallDiagnostics,
+  locationRoomStallWarnings,
+} from '../lib/eliza/locationRooms/service/stallDiagnostics'
+import type { LocationRoomRouteDiagnostic } from '../lib/eliza/locationRooms/service/routeDiagnostics'
 
 type PublicMessage = NarrativeQualityMessage
 
@@ -36,10 +43,11 @@ type Config = {
   bearerToken: string | null
   minScore: number
   failOnWarnings: boolean
+  diagnosticsFile: string | null
 }
 
 function usage(): string {
-  return `Location-room narrative evaluation\n\nUsage:\n  bun run narrative:harness:live -- --location 11 --base-url http://localhost:3000\n  NARRATIVE_EVAL_TRIGGER_TICKS=10 NARRATIVE_EVAL_COOKIE='...' bun run narrative:harness:live -- --location 11\n\nOptions/env:\n  --base-url <url>              Defaults to NARRATIVE_EVAL_BASE_URL, WAGDIE_API_BASE_URL, or http://localhost:3000\n  --location <id>               Defaults to NARRATIVE_EVAL_LOCATION_ID or 11\n  --page-size <n>               Defaults to NARRATIVE_EVAL_PAGE_SIZE or 300\n  --trigger-ticks <n>           POST this many manual ticks before scoring. Defaults to NARRATIVE_EVAL_TRIGGER_TICKS or 0\n  --intent <auto|story|combat>  Manual tick intent. Defaults to story\n  --min-score <n>               Minimum GNQS warning threshold. Defaults to NARRATIVE_EVAL_MIN_SCORE or 75\n  --fail-on-warnings            Exit nonzero when quality warnings or score warnings are present\n  NARRATIVE_EVAL_COOKIE         Auth cookie for manual tick POSTs\n  NARRATIVE_EVAL_BEARER_TOKEN   Optional bearer token for manual tick POSTs\n`
+  return `Location-room narrative evaluation\n\nUsage:\n  bun run narrative:harness:live -- --location 11 --base-url http://localhost:3000\n  NARRATIVE_EVAL_TRIGGER_TICKS=10 NARRATIVE_EVAL_COOKIE='...' bun run narrative:harness:live -- --location 11\n\nOptions/env:\n  --base-url <url>              Defaults to NARRATIVE_EVAL_BASE_URL, WAGDIE_API_BASE_URL, or http://localhost:3000\n  --location <id>               Defaults to NARRATIVE_EVAL_LOCATION_ID or 11\n  --page-size <n>               Defaults to NARRATIVE_EVAL_PAGE_SIZE or 300\n  --trigger-ticks <n>           POST this many manual ticks before scoring. Defaults to NARRATIVE_EVAL_TRIGGER_TICKS or 0\n  --intent <auto|story|combat>  Manual tick intent. Defaults to story\n  --min-score <n>               Minimum GNQS warning threshold. Defaults to NARRATIVE_EVAL_MIN_SCORE or 75\n  --fail-on-warnings            Exit nonzero when quality, stall, or score warnings are present\n  --diagnostics-file <path>      Optional JSON array of route diagnostics/events captured from structured logs\n  NARRATIVE_EVAL_COOKIE         Auth cookie for manual tick POSTs\n  NARRATIVE_EVAL_BEARER_TOKEN   Optional bearer token for manual tick POSTs\n`
 }
 
 function parseConfig(): Config {
@@ -69,6 +77,7 @@ function parseConfig(): Config {
     bearerToken: process.env.NARRATIVE_EVAL_BEARER_TOKEN ?? null,
     minScore: Number(valueFor('--min-score') ?? process.env.NARRATIVE_EVAL_MIN_SCORE ?? 75),
     failOnWarnings: args.includes('--fail-on-warnings') || process.env.NARRATIVE_EVAL_FAIL_ON_WARNINGS === 'true',
+    diagnosticsFile: valueFor('--diagnostics-file') ?? process.env.NARRATIVE_EVAL_DIAGNOSTICS_FILE ?? null,
   }
 }
 
@@ -93,7 +102,15 @@ async function main(): Promise<void> {
     ? [`GNQS below minimum (${quality.gmNarrativeQualityScore} < ${config.minScore})`]
     : []
   const escalationWarnings = escalationObservabilityWarnings(snapshot, quality.rawMetrics)
-  const warnings = [...quality.warnings, ...escalationWarnings]
+  const routeDiagnostics = config.diagnosticsFile ? readRouteDiagnosticsFile(config.diagnosticsFile) : []
+  const stallFindings = evaluateLocationRoomStallDiagnostics({
+    messages,
+    routeDiagnostics,
+    gameplay: snapshot.gameplay,
+    terminalThreatNames: [snapshot.gameplay?.encounterTitle].filter((value): value is string => Boolean(value)),
+  })
+  const stallWarnings = locationRoomStallWarnings(stallFindings)
+  const warnings = [...quality.warnings, ...escalationWarnings, ...stallWarnings]
   const attributionMetrics = narrativeQualityAttributionMetrics(quality.rawMetrics)
 
   console.log(JSON.stringify({
@@ -109,6 +126,8 @@ async function main(): Promise<void> {
     attributionMetrics,
     ttrpg: snapshot.ttrpg,
     gameplay: snapshot.gameplay,
+    routeDiagnosticsLoaded: routeDiagnostics.length,
+    stallFindings,
     warnings,
     scoreWarnings,
   }, null, 2))
@@ -116,6 +135,30 @@ async function main(): Promise<void> {
   if (config.failOnWarnings && (warnings.length > 0 || scoreWarnings.length > 0)) {
     process.exitCode = 1
   }
+}
+
+function readRouteDiagnosticsFile(path: string): LocationRoomRouteDiagnostic[] {
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown
+  const values = Array.isArray(parsed) ? parsed : [parsed]
+  return values
+    .map((value) => {
+      if (!value || typeof value !== 'object') return null
+      const record = value as Record<string, unknown>
+      const diagnostic = record.diagnostic && typeof record.diagnostic === 'object'
+        ? record.diagnostic
+        : record
+      return isRouteDiagnosticLike(diagnostic) ? diagnostic as LocationRoomRouteDiagnostic : null
+    })
+    .filter((diagnostic): diagnostic is LocationRoomRouteDiagnostic => Boolean(diagnostic))
+}
+
+function isRouteDiagnosticLike(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  return typeof record.tickId === 'string' &&
+    typeof record.roomId === 'string' &&
+    typeof record.locationId === 'string' &&
+    typeof record.selectedRoute === 'string'
 }
 
 async function triggerTick(config: Config, tickNumber: number): Promise<void> {

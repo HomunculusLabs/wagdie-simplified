@@ -37,8 +37,8 @@ jest.mock('@/lib/eliza/characterResolver', () => ({
 }))
 
 import {
-  GameMasterBeatGenerationError,
   OfficialGameMasterBeatGenerator,
+  buildFallbackGameMasterSceneCheckOutcome,
   buildGameMasterBeatProgressionContext,
   buildGameMasterBeatPrompt,
   buildGameMasterSceneCheckOutcomePrompt,
@@ -1542,6 +1542,12 @@ describe('game-master beat generator helpers', () => {
     expect(valid.declaredActionSource).toBe('structured_model')
     expect(valid.sceneCheckProposalError).toBeNull()
 
+    expect(() => normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
+      publicSpeech: 'I rolled a d20 and make a perception check against the ash marks.',
+      declaredAction: { summary: 'Search the ash marks before the room notices.', actionIntent: 'search' },
+      sceneCheckProposal: null,
+    }), { sceneCheckContext })).toThrow('public narrative contract')
+
     const invalid = normalizeOfficialLocationRoomTurnResponse(JSON.stringify({
       publicSpeech: 'I force the ash to answer.',
       declaredAction: { summary: 'Force the ash to answer.', actionIntent: 'force' },
@@ -1720,7 +1726,7 @@ describe('game-master beat generator helpers', () => {
     expect(prompt).toContain('For partial_success/failure/critical_failure')
     expect(prompt).toContain('publicNarration: concrete object/route/threat')
     expect(prompt).toContain('do not invent dice, DC, HP, damage, rewards, death, finality')
-    expect(prompt).toContain('\"escalation\"')
+    expect(prompt).toContain('"escalation"')
     expect(prompt).toContain('combat_ready means readiness only')
     expect(prompt).toContain('ids only in catalogEntryIds, not public prose')
 
@@ -1858,6 +1864,22 @@ describe('game-master beat generator helpers', () => {
       openThreads: [],
     }), outcomeInput, { gameMasterAgentId: 'gm-1', limits })).toThrow('openThreads')
 
+    for (const publicNarration of [
+      'The Bell Bait label flashes over the ash-marked stair as the visible cost blocks the safer route, and Ash must choose whether to force the stair, retreat, or risk the narrower path before the watcher moves.',
+      'The ash-marked stair exposes scene_check:beat-1 as the visible cost blocks the safer route, and Ash must choose whether to force the stair, retreat, or risk the narrower path before the watcher moves.',
+      'The ash-marked stair exposes a DC 13 result as the visible cost blocks the safer route, and Ash must choose whether to force the stair, retreat, or risk the narrower path before the watcher moves.',
+    ]) {
+      expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
+        publicNarration,
+        stateSummary: 'The room changed after the roll.',
+        currentObjective: 'Answer the changed room.',
+        openThreads: ['What changes next?'],
+        adventurePatch: {
+          consequence: { summary: 'The failed check blocks the safer stair route.', status: 'complication', tier: resolution.roll.tier },
+        },
+      }), outcomeInput, { gameMasterAgentId: 'gm-1', limits: { ...limits, publicNarrationMaxLength: 800 } })).toThrow(/publicNarration leaks private/)
+    }
+
     const criticalSuccessInput = {
       ...outcomeInput,
       resolution: {
@@ -1921,6 +1943,31 @@ describe('game-master beat generator helpers', () => {
     expect(recoveredFailurePatch.metadata.gmGeneration?.recoveries).toEqual(expect.arrayContaining([
       'scene_check_adventure_patch_defaulted_from_model_prose',
     ]))
+  })
+
+  it('builds fact-aware scene-check fallback prose without public mechanics leakage', () => {
+    const fallback = buildFallbackGameMasterSceneCheckOutcome(sceneCheckOutcomeInput('failure'), 'gm-1')
+
+    expect(fallback.publicNarration).not.toMatch(/\b(?:DC|check|roll card|backend|mechanical)\b/i)
+    expect(fallback.publicNarration).toMatch(/\b(?:blocked|cost|danger|threat|risk|price|setback)\b/i)
+    expect(fallback.metadata.fallbackUsed).toBe(true)
+    expect(fallback.adventurePatch.lastOutcome).toEqual(expect.objectContaining({
+      kind: 'scene_check',
+      tier: 'failure',
+    }))
+  })
+
+  it('keeps scene-check fallback prose safe when model facts contain internal labels', () => {
+    const input = sceneCheckOutcomeInput('failure')
+    input.resolution.actionIntent = 'scene_check_bell_bait_dc_13'
+    input.resolution.roll.checkLabel = 'Bell Bait DC Check'
+    input.resolution.roll.contextualCheckId = 'bell-bait-dc-check'
+
+    const fallback = buildFallbackGameMasterSceneCheckOutcome(input, 'gm-1')
+
+    expect(fallback.publicNarration).not.toMatch(/scene[_ -]?check|bell bait|\bDC\b|\bcheck\b|bell-bait/i)
+    expect(fallback.publicNarration).toMatch(/\b(?:cost|danger|threat|risk|price|setback|choice)\b/i)
+    expect(fallback.metadata.fallbackUsed).toBe(true)
   })
 
   it('rejects known unsupported off-location drift anchors when canonical grounding is present', () => {
@@ -2020,8 +2067,8 @@ describe('game-master beat generator helpers', () => {
     const failureInput = sceneCheckOutcomeInput('failure')
 
     expect(() => normalizeGameMasterSceneCheckOutcomeResponse(JSON.stringify({
-      publicNarration: 'The roll result changes the room.',
-      stateSummary: 'The room changed after the roll.',
+      publicNarration: 'The room changes.',
+      stateSummary: 'The room changed.',
       currentObjective: 'Answer the changed room.',
       openThreads: ['What changes next?'],
       adventurePatch: {

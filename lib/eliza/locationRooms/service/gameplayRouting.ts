@@ -38,6 +38,20 @@ export function terminalEncounterRunStatus(status: string): 'completed' | 'stopp
   return null
 }
 
+export async function resolveGameplayRunContinuationContext(params: {
+  gameplayRepository: LocationRoomGameplayRepository
+  room: LocationRoom
+}): Promise<{ state: GameplayRoomState | null; encounter: GameplayEncounter | null }> {
+  const state = await params.gameplayRepository.findStateByRoomId(params.room.id)
+  if (state?.activeEncounterId) {
+    const stateEncounter = await params.gameplayRepository.findEncounterById(state.activeEncounterId)
+    if (stateEncounter) return { state, encounter: stateEncounter }
+  }
+
+  const activeEncounter = await params.gameplayRepository.findActiveEncounterByRoomId(params.room.id)
+  return { state, encounter: activeEncounter }
+}
+
 export function gameplayRunStartedByActor(triggerType: LocationRoomTick['triggerType']): GameplayRun['startedByActor'] {
   if (triggerType === 'scheduled') return 'scheduler'
   return triggerType

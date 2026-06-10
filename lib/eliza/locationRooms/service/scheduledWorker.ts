@@ -23,6 +23,7 @@ import { isActiveTickConstraintError, MIN_ELIGIBLE_PARTICIPANTS, routeSafeError 
 import {
   hasMinimumPlayableGameplayParticipants,
   markTerminalEncounterAftermath,
+  resolveGameplayRunContinuationContext,
   terminalEncounterRunStatus,
 } from './gameplayRouting'
 
@@ -263,21 +264,10 @@ export class LocationRoomScheduledWorker {
         continue
       }
 
-      const participants = await this.membership.listEligibleParticipantsByLocation(room.locationId)
-      if (participants.length < MIN_ELIGIBLE_PARTICIPANTS) {
-        await this.gameplayRepository.markRunStopped(currentRun.id, {
-          stopReason: 'insufficient_participants',
-          completedTurns,
-          completedAt: now.toISOString(),
-        })
-        counters.stopped += 1
-        continue
-      }
-
-      const state = await this.gameplayRepository.findStateByRoomId(room.id)
-      const activeEncounter = state?.activeEncounterId
-        ? await this.gameplayRepository.findEncounterById(state.activeEncounterId)
-        : await this.gameplayRepository.findActiveEncounterByRoomId(room.id)
+      const { state, encounter: activeEncounter } = await resolveGameplayRunContinuationContext({
+        gameplayRepository: this.gameplayRepository,
+        room,
+      })
       const terminalRunStatus = activeEncounter ? terminalEncounterRunStatus(activeEncounter.status) : null
       if (!activeEncounter) {
         await this.gameplayRepository.markRunStopped(currentRun.id, {
@@ -302,6 +292,17 @@ export class LocationRoomScheduledWorker {
         await markTerminalEncounterAftermath({ gameplayRepository: this.gameplayRepository, narrativeRepository: this.narrativeRepository, room, encounter: activeEncounter, now, source: 'active-run-worker-terminal' })
         await this.gameplayRepository.markRunStopped(currentRun.id, {
           stopReason: `encounter_${activeEncounter.status}`,
+          completedTurns,
+          completedAt: now.toISOString(),
+        })
+        counters.stopped += 1
+        continue
+      }
+
+      const participants = await this.membership.listEligibleParticipantsByLocation(room.locationId)
+      if (participants.length < MIN_ELIGIBLE_PARTICIPANTS) {
+        await this.gameplayRepository.markRunStopped(currentRun.id, {
+          stopReason: 'insufficient_participants',
           completedTurns,
           completedAt: now.toISOString(),
         })

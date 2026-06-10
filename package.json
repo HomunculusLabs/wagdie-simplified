@@ -10,6 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
     "seed": "cd scripts && npx ts-node seed-database.ts",
@@ -30,6 +31,8 @@
     "elizaos:routes:validate": "npx ts-node --project scripts/tsconfig.json scripts/elizaos-route-parity.ts",
     "narrative:harness:test": "jest tests/lib/eliza/location-room-narrative-harness.test.ts --runInBand",
     "narrative:harness:live": "npx ts-node --project scripts/tsconfig.json scripts/location-room-narrative-eval.ts",
+    "narrative:eval": "npx ts-node --project scripts/tsconfig.json scripts/location-room-narrative-eval.ts",
+    "gate:location-rooms": "bun run test -- --runTestsByPath tests/api/eliza/location-room-service.test.ts tests/lib/eliza/location-room-gameplay-rules.test.ts tests/lib/eliza/location-room-gameplay-coordinator.test.ts tests/lib/eliza/location-room-gameplay-generators.test.ts tests/lib/eliza/location-room-game-master-generator.test.ts tests/lib/eliza/location-room-public-output-contract.test.ts tests/lib/eliza/location-room-narrative-memory.test.ts tests/lib/eliza/location-room-stall-diagnostics.test.ts --runInBand && bun run narrative:eval -- --help",
     "campaign:render-location": "npx ts-node --project scripts/tsconfig.json scripts/campaign/render-location-catalog.ts",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build"

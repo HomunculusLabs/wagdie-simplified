@@ -804,6 +804,86 @@ describe('location room gameplay generators', () => {
     expect(result.action.metadata).not.toHaveProperty('fallbackFromOfficialError')
   })
 
+  it('repairs public-contract-violating Official character actions before accepting public-safe speech', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          actionType: 'attack',
+          target: { kind: 'monster', id: 'monster-1' },
+          publicSpeech: 'I rolled a d20 and make an attack check against Maw.',
+        }),
+        message: null,
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          actionType: 'attack',
+          target: { kind: 'monster', id: 'monster-1' },
+          publicSpeech: 'I drive Maw back from the bell rope before it breaks our line.',
+        }),
+        message: null,
+      })
+
+    const generator = new OfficialGameplayActionGenerator({ startAgent: jest.fn() } as never)
+    const result = await generator.generateAction(makeGameplayActionInput())
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    const repairRequest = mockedSendAndCollectOfficialEphemeralSessionMessage.mock.calls[1][1]
+    expect(repairRequest.message.content).toContain('Safe error category: validation_error')
+    expect(repairRequest.message.content).toContain('public narrative contract')
+    expect(result.action).toMatchObject({
+      actionType: 'attack',
+      target: { kind: 'monster', id: 'monster-1' },
+      publicSpeech: 'I drive Maw back from the bell rope before it breaks our line.',
+      metadata: {
+        semanticRepairAttempted: true,
+        repairedFromSemanticFailure: true,
+        initialErrorCategory: 'validation_error',
+      },
+    })
+  })
+
+  it('repairs repeated Official character action openings before accepting distinct speech', async () => {
+    mockedSendAndCollectOfficialEphemeralSessionMessage
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          actionType: 'attack',
+          target: { kind: 'monster', id: 'monster-1' },
+          publicSpeech: 'I strike the Maw before it breaks our line.',
+        }),
+        message: null,
+      })
+      .mockResolvedValueOnce({
+        text: JSON.stringify({
+          actionType: 'attack',
+          target: { kind: 'monster', id: 'monster-1' },
+          publicSpeech: 'I hook around the bell rope and force Maw back.',
+        }),
+        message: null,
+      })
+
+    const input = {
+      ...makeGameplayActionInput(),
+      recentMessages: [{ tokenId: 7, authorName: 'Ash', content: 'I strike the Maw before it breaks our line.' }],
+    } as never
+    const generator = new OfficialGameplayActionGenerator({ startAgent: jest.fn() } as never)
+    const result = await generator.generateAction(input)
+
+    expect(mockedSendAndCollectOfficialEphemeralSessionMessage).toHaveBeenCalledTimes(2)
+    const repairRequest = mockedSendAndCollectOfficialEphemeralSessionMessage.mock.calls[1][1]
+    expect(repairRequest.message.content).toContain('Safe error category: repeated_public_speech')
+    expect(repairRequest.message.content).toContain('change the first words and tactic')
+    expect(result.action).toMatchObject({
+      actionType: 'attack',
+      target: { kind: 'monster', id: 'monster-1' },
+      publicSpeech: 'I hook around the bell rope and force Maw back.',
+      metadata: {
+        semanticRepairAttempted: true,
+        repairedFromSemanticFailure: true,
+        initialErrorCategory: 'repeated_public_speech',
+      },
+    })
+  })
+
   it('recovers target-constrained Official character action repairs with a legal visible monster attack', async () => {
     mockedSendAndCollectOfficialEphemeralSessionMessage
       .mockResolvedValueOnce({ text: 'I study the bell and wait.', message: null })
@@ -831,6 +911,8 @@ describe('location room gameplay generators', () => {
       },
     })
     expect(result.action.publicSpeech).toContain('Maw')
+    expect(result.action.publicSpeech).not.toMatch(/^I strike\b/i)
+    expect(result.action.publicSpeech).not.toMatch(/\b(?:bell|claw|claws)\b/i)
     expect(result.generationDiagnostics).toMatchObject({
       status: 'repaired',
       repairAttempted: true,
@@ -909,6 +991,92 @@ describe('location room gameplay generators', () => {
       stateAfter: { stateSummary: 'Maw is wounded.', currentObjective: null, openThreads: [] },
       metadata: { rawResponseLength: 1 },
     }, noDamageInput)).toMatchObject({ ok: false })
+  })
+
+  it('rejects failure-tier acting-character contact prose without backend action damage', () => {
+    const input = makeGameplayOutcomeInput() as any
+    input.mechanicalSummary.mechanicalDeltas.actionRoll.tier = 'failure'
+    input.mechanicalSummary.mechanicalDeltas.actionDamage.amount = 0
+    input.mechanicalSummary.encounterStatusAfter = 'active'
+    input.encounterAfter.status = 'active'
+
+    for (const publicNarration of [
+      'Ash grazes Maw beneath the bell rope; the monster reels and the line breaks.',
+      'Maw is hit by Ash beneath the bell rope; the monster reels and the line breaks.',
+      'Ash’s blade cuts Maw beneath the bell rope; the monster reels and the line breaks.',
+    ]) {
+      expect(validateGameplayOutcomeNarrationQuality({
+        gameMasterAgentId: 'gm-1',
+        publicNarration,
+        stateAfter: { stateSummary: 'The failed strike changed the line.', currentObjective: null, openThreads: [] },
+        metadata: { rawResponseLength: 1 },
+      }, input)).toMatchObject({
+        ok: false,
+        error: expect.stringContaining('roll-tier mechanics'),
+      })
+    }
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash overextends beneath the bell rope; Maw crowds the opening and drives the line back.',
+      stateAfter: { stateSummary: 'Ash lost ground.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toEqual({ ok: true })
+  })
+
+  it('allows partial-success glancing contact only when backend action damage is positive', () => {
+    const input = makeGameplayOutcomeInput() as any
+    input.mechanicalSummary.mechanicalDeltas.actionRoll.tier = 'partial_success'
+    input.mechanicalSummary.mechanicalDeltas.actionDamage.amount = 2
+
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash clips Maw beneath the bell rope; it staggers aside and the line opens.',
+      stateAfter: { stateSummary: 'Maw was clipped.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toEqual({ ok: true })
+
+    input.mechanicalSummary.mechanicalDeltas.actionDamage.amount = 0
+    expect(validateGameplayOutcomeNarrationQuality({
+      gameMasterAgentId: 'gm-1',
+      publicNarration: 'Ash clips Maw beneath the bell rope; it staggers aside and the line opens.',
+      stateAfter: { stateSummary: 'Maw was clipped.', currentObjective: null, openThreads: [] },
+      metadata: { rawResponseLength: 1 },
+    }, input)).toMatchObject({ ok: false })
+  })
+
+  it('rejects unsupported death, victory, and internal label leakage in GM outcome prose', () => {
+    const input = makeGameplayOutcomeInput() as any
+    input.mechanicalSummary.mechanicalDeltas.actionRoll = {
+      ...input.mechanicalSummary.mechanicalDeltas.actionRoll,
+      checkType: 'arcana',
+      checkLabel: 'Read the Runes',
+      checkSource: 'contextual',
+      contextualCheckId: 'read-the-runes',
+    }
+    input.mechanicalSummary.encounterStatusAfter = 'active'
+    input.encounterAfter.status = 'active'
+    input.mechanicalSummary.deaths = []
+
+    for (const publicNarration of [
+      'Ash drives Maw beneath the bell rope; it goes limp and the line opens.',
+      'Ash drives Maw beneath the bell rope; the fight is over and the line opens.',
+      'Ash drives Maw beneath Bell Bait; the line opens.',
+      'Ash drives Maw beneath the encounter site; the line opens.',
+      'Ash drives Maw beneath the bell rope; the backend check opens the line.',
+      'Ash drives Maw beneath the bell rope; the mechanical result opens the line.',
+      'Ash drives Maw beneath the bell rope; the roll card opens the line.',
+      'Ash drives Maw beneath the bell rope; Read the Runes opens the line.',
+      'Ash drives Maw beneath the bell rope; read-the-runes opens the line.',
+      'Ash drives Maw beneath the bell rope; DC 13 opens the line.',
+    ]) {
+      expect(validateGameplayOutcomeNarrationQuality({
+        gameMasterAgentId: 'gm-1',
+        publicNarration,
+        stateAfter: { stateSummary: 'The line changed.', currentObjective: null, openThreads: [] },
+        metadata: { rawResponseLength: 1 },
+      }, input)).toMatchObject({ ok: false })
+    }
   })
 
   it('requires combat outcome narration to name target, location anchor, visible tactic, and changed battlefield state', () => {

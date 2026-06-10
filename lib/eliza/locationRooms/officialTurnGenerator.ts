@@ -14,6 +14,7 @@ import {
   sanitizeOfficialElizaText,
 } from '@/lib/eliza/official/text'
 import { extractGameMasterJsonObject } from './gameMasterGenerator'
+import { findPublicNarrativeContractViolation } from './generation/publicOutputContract'
 import { sanitizeGenerationDiagnosticError } from './generation/diagnostics'
 import { GAMEPLAY_CHECK_TYPES } from './gameplay/types'
 import { normalizeSceneCheckProposal } from './sceneChecks/rules'
@@ -257,6 +258,46 @@ function officialTurnDiagnosticsForInitialFailure(raw: string, error: unknown): 
   }
 }
 
+function publicNarrativeContextualIds(options: {
+  sceneCheckContext?: LocationRoomNarrativeTurnSceneCheckContext | null
+  activeDecision?: LocationRoomAdventureDecision | null
+}): { ids: string[]; labels: string[] } {
+  const contextualChecks = options.sceneCheckContext?.contextualChecks ?? options.sceneCheckContext?.request?.contextualChecks ?? []
+  const decisionOptions = options.activeDecision?.options ?? []
+  return {
+    ids: [
+      ...contextualChecks.map((check) => check.id),
+      ...(options.activeDecision?.id ? [options.activeDecision.id] : []),
+      ...decisionOptions.map((option) => option.id),
+    ],
+    labels: contextualChecks.map((check) => check.label),
+  }
+}
+
+function assertCharacterTurnPublicContract(
+  value: string,
+  label: string,
+  options: {
+    sceneCheckContext?: LocationRoomNarrativeTurnSceneCheckContext | null
+    activeDecision?: LocationRoomAdventureDecision | null
+    requireNarrativeMotion?: boolean
+  }
+): void {
+  const contextual = publicNarrativeContextualIds(options)
+  const violation = findPublicNarrativeContractViolation(value, {
+    label,
+    contextualIds: contextual.ids,
+    contextualLabels: contextual.labels,
+    allowCharacterDialogue: true,
+    allowGenericCheckWord: true,
+    requireNarrativeMotion: options.requireNarrativeMotion,
+    disallowUnsafeMechanics: true,
+  })
+  if (violation) {
+    throw new Error(`${label} violates public narrative contract (${violation.category}: ${violation.reason})`)
+  }
+}
+
 function isActionForwardDeclaredAction(summary: string, chosenOptionLabel: string | null | undefined): boolean {
   const normalized = normalizeOfficialResponseText(summary).replace(/\s+/g, ' ').trim()
   if (!normalized) return false
@@ -360,13 +401,27 @@ export function normalizeOfficialLocationRoomTurnResponse(
     throw new Error('Location-room character turn response missing required publicSpeech')
   }
 
+  assertCharacterTurnPublicContract(content, 'Location-room character turn response publicSpeech', {
+    sceneCheckContext,
+    activeDecision,
+  })
+
   const declaredAction = normalizeDeclaredAction(parsed.declaredAction ?? parsed.declared_action, { activeDecision })
   if (!declaredAction) {
     throw new Error('Location-room character turn response missing valid declaredAction')
   }
+  assertCharacterTurnPublicContract(declaredAction.summary, 'Location-room character turn response declaredAction', {
+    sceneCheckContext,
+    activeDecision,
+  })
   if (!isActionForwardDeclaredAction(declaredAction.summary, declaredAction.chosenOptionLabel)) {
     throw new Error('Location-room character turn response declaredAction must name a concrete fictional action')
   }
+  assertCharacterTurnPublicContract(declaredAction.summary, 'Location-room character turn response declaredAction', {
+    sceneCheckContext,
+    activeDecision,
+    requireNarrativeMotion: true,
+  })
 
   if (!sceneCheckContext) {
     return {

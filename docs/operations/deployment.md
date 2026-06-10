@@ -1,7 +1,7 @@
 # Deployment
 
 > Lifecycle: Runbook
-> Last validated: 2026-05-11
+> Last validated: 2026-06-10
 > Canonical sources: `package.json`, `.nvmrc`, `.env.example`, `next.config.js`, `middleware.ts`, Vercel project settings
 
 This page summarizes deployment expectations for WAGDIE Simplified. Keep exact command and environment truth in the source files above.
@@ -21,6 +21,8 @@ Common deployment verification:
 ```bash
 nvm use
 bun install
+bun run lint
+bun run typecheck
 bun run build
 ```
 
@@ -50,6 +52,39 @@ Never put server-only secrets in `NEXT_PUBLIC_*` variables.
 
 `middleware.ts` is part of the deployed request path. It sets CSRF cookies on page requests, skips unnecessary cookies for public animated NFT pages, and can proxy `/api/*` to a remote WAGDIE app when `WAGDIE_API_BASE_URL` is configured.
 
+## CI and deployment gates
+
+Required baseline gates for production and preview promotion:
+
+```bash
+bun run lint
+bun run typecheck
+bun run build
+bun run test -- --runInBand
+```
+
+Location-room narrative/lifecycle changes should also run the bounded gate:
+
+```bash
+bun run gate:location-rooms
+```
+
+At minimum, that bounded gate covers lifecycle regression tests, public narrative contract-style checks, stall diagnostics, and narrative eval CLI smoke. Repo-wide `lint`, `typecheck`, and `build` remain baseline promotion gates above; if those are temporarily blocked by unrelated baseline debt, document the failure and run touched-file lint plus the bounded location-room gate before dev-only deployment.
+
+For preview or staging rooms with API access, run the live narrative eval against a safe room before promotion:
+
+```bash
+bun run narrative:eval -- --base-url <preview-url> --location 11 --min-score 75 --fail-on-warnings
+```
+
+If structured route diagnostic logs were captured during the preview smoke, pass them into the eval so stall detectors can catch silent advancement and skip streaks:
+
+```bash
+bun run narrative:eval -- --base-url <preview-url> --location 11 --fail-on-warnings --diagnostics-file route-diagnostics.json
+```
+
+The live eval reports GNQS, public narrative warnings, escalation observability warnings, and stall findings for silent advancement, skip streaks, terminal mismatch, missing aftermath, and target resurrection where the public transcript/diagnostic input contains enough evidence.
+
 ## Preview deployments
 
 Preview deployments should use preview-safe values for service-role keys, RPC endpoints, sync secrets, and Eliza/ElizaOS settings. If a preview deployment is intended only for UI review, prefer using the local/onboarding proxy pattern instead of pointing a local developer at mutable production services.
@@ -68,6 +103,8 @@ Before promoting a production deploy:
 
 - [ ] Confirm Node `23.3.0` is selected by the deployment platform.
 - [ ] Run the relevant build/test path for the changed area; see `docs/development/testing.md`.
+- [ ] For location-room lifecycle/narrative changes, run `bun run gate:location-rooms` or equivalent required CI jobs.
+- [ ] For location-room preview promotion, run `bun run narrative:eval -- --base-url <preview-url> --location 11 --fail-on-warnings` and include `--diagnostics-file` when route diagnostic logs are available.
 - [ ] Review environment variable diffs against `.env.example`.
 - [ ] Confirm Supabase URL and service-role keys target the intended project.
 - [ ] Confirm `SYNC_SECRET_KEY` is rotated/stored in the platform secret store and not in source.

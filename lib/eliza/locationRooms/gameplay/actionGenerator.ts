@@ -5,6 +5,7 @@ import {
   type OfficialElizaMessagingClient,
 } from '@/lib/eliza/official/messaging'
 import { extractGenerationJsonObject } from '../generation/json'
+import { findPublicNarrativeContractViolation } from '../generation/publicOutputContract'
 import type {
   LocationRoom,
   LocationRoomMessage,
@@ -185,6 +186,7 @@ export type GameplayActionSemanticErrorCategory =
   | 'missing_required_field'
   | 'target_constraint'
   | 'roll_choice_constraint'
+  | 'repeated_public_speech'
   | 'validation_error'
   | 'repair_transport_error'
 
@@ -205,6 +207,7 @@ function categorizeGameplayActionResponseError(error: unknown): GameplayActionSe
   if (/empty/i.test(message)) return 'empty_response'
   if (/did not contain a JSON object/i.test(message)) return 'missing_json_object'
   if (/invalid JSON/i.test(message)) return 'invalid_json'
+  if (/repeated public speech|recent opening|weak repeated opening/i.test(message)) return 'repeated_public_speech'
   if (/public speech|Unsupported gameplay action type|must be a JSON object/i.test(message)) return 'missing_required_field'
   if (/target|Attack actions require|Help actions require/i.test(message)) return 'target_constraint'
   if (/roll choice|check type|contextual/i.test(message)) return 'roll_choice_constraint'
@@ -348,7 +351,89 @@ function buildGameplayActionRepairPrompt(
     '- Fixed rollChoice checkType must be one listed fixed check.',
     '- Contextual rollChoice must use exactly one offered contextualCheckId if you choose contextual.',
     '- publicSpeech is required, public-safe, and must name or clearly point to a visible target, ally, obstacle, room feature, or immediate tactic from this encounter. Avoid repeating recent opening words or generic lines such as "I strike" without specific target/room detail.',
+    '- If the error category is repeated_public_speech, change the first words and tactic: use a different verb/opening than the rejected response and the recent openings above.',
   ].filter((line): line is string => line !== null).join('\n')
+}
+
+function normalizeSpeechForComparison(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function speechOpening(text: string, words = 8): string {
+  return normalizeSpeechForComparison(text).split(' ').filter(Boolean).slice(0, words).join(' ')
+}
+
+function isWeakRepeatedOpening(opening: string): boolean {
+  return /^(i strike|i hold the line|i study the room|i move forward|i press forward)(\b|$)/.test(opening)
+}
+
+function validateGameplayActionPublicSpeechQuality(
+  action: GameplayActionEnvelope,
+  input: GenerateGameplayActionInput
+): void {
+  const contextualChecks = input.validation.contextualChecks ?? []
+  const contractViolation = findPublicNarrativeContractViolation(action.publicSpeech, {
+    label: 'Gameplay action publicSpeech',
+    contextualIds: contextualChecks.map((check) => check.id),
+    contextualLabels: contextualChecks.map((check) => check.label),
+    allowCharacterDialogue: true,
+    allowGenericCheckWord: true,
+    requireNarrativeMotion: true,
+    disallowUnsafeMechanics: true,
+  })
+  if (contractViolation) {
+    throw new GameplayActionSemanticError(
+      `Generated action publicSpeech violates public narrative contract (${contractViolation.category}: ${contractViolation.reason}).`,
+      'validation_error'
+    )
+  }
+
+  const speech = normalizeSpeechForComparison(action.publicSpeech)
+  const opening = speechOpening(action.publicSpeech)
+  if (!speech || !opening) return
+
+  const recentOpenings = input.recentMessages
+    .filter((message) => message.tokenId === input.speaker.tokenId && typeof message.content === 'string')
+    .slice(-5)
+    .map((message) => speechOpening(message.content))
+    .filter((recentOpening) => recentOpening.length > 0)
+
+  const currentFirstSix = speechOpening(action.publicSpeech, 6)
+  const repeatsOpening = recentOpenings.some((recentOpening) => {
+    const recentFirstSix = recentOpening.split(' ').slice(0, 6).join(' ')
+    return opening === recentOpening || (
+      currentFirstSix.length > 0 &&
+      recentFirstSix.length > 0 &&
+      currentFirstSix === recentFirstSix
+    )
+  })
+
+  if (repeatsOpening) {
+    throw new GameplayActionSemanticError(
+      'Generated action repeated public speech from a recent opening; choose a different opening and tactic.',
+      'repeated_public_speech'
+    )
+  }
+
+  if (isWeakRepeatedOpening(opening) && recentOpenings.some((recentOpening) => isWeakRepeatedOpening(recentOpening))) {
+    throw new GameplayActionSemanticError(
+      'Generated action used a weak repeated opening; choose a concrete target-specific tactic instead.',
+      'repeated_public_speech'
+    )
+  }
+}
+
+function parseGameplayActionResponseForInput(
+  raw: string,
+  input: GenerateGameplayActionInput
+): { action: GameplayActionEnvelope; rawResponseLength: number } {
+  const normalized = parseGameplayActionResponseStrict(raw, input.validation)
+  validateGameplayActionPublicSpeechQuality(normalized.action, input)
+  return normalized
 }
 
 export function parseGameplayActionResponseStrict(
@@ -398,6 +483,33 @@ function withGameplayActionRepairMetadata(
   }
 }
 
+function stableTemplateIndex(seed: string, count: number): number {
+  let hash = 0
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = ((hash * 31) + seed.charCodeAt(index)) >>> 0
+  }
+  return count === 0 ? 0 : hash % count
+}
+
+function buildFallbackAttackSpeech(input: GenerateGameplayActionInput, monster: GameplayMonsterState): string {
+  const templates = [
+    `I drive toward the ${monster.name}'s exposed side before it reaches our line.`,
+    `I cut across the ${monster.name}'s path and force it back from the line.`,
+    `I press the ${monster.name} from the flank before it can settle its attack.`,
+    `I close on the ${monster.name} and break its advance before it reaches us.`,
+  ]
+  const recentOpenings = input.recentMessages
+    .filter((message) => message.tokenId === input.speaker.tokenId && typeof message.content === 'string')
+    .map((message) => speechOpening(message.content, 6))
+  const start = stableTemplateIndex(`${input.tick.id}:${monster.id}`, templates.length)
+  for (let offset = 0; offset < templates.length; offset += 1) {
+    const candidate = templates[(start + offset) % templates.length]
+    const candidateOpening = speechOpening(candidate, 6)
+    if (!recentOpenings.includes(candidateOpening)) return candidate
+  }
+  return templates[start]
+}
+
 function fallbackAttackActionFromVisibleMonster(
   input: GenerateGameplayActionInput,
   initialError: GameplayActionSemanticError,
@@ -420,9 +532,9 @@ function fallbackAttackActionFromVisibleMonster(
   const action: GameplayActionEnvelope = {
     actionType: 'attack',
     target: { kind: 'monster', id: monster.id },
-    rollChoice: { source: 'fixed', checkType: 'attack' },
-    publicSpeech: `I strike the ${monster.name} before it breaks our line.`,
-    intentSummary: `Attack ${monster.name}.`,
+    rollChoice: { source: 'fixed', checkType: 'attack', label: 'Attack' },
+    publicSpeech: buildFallbackAttackSpeech(input, monster),
+    intentSummary: `Pressure ${monster.name} with a direct attack.`,
     metadata: {
       semanticRepairAttempted: true,
       repairedFromSemanticFailure: true,
@@ -473,7 +585,6 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
   ) {}
 
   async generateAction(input: GenerateGameplayActionInput): Promise<GenerateGameplayActionResult> {
-    let officialAgentId: string | null = null
     let transportStage: GameplayActionGenerationDiagnostics['transportStage'] = 'resolve_character'
     let collectedText = ''
 
@@ -491,8 +602,6 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
           backgroundStory: input.speaker.backgroundStory,
         },
       })
-      officialAgentId = record.id
-
       transportStage = 'start_agent'
       await this.messaging.startAgent(record.id)
       const sessionMetadata = {
@@ -527,7 +636,7 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
       collectedText = collected.text
 
       try {
-        const normalized = parseGameplayActionResponseStrict(collectedText, input.validation)
+        const normalized = parseGameplayActionResponseForInput(collectedText, input)
 
         return {
           officialAgentId: record.id,
@@ -570,7 +679,7 @@ export class OfficialGameplayActionGenerator implements GameplayActionGenerator 
             logContext: repairMetadata,
           })
           repairText = repaired.text
-          const normalized = parseGameplayActionResponseStrict(repairText, input.validation)
+          const normalized = parseGameplayActionResponseForInput(repairText, input)
 
           return {
             officialAgentId: record.id,

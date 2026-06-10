@@ -2257,6 +2257,219 @@ describe('location room domain service', () => {
     expect(narrativeCoordinator.processTurn).toHaveBeenCalled()
   })
 
+  it('routes same-tick gameplay retries through the coordinator even after terminal state cleared the active encounter', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['loc-1']
+    const runTick = tick({ id: 'tick-run-retry', gameplayRunId: 'run-1' })
+    const existingTurn = {
+      id: 'turn-1',
+      roomId: 'room-1',
+      locationId: 'loc-1',
+      tickId: 'tick-run-retry',
+      encounterId: 'encounter-1',
+      status: 'resolved',
+      selectedTokenId: 1,
+      action: { actionType: 'attack', target: { kind: 'monster', id: 'monster-1' }, publicSpeech: 'I press the attack.', metadata: {} },
+      diceResults: [],
+      mechanicalDeltas: {
+        deaths: [],
+        encounterStatusAfter: 'victory',
+        monstersBefore: [{ id: 'monster-1', name: 'Bell Maw', archetype: 'bell horror', hp: 1, maxHp: 1, ac: 10, attackBonus: 2, damageFormula: '1d4', status: 'alive' }],
+      },
+      publicMessageIds: ['msg-action', 'msg-roll'],
+      outcomeSummary: null,
+      metadata: {},
+      lastError: null,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: null,
+    } as any
+    const repository = makeRepository({
+      claimDueTicks: jest.fn(async () => [runTick]),
+      countCompletedGameplayTurnsForRun: jest.fn(async () => 1),
+    })
+    const activeRun = gameplayRun({ id: 'run-1', targetCompletedTurns: 100, completedTurns: 0 })
+    const gameplayRepository = makeGameplayRepository({
+      findRunById: jest.fn(async () => activeRun),
+      findStateByRoomId: jest.fn(async () => gameplayState({ status: 'aftermath', activeEncounterId: null })),
+      findActiveEncounterByRoomId: jest.fn(async () => null),
+      findTurnByTickId: jest.fn(async () => existingTurn),
+      findEncounterById: jest.fn(async () => gameplayEncounter({ status: 'victory' })),
+      updateRunProgress: jest.fn(async (_runId, input) => gameplayRun({ ...activeRun, completedTurns: input.completedTurns, lastTickId: input.lastTickId ?? null, lastAdvancedAt: input.lastAdvancedAt ?? null })),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        status: 'completed',
+        selectedTokenId: 1,
+        messageId: 'msg-action',
+        messageIds: ['msg-action', 'msg-roll', 'msg-outcome'],
+        encounterStatusAfter: 'victory',
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership([participant(1, 'Ash'), participant(2, 'Bone')]),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository,
+      makeNarrativeRepository()
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, completed: 1, skipped: 0, gameplayRuns: { completed: 1 } })
+    expect(result.results[0]).toMatchObject({ publicOutputOutcome: 'public_message_appended' })
+    expect(gameplayCoordinator.processTurn).toHaveBeenCalledWith(expect.objectContaining({
+      tick: expect.objectContaining({ id: 'tick-run-retry', gameplayRunId: 'run-1' }),
+      gameplayRun: { id: 'run-1', targetCompletedTurns: 100 },
+    }))
+    expect(repository.markTickSkipped).not.toHaveBeenCalledWith('tick-run-retry', expect.anything())
+    expect(repository.markTickCompleted).toHaveBeenCalledWith('tick-run-retry')
+    expect(gameplayRepository.markRunCompleted).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      stopReason: 'encounter_victory',
+      completedTurns: 1,
+      lastTickId: 'tick-run-retry',
+    }))
+    expect(narrativeCoordinator.processTurn).not.toHaveBeenCalled()
+  })
+
+  it('does not strand Room 11-style post-combat run ticks behind participant filtering', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['11']
+    const runTick = tick({ id: 'tick-room-11-run-after-combat', roomId: 'room-11', locationId: '11', gameplayRunId: 'run-1' })
+    const repository = makeRepository({
+      findRoomById: jest.fn(async () => room({ id: 'room-11', locationId: '11' })),
+      claimDueTicks: jest.fn(async () => [runTick]),
+      countCompletedGameplayTurnsForRun: jest.fn(async () => 7),
+    })
+    const gameplayRepository = makeGameplayRepository({
+      findRunById: jest.fn(async () => gameplayRun({ id: 'run-1', roomId: 'room-11', locationId: '11', targetCompletedTurns: 100, completedTurns: 6 })),
+      findStateByRoomId: jest.fn(async () => gameplayState({
+        roomId: 'room-11',
+        locationId: '11',
+        status: 'aftermath',
+        activeEncounterId: null,
+        characters: {
+          '1': { tokenId: 1, name: 'Ash', hp: 0, maxHp: 10, status: 'dead', xp: 0, temporaryBoons: [], wounds: [] },
+          '2': { tokenId: 2, name: 'Bone', hp: 0, maxHp: 10, status: 'fled', xp: 0, temporaryBoons: [], wounds: [] },
+        },
+      })),
+      findActiveEncounterByRoomId: jest.fn(async () => null),
+      findTurnByTickId: jest.fn(async () => null),
+    })
+    const gameplayCoordinator: jest.Mocked<LocationRoomGameplayCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership([participant(1, 'Ash', { locationId: '11' })]),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      gameplayCoordinator,
+      gameplayRepository
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, skipped: 1, gameplayRuns: { stopped: 1 } })
+    expect(result.results[0]).toMatchObject({
+      status: 'skipped',
+      gameplayRunId: 'run-1',
+      reason: 'no_active_gameplay_encounter',
+      publicOutputOutcome: 'terminal_run_closed',
+      gameplayRun: expect.objectContaining({ status: 'stopped', stopReason: 'no_active_gameplay_encounter' }),
+    })
+    expect(repository.markTickSkipped).toHaveBeenCalledWith('tick-room-11-run-after-combat', 'no_active_gameplay_encounter')
+    expect(repository.markTickSkipped).not.toHaveBeenCalledWith('tick-room-11-run-after-combat', 'Fewer than two eligible participants')
+    expect(gameplayRepository.markRunStopped).toHaveBeenCalledWith('run-1', expect.objectContaining({
+      stopReason: 'no_active_gameplay_encounter',
+      completedTurns: 7,
+      lastTickId: 'tick-room-11-run-after-combat',
+    }))
+    expect(gameplayCoordinator.processTurn).not.toHaveBeenCalled()
+    expect(narrativeCoordinator.processTurn).not.toHaveBeenCalled()
+  })
+
+  it('routes non-run aftermath ticks through narrative instead of dead/fled gameplay filtering', async () => {
+    mutableElizaConfig.mode = 'official'
+    mutableNarrativeConfig.enabled = true
+    mutableNarrativeConfig.gameMasterAgentId = 'gm-agent-1'
+    mutableGameplayConfig.enabled = true
+    mutableGameplayConfig.locationAllowlist = ['11']
+    const storyTick = tick({ id: 'tick-room-11-aftermath', roomId: 'room-11', locationId: '11', gameplayRunId: null })
+    const repository = makeRepository({
+      findRoomById: jest.fn(async () => room({ id: 'room-11', locationId: '11' })),
+      claimDueTicks: jest.fn(async () => [storyTick]),
+      listRecentPublicMessages: jest.fn(async () => []),
+    })
+    const gameplayRepository = makeGameplayRepository({
+      findStateByRoomId: jest.fn(async () => gameplayState({
+        roomId: 'room-11',
+        locationId: '11',
+        status: 'aftermath',
+        activeEncounterId: null,
+        characters: {
+          '1': { tokenId: 1, name: 'Ash', hp: 0, maxHp: 10, status: 'dead', xp: 0, temporaryBoons: [], wounds: [] },
+          '2': { tokenId: 2, name: 'Bone', hp: 0, maxHp: 10, status: 'fled', xp: 0, temporaryBoons: [], wounds: [] },
+        },
+      })),
+      findActiveEncounterByRoomId: jest.fn(async () => null),
+    })
+    const narrativeCoordinator: jest.Mocked<LocationRoomNarrativeCoordinator> = {
+      processTurn: jest.fn(async () => ({
+        messageId: 'msg-aftermath',
+        messageIds: ['msg-aftermath'],
+        sceneCheckId: null,
+      })),
+      markTickFailed: jest.fn(async () => undefined),
+    }
+    const service = new LocationRoomService(
+      repository,
+      makeMembership([participant(1, 'Ash', { locationId: '11' }), participant(2, 'Bone', { locationId: '11' })]),
+      { generateTurn: jest.fn() },
+      narrativeCoordinator,
+      undefined,
+      undefined,
+      gameplayRepository,
+      makeNarrativeRepository()
+    )
+
+    const result = await service.runScheduledWorker(new Date(now))
+
+    expect(result).toMatchObject({ processed: 1, completed: 1, skipped: 0 })
+    expect(result.results[0]).toMatchObject({
+      status: 'completed',
+      messageId: 'msg-aftermath',
+      publicOutputOutcome: 'public_message_appended',
+    })
+    expect(narrativeCoordinator.processTurn).toHaveBeenCalledWith(expect.objectContaining({
+      participants: expect.arrayContaining([
+        expect.objectContaining({ tokenId: 1 }),
+        expect.objectContaining({ tokenId: 2 }),
+      ]),
+    }))
+    expect(repository.markTickSkipped).not.toHaveBeenCalledWith('tick-room-11-aftermath', 'insufficient_living_gameplay_participants')
+  })
+
   it('passes active run context into gameplay turn processing', async () => {
     mutableElizaConfig.mode = 'official'
     mutableNarrativeConfig.enabled = true
@@ -2638,6 +2851,7 @@ describe('location room domain service', () => {
     const result = await service.runScheduledWorker(new Date(now))
 
     expect(result).toMatchObject({ processed: 1, failed: 1, dead: 0 })
+    expect(result.results[0]).toMatchObject({ publicOutputOutcome: 'failed_retry' })
     expect(result.results[0].gameplayRun).toMatchObject({ id: 'run-1', status: 'active', completedTurns: 0 })
     expect(repository.markTickFailed).toHaveBeenCalledWith('tick-run-failed', 'temporary gameplay outage', expect.any(String))
     expect(gameplayRepository.markRunFailed).not.toHaveBeenCalled()
@@ -2679,6 +2893,7 @@ describe('location room domain service', () => {
     const result = await service.runScheduledWorker(new Date(now))
 
     expect(result).toMatchObject({ processed: 1, failed: 0, dead: 1 })
+    expect(result.results[0]).toMatchObject({ publicOutputOutcome: 'failed_terminal' })
     expect(repository.markTickDead).toHaveBeenCalledWith('tick-run-dead', 'permanent gameplay outage')
     expect(gameplayCoordinator.markTickFailed).toHaveBeenCalledWith('tick-run-dead', expect.any(Error), { dead: true })
     expect(gameplayRepository.markRunFailed).toHaveBeenCalledWith('run-1', expect.objectContaining({
@@ -2705,6 +2920,8 @@ describe('location room domain service', () => {
     membership.listEligibleLocationIds.mockResolvedValueOnce([])
     const gameplayRepository = makeGameplayRepository({
       listActiveRunsForWorker: jest.fn(async () => [run]),
+      findStateByRoomId: jest.fn(async () => gameplayState()),
+      findEncounterById: jest.fn(async () => gameplayEncounter()),
     })
     const service = new LocationRoomService(
       repository,
