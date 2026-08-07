@@ -7,6 +7,9 @@ const createJestConfig = nextJest({
 
 // Add any custom config to be passed to Jest
 const config = {
+  // Install Web API globals before route-handler test modules import `next/server`
+  setupFiles: ['<rootDir>/jest.polyfills.js'],
+
   // Add more setup options before each test is run
   setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
 

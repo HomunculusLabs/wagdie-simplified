@@ -6,6 +6,7 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { useAccount, useSignMessage } from 'wagmi'
+import { getCsrfTokenFromCookie } from '@/lib/api/client'
 import { ApiError, readApiRaw } from '@/lib/api/client-response'
 import type { TokenResponse, ElizaAuthNonceResponse } from '@/types/eliza'
 
@@ -30,6 +31,14 @@ interface UseElizaAuthReturn {
 
 // Token refresh buffer (5 minutes before expiry)
 const REFRESH_BUFFER_MS = 5 * 60 * 1000
+
+function buildCsrfHeaders(includeJson = false): HeadersInit {
+  const token = getCsrfTokenFromCookie()
+  return {
+    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+    ...(token ? { 'X-CSRF-Token': token } : {}),
+  }
+}
 
 function getErrorCode(data: unknown): string | undefined {
   if (typeof data !== 'object' || data === null || !('error' in data)) {
@@ -190,6 +199,7 @@ export function useElizaAuth(): UseElizaAuthReturn {
       const nonceResponse = await fetch('/api/eliza/auth/nonce', {
         method: 'POST',
         credentials: 'include',
+        headers: buildCsrfHeaders(),
       })
 
       const nonceData = await readApiRaw<ElizaAuthNonceResponse>(
@@ -222,7 +232,7 @@ export function useElizaAuth(): UseElizaAuthReturn {
       const verifyResponse = await fetch('/api/eliza/auth/verify', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildCsrfHeaders(true),
         body: JSON.stringify({ signature }),
       })
 

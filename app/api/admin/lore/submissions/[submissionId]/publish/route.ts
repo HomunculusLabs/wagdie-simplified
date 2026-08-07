@@ -8,4 +8,5 @@ export const POST = createAdminLoreSubmissionActionHandler({
     loreSubmissionService.publishSubmission(submissionId, adminAddress, note)
   ),
   failureMessage: 'Failed to publish lore submission',
+  revalidateEffectiveLore: true,
 });

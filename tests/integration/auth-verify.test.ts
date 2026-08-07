@@ -9,7 +9,7 @@ import { NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { POST } from '@/app/api/auth/verify/route'
 import { getSession } from '@/lib/auth/session'
-import { SiweMessage } from 'siwe'
+import { CSRF_COOKIE_NAME, CSRF_HEADER_NAME } from '@/lib/middleware/csrf'
 
 // Mock next/headers
 jest.mock('next/headers', () => ({
@@ -33,10 +33,16 @@ jest.mock('siwe', () => ({
     // Parse a simplified SIWE message for testing
     const nonceMatch = message.match(/Nonce: ([a-f0-9]+)/i)
     const addressMatch = message.match(/0x[a-fA-F0-9]{40}/)
+    const domainMatch = message.trimStart().match(/^([^\n]+) wants you to sign in/)
+    const uriMatch = message.match(/URI: ([^\n]+)/)
+    const chainIdMatch = message.match(/Chain ID: (\d+)/)
 
     return {
       nonce: nonceMatch ? nonceMatch[1] : null,
       address: addressMatch ? addressMatch[0] : '0x1234567890123456789012345678901234567890',
+      domain: domainMatch ? domainMatch[1] : 'example.com',
+      uri: uriMatch ? uriMatch[1] : 'https://example.com',
+      chainId: chainIdMatch ? Number(chainIdMatch[1]) : 1,
       verify: jest.fn().mockResolvedValue({
         data: {
           address: addressMatch ? addressMatch[0] : '0x1234567890123456789012345678901234567890',
@@ -55,25 +61,47 @@ describe('Auth Verify Endpoint', () => {
 
   const validAddress = '0x1234567890123456789012345678901234567890'
   const validNonce = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4' // 32 hex chars
+  const csrfToken = 'valid-csrf-token'
+  let requestCounter = 0
 
-  function createMockMessage(nonce: string, address: string = validAddress): string {
-    return `example.com wants you to sign in with your Ethereum account:
+  function createMockMessage(
+    nonce: string,
+    address: string = validAddress,
+    overrides: { domain?: string; uri?: string; chainId?: number } = {}
+  ): string {
+    const domain = overrides.domain ?? 'example.com'
+    const uri = overrides.uri ?? 'https://example.com'
+    const chainId = overrides.chainId ?? 1
+
+    return `${domain} wants you to sign in with your Ethereum account:
 ${address}
 
 Sign in to WAGDIE
 
-URI: https://example.com
+URI: ${uri}
 Version: 1
-Chain ID: 1
+Chain ID: ${chainId}
 Nonce: ${nonce}
 Issued At: 2025-01-01T00:00:00.000Z`
   }
 
-  function createMockRequest(body: object): NextRequest {
-    return {
-      json: jest.fn().mockResolvedValue(body),
-      headers: new Headers(),
-    } as unknown as NextRequest
+  function createMockRequest(body: object, options: { csrf?: boolean } = { csrf: true }): NextRequest {
+    requestCounter += 1
+    const headers = new Headers({
+      'Content-Type': 'application/json',
+      'x-forwarded-for': `127.0.1.${requestCounter}`,
+    })
+
+    if (options.csrf !== false) {
+      headers.set(CSRF_HEADER_NAME, csrfToken)
+      headers.set('Cookie', `${CSRF_COOKIE_NAME}=${csrfToken}`)
+    }
+
+    return new NextRequest('https://example.com/api/auth/verify', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    })
   }
 
   beforeEach(() => {
@@ -87,6 +115,21 @@ Issued At: 2025-01-01T00:00:00.000Z`
 
   afterEach(() => {
     jest.clearAllMocks()
+  })
+
+  describe('CSRF protection', () => {
+    it('should reject requests without a CSRF token before verification', async () => {
+      const request = createMockRequest(
+        { message: createMockMessage(validNonce), signature: '0xvalidsignature' },
+        { csrf: false }
+      )
+
+      const response = await POST(request)
+      const data = await response.json()
+
+      expect(response.status).toBe(403)
+      expect(data.error).toContain('CSRF')
+    })
   })
 
   describe('Nonce verification', () => {
@@ -140,6 +183,20 @@ Issued At: 2025-01-01T00:00:00.000Z`
 
       expect(response.status).toBe(400)
       expect(data.error).toBeDefined()
+    })
+
+    it('should reject when SIWE domain does not match trusted config', async () => {
+      mockCookieStore.get.mockReturnValue({ value: validNonce })
+
+      const message = createMockMessage(validNonce, validAddress, { domain: 'evil.example' })
+      const request = createMockRequest({
+        message,
+        signature: '0xvalidsignature',
+      })
+
+      const response = await POST(request)
+
+      expect(response.status).toBe(401)
     })
   })
 

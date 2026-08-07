@@ -7,6 +7,7 @@ import { usePathname } from 'next/navigation'
 interface NavItem {
   label: string
   path: string
+  requiresConnection?: boolean
 }
 
 const showLoreNav = process.env.NEXT_PUBLIC_SHOW_LORE_NAV === 'true'
@@ -14,25 +15,34 @@ const showLoreNav = process.env.NEXT_PUBLIC_SHOW_LORE_NAV === 'true'
 const NAV_ITEMS: NavItem[] = [
   { label: 'Home', path: '/' },
   { label: 'Characters', path: '/characters' },
-  { label: 'Searing', path: '/searing' },
+  { label: 'Searing', path: '/searing', requiresConnection: true },
   { label: 'World Map', path: '/map' },
   ...(showLoreNav ? [{ label: 'Lore', path: '/lore' }] : []),
   { label: 'Low Poly', path: '/videos' },
-  { label: 'Spread', path: '/spread' },
+  { label: 'Spread', path: '/spread', requiresConnection: true },
 ]
 
 interface NavigationProps {
   className?: string
   isMobile?: boolean
   onNavClick?: () => void
+  showConnectedActions?: boolean
 }
 
 /**
  * Navigation Component
  * Main navigation menu with active page highlighting using Next.js usePathname.
  */
-export function Navigation({ className = '', isMobile = false, onNavClick }: NavigationProps) {
+export function Navigation({
+  className = '',
+  isMobile = false,
+  onNavClick,
+  showConnectedActions = false,
+}: NavigationProps) {
   const pathname = usePathname()
+  const visibleItems = NAV_ITEMS.filter(
+    (item) => !item.requiresConnection || showConnectedActions
+  )
 
   const handleClick = () => {
     if (onNavClick) {
@@ -42,7 +52,7 @@ export function Navigation({ className = '', isMobile = false, onNavClick }: Nav
 
   return (
     <nav className={`flex ${isMobile ? 'flex-col gap-2' : 'flex-row gap-1'} ${className}`}>
-      {NAV_ITEMS.map((item) => {
+      {visibleItems.map((item) => {
         const isActive = pathname === item.path
         return (
           <Link

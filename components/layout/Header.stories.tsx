@@ -10,7 +10,7 @@ const meta: Meta<typeof Header> = {
     layout: 'fullscreen',
     docs: {
       description: {
-        component: 'Main site header with logo, navigation, and wallet connection. Features sticky positioning and responsive mobile menu.',
+        component: 'Main site header with logo, navigation, and wallet connection. Features sticky positioning and responsive mobile menu. Searing and Spread are connected-only menu items.',
       },
     },
   },
@@ -23,7 +23,7 @@ export const Default: Story = {
   parameters: {
     docs: {
       description: {
-        story: 'Default header state with desktop layout. Resize browser window to see mobile menu.',
+        story: 'Default header state with desktop layout. Resize browser window to see mobile menu. Storybook auth mocks may show the connected menu by default.',
       },
     },
   },

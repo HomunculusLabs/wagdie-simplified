@@ -1,4 +1,4 @@
-import { ApiClient } from '@/lib/api/client';
+import { ApiClient, getCsrfTokenFromCookie } from '@/lib/api/client';
 import { readApiEnvelope, readApiRaw } from '@/lib/api/client-response';
 
 function mockResponse(bodyText: string, init: ResponseInit = {}): Response {
@@ -192,6 +192,19 @@ describe('API client response helpers', () => {
 
 describe('ApiClient', () => {
   const originalFetch = global.fetch;
+  const originalWindow = Object.getOwnPropertyDescriptor(global, 'window');
+  const originalDocument = Object.getOwnPropertyDescriptor(global, 'document');
+
+  function installBrowserGlobals(cookie = 'csrf-token=csrf-123'): void {
+    Object.defineProperty(global, 'window', {
+      configurable: true,
+      value: { location: { origin: 'https://example.test' } },
+    });
+    Object.defineProperty(global, 'document', {
+      configurable: true,
+      value: { cookie },
+    });
+  }
 
   beforeEach(() => {
     global.fetch = jest.fn() as unknown as typeof fetch;
@@ -199,6 +212,16 @@ describe('ApiClient', () => {
 
   afterEach(() => {
     global.fetch = originalFetch;
+    if (originalWindow) {
+      Object.defineProperty(global, 'window', originalWindow);
+    } else {
+      delete (global as typeof globalThis & { window?: unknown }).window;
+    }
+    if (originalDocument) {
+      Object.defineProperty(global, 'document', originalDocument);
+    } else {
+      delete (global as typeof globalThis & { document?: unknown }).document;
+    }
     jest.restoreAllMocks();
   });
 
@@ -235,6 +258,42 @@ describe('ApiClient', () => {
 
     expect(init?.body).toBe(formData);
     expect(headers.has('Content-Type')).toBe(false);
+  });
+
+  it('reads the CSRF token from a cookie string', () => {
+    expect(getCsrfTokenFromCookie('other=1; csrf-token=csrf-123; theme=dark')).toBe('csrf-123');
+  });
+
+  it('adds CSRF header to unsafe same-origin browser requests', async () => {
+    installBrowserGlobals();
+    const fetchMock = global.fetch as jest.MockedFunction<typeof fetch>;
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+    const client = new ApiClient('');
+
+    await client.post<{ ok: boolean }>('/api/auth/logout');
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = init?.headers as Headers;
+
+    expect(headers.get('X-CSRF-Token')).toBe('csrf-123');
+  });
+
+  it('does not add CSRF header when Authorization is present', async () => {
+    installBrowserGlobals();
+    const fetchMock = global.fetch as jest.MockedFunction<typeof fetch>;
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+
+    const client = new ApiClient('');
+
+    await client.post<{ ok: boolean }>('/api/auth/logout', undefined, {
+      headers: { Authorization: 'Bearer api-token' },
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = init?.headers as Headers;
+
+    expect(headers.has('X-CSRF-Token')).toBe(false);
   });
 
   it('wraps network failures as ApiError with status 0', async () => {

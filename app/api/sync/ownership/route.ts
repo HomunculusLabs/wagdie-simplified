@@ -6,39 +6,9 @@
 
 import { NextRequest } from 'next/server'
 import { jsonRaw, jsonRawError } from '@/lib/api/responses'
+import { verifySyncAuthorization } from '@/lib/api/sync-auth'
 import { createSupabaseAdminClient } from '@/lib/supabase'
 import { OwnershipSyncService } from '@/lib/services/sync/ownership-sync-service'
-
-/**
- * Verify the sync secret key for authorization
- * Supports both Authorization header and query parameter for Vercel cron
- */
-function verifyAuthorization(request: NextRequest): boolean {
-  const syncSecret = process.env.SYNC_SECRET_KEY
-
-  // If no secret is configured, deny all requests
-  if (!syncSecret) {
-    console.error('SYNC_SECRET_KEY not configured')
-    return false
-  }
-
-  // Check Authorization header (Bearer token)
-  const authHeader = request.headers.get('authorization')
-  if (authHeader) {
-    const token = authHeader.replace('Bearer ', '')
-    if (token === syncSecret) {
-      return true
-    }
-  }
-
-  // Check query parameter (for Vercel cron)
-  const querySecret = request.nextUrl.searchParams.get('secret')
-  if (querySecret === syncSecret) {
-    return true
-  }
-
-  return false
-}
 
 /**
  * GET handler for Vercel cron (cron sends GET requests)
@@ -59,7 +29,7 @@ export async function POST(request: NextRequest) {
  */
 async function handleSync(request: NextRequest) {
   // Verify authorization
-  if (!verifyAuthorization(request)) {
+  if (!verifySyncAuthorization(request)) {
     return jsonRawError('Unauthorized', 401)
   }
 

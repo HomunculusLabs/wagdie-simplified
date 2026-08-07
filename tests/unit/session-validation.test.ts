@@ -5,9 +5,19 @@
 
 describe('Session Secret Validation', () => {
   const originalEnv = process.env
+  async function importSessionModule(): Promise<typeof import('../../lib/auth/session')> {
+    let loadedModule: typeof import('../../lib/auth/session') | undefined
+    jest.isolateModules(() => {
+      jest.doMock('iron-session', () => ({ getIronSession: jest.fn() }))
+      jest.doMock('next/headers', () => ({ cookies: jest.fn() }))
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      loadedModule = require('../../lib/auth/session')
+    })
+
+    return loadedModule!
+  }
 
   beforeEach(() => {
-    jest.resetModules()
     process.env = { ...originalEnv }
   })
 
@@ -16,53 +26,77 @@ describe('Session Secret Validation', () => {
   })
 
   describe('validateSessionSecret', () => {
-    it('should throw if SESSION_SECRET is not set', async () => {
+    it('should throw in production if SESSION_SECRET is not set', async () => {
+      process.env.NODE_ENV = 'production'
       delete process.env.SESSION_SECRET
 
-      await expect(async () => {
-        await import('@/lib/auth/session')
-      }).rejects.toThrow('SESSION_SECRET')
+      await expect(importSessionModule()).rejects.toThrow('SESSION_SECRET')
     })
 
-    it('should throw if SESSION_SECRET is empty string', async () => {
+    it('should throw in production if SESSION_SECRET is empty string', async () => {
+      process.env.NODE_ENV = 'production'
       process.env.SESSION_SECRET = ''
 
-      await expect(async () => {
-        await import('@/lib/auth/session')
-      }).rejects.toThrow('SESSION_SECRET')
+      await expect(importSessionModule()).rejects.toThrow('SESSION_SECRET')
     })
 
-    it('should throw if SESSION_SECRET is less than 32 characters', async () => {
+    it('should allow a missing SESSION_SECRET outside production with dev fallback', async () => {
+      process.env.NODE_ENV = 'test'
+      delete process.env.SESSION_SECRET
+
+      await expect(importSessionModule()).resolves.toBeDefined()
+    })
+
+    it('should throw if explicitly configured SESSION_SECRET is less than 32 characters outside production', async () => {
+      process.env.NODE_ENV = 'test'
+      process.env.SESSION_SECRET = 'too_short'
+
+      await expect(importSessionModule()).rejects.toThrow('32')
+    })
+
+    it('should throw if SESSION_SECRET is less than 32 characters in production', async () => {
+      process.env.NODE_ENV = 'production'
       process.env.SESSION_SECRET = 'short_secret_only_25_chars'
 
-      await expect(async () => {
-        await import('@/lib/auth/session')
-      }).rejects.toThrow('32')
+      await expect(importSessionModule()).rejects.toThrow('32')
     })
 
     it('should not throw if SESSION_SECRET is exactly 32 characters', async () => {
-      process.env.SESSION_SECRET = 'exactly_32_characters_here_ok!!'
+      process.env.SESSION_SECRET = 'a'.repeat(32)
 
-      await expect(async () => {
-        await import('@/lib/auth/session')
-      }).resolves.not.toThrow()
+      await expect(importSessionModule()).resolves.toBeDefined()
     })
 
     it('should not throw if SESSION_SECRET is more than 32 characters', async () => {
       process.env.SESSION_SECRET = 'a_very_long_and_secure_session_secret_that_is_definitely_more_than_32_chars'
 
-      await expect(async () => {
-        await import('@/lib/auth/session')
-      }).resolves.not.toThrow()
+      await expect(importSessionModule()).resolves.toBeDefined()
+    })
+  })
+
+  describe('generateNonce', () => {
+    it('should generate unique 32-character hex nonces', async () => {
+      process.env.SESSION_SECRET = 'a'.repeat(32)
+      const { generateNonce } = await importSessionModule()
+
+      const nonce1 = generateNonce()
+      const nonce2 = generateNonce()
+
+      expect(nonce1).toHaveLength(32)
+      expect(nonce1).toMatch(/^[0-9a-f]{32}$/)
+      expect(nonce2).toHaveLength(32)
+      expect(nonce2).toMatch(/^[0-9a-f]{32}$/)
+      expect(nonce1).not.toBe(nonce2)
     })
   })
 
   describe('Error message clarity', () => {
-    it('should provide clear error message for missing secret', async () => {
+    it('should provide clear error message for missing production secret', async () => {
+      process.env.NODE_ENV = 'production'
       delete process.env.SESSION_SECRET
 
       try {
-        await import('@/lib/auth/session')
+        await importSessionModule()
         fail('Should have thrown an error')
       } catch (error) {
         expect(error).toBeInstanceOf(Error)
@@ -76,7 +110,7 @@ describe('Session Secret Validation', () => {
       process.env.SESSION_SECRET = 'too_short'
 
       try {
-        await import('@/lib/auth/session')
+        await importSessionModule()
         fail('Should have thrown an error')
       } catch (error) {
         expect(error).toBeInstanceOf(Error)

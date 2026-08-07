@@ -107,7 +107,7 @@ export function LoreSubmissionCurationForm({ detail, referenceOptions, onUpdated
       <div>
         <h2 className="font-display text-xl text-soul-accent">Curation metadata</h2>
         <p className="mt-1 text-sm text-soul-mist/70">
-          Curated fields override submitter content when publishing community/canon snapshots.
+          Curated fields override submitter content in community and canon snapshots; they do not gate initial public visibility.
         </p>
       </div>
 

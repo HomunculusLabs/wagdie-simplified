@@ -2,6 +2,7 @@ import {
   getStaticLoreBaseDataset,
   validateLoreBaseDataset,
   type LoreBaseDataset,
+  type LoreBaseSource,
 } from './base-dataset';
 import type { LoreBaseRepositoryLike } from '../repositories/lore-base-repository';
 
@@ -12,6 +13,20 @@ export interface LoreBaseQueryOptions {
   repository?: LoreBaseRepositoryLike;
   logger?: Pick<Console, 'warn'>;
   validate?: boolean;
+}
+
+export interface LoreBaseQueryDiagnostics {
+  configuredSource: LoreBaseSourceMode;
+  activeSource: LoreBaseSource;
+  fallback: {
+    used: boolean;
+    reason?: string;
+  };
+}
+
+export interface LoreBaseDatasetLoadResult {
+  dataset: LoreBaseDataset;
+  diagnostics: LoreBaseQueryDiagnostics;
 }
 
 const DEFAULT_SOURCE_MODE: LoreBaseSourceMode = 'auto';
@@ -55,23 +70,54 @@ const loadDatabaseDataset = async (options: LoreBaseQueryOptions): Promise<LoreB
   return dataset;
 };
 
-export const getActiveLoreBaseDataset = async (
+export const getActiveLoreBaseDatasetWithDiagnostics = async (
   options: LoreBaseQueryOptions = {},
-): Promise<LoreBaseDataset> => {
-  const source = getConfiguredSourceMode(options.source);
+): Promise<LoreBaseDatasetLoadResult> => {
+  const configuredSource = getConfiguredSourceMode(options.source);
 
-  if (source === 'static') {
-    return getStaticLoreBaseDataset();
+  if (configuredSource === 'static') {
+    const dataset = getStaticLoreBaseDataset();
+    return {
+      dataset,
+      diagnostics: {
+        configuredSource,
+        activeSource: dataset.source,
+        fallback: { used: false },
+      },
+    };
   }
 
   try {
-    return await loadDatabaseDataset(options);
+    const dataset = await loadDatabaseDataset(options);
+    return {
+      dataset,
+      diagnostics: {
+        configuredSource,
+        activeSource: dataset.source,
+        fallback: { used: false },
+      },
+    };
   } catch (error) {
     const logger = options.logger ?? console;
     const reason = error instanceof Error ? error.message : String(error);
     warnFallbackOnce(logger, `Falling back to static lore base dataset: ${reason}`);
-    return getStaticLoreBaseDataset();
+    const dataset = getStaticLoreBaseDataset();
+    return {
+      dataset,
+      diagnostics: {
+        configuredSource,
+        activeSource: dataset.source,
+        fallback: { used: true, reason },
+      },
+    };
   }
+};
+
+export const getActiveLoreBaseDataset = async (
+  options: LoreBaseQueryOptions = {},
+): Promise<LoreBaseDataset> => {
+  const { dataset } = await getActiveLoreBaseDatasetWithDiagnostics(options);
+  return dataset;
 };
 
 export const resetLoreBaseQueryWarningsForTests = (): void => {

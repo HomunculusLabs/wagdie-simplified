@@ -23,3 +23,4 @@ Investigations are point-in-time debugging or research records. They may name li
 | `staking-unstaking-2026-05-06.md` | Historical investigation | Identifies staking/unstaking confusion between DB location IDs and on-chain location IDs plus sync staleness. |
 | `wagdie-4040-unstake-2026-05-07.md` | Historical investigation | Token-specific unstake investigation for WAGDIE 4040; points to stale DB/cache fields versus chain state. |
 | `searing-image-generation-2026-05-08.md` | Historical investigation | Transaction/event succeeded but off-chain searing materialization/storage/display failed or lagged. |
+| `lore-infrastructure-2026-06-10.md` | Historical investigation / promoted findings | Lore lifecycle/source-of-truth findings were promoted to `docs/architecture/lore-submission-lifecycle.md`, `docs/architecture/lore-source-of-truth.md`, and `docs/runbooks/lore-operations.md`; verify current code before acting on remaining recommendations. |

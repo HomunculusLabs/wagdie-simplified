@@ -6,8 +6,8 @@ export default function LoreCanonizationAdminPage() {
   return (
     <AdminGate>
       <AdminShell
-        title="Lore Canonization"
-        description="Edit canonization drafts, preview public workflow display, publish approved overrides, and reset events to their static lore state."
+        title="Base Event Canonization Overrides"
+        description="Edit base-event canon metadata, preview the public canon workflow display, publish override snapshots, or reset events to their static lore state. Community submission promotion lives in Lore Submissions."
       >
         <LoreCanonizationAdminContainer />
       </AdminShell>

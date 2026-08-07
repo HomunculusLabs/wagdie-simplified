@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react'
 import toast from 'react-hot-toast'
+import { getCsrfTokenFromCookie } from '@/lib/api/client'
 import { ApiError, readApiRaw } from '@/lib/api/client-response'
 import { buildCharacterUpdateDiff } from '@/lib/domain/character/update-diff'
 import type { Dispatch, SetStateAction } from 'react'
@@ -65,10 +66,14 @@ export function useCharacterSave({
         return
       }
 
+      const csrfToken = getCsrfTokenFromCookie()
       const response = await fetch(`/api/characters/${tokenId}`, {
         method: 'PATCH',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+        },
         body: JSON.stringify(updates),
       })
 

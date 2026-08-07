@@ -1,5 +1,8 @@
 import { loreCanonizationRepository } from '@/lib/repositories/lore-canonization-repository';
-import { getActiveLoreBaseDataset } from '@/lib/lore/base-query';
+import {
+  getActiveLoreBaseDataset,
+  getActiveLoreBaseDatasetWithDiagnostics,
+} from '@/lib/lore/base-query';
 import {
   applyPublishedCanonizationOverrides,
   getAllEffectiveLoreCharacters,
@@ -7,7 +10,10 @@ import {
   getAllEffectiveLoreLocations,
   getAllEffectiveLoreSeasons,
   getEffectiveArchiveItems,
+  getEffectiveCommunityEventBySlug,
+  getEffectiveLoreDiagnostics,
   getEffectiveLoreEventBySlug,
+  getEffectiveOfficialEventBySlug,
   getEffectiveMediaById,
   getEffectiveMediaForEvent,
   getEffectiveRelatedEntitiesForEvent,
@@ -31,6 +37,7 @@ import type { LoreSubmissionDetailDto } from '@/types/lore-submission';
 
 jest.mock('@/lib/lore/base-query', () => ({
   getActiveLoreBaseDataset: jest.fn(),
+  getActiveLoreBaseDatasetWithDiagnostics: jest.fn(),
 }));
 
 jest.mock('@/lib/repositories/lore-canonization-repository', () => ({
@@ -163,6 +170,21 @@ const makeEvent = (overrides: Partial<LoreEvent>): LoreEvent => ({
   ...overrides,
 });
 
+const mockBaseDatasetLoad = (
+  dataset = staticDataset,
+  diagnosticsOverrides: Partial<Awaited<ReturnType<typeof getActiveLoreBaseDatasetWithDiagnostics>>['diagnostics']> = {},
+): void => {
+  const diagnostics = {
+    configuredSource: 'auto' as const,
+    activeSource: dataset.source,
+    fallback: { used: false },
+    ...diagnosticsOverrides,
+  };
+
+  (getActiveLoreBaseDataset as jest.Mock).mockResolvedValue(dataset);
+  (getActiveLoreBaseDatasetWithDiagnostics as jest.Mock).mockResolvedValue({ dataset, diagnostics });
+};
+
 const makeSubmissionDetail = (
   overrides: Partial<LoreSubmissionDetailDto['submission']> = {},
   links: LoreSubmissionDetailDto['links'] = [],
@@ -215,7 +237,7 @@ const makeSubmissionDetail = (
 describe('published lore effective query', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (getActiveLoreBaseDataset as jest.Mock).mockResolvedValue(staticDataset);
+    mockBaseDatasetLoad(staticDataset);
     (loreCanonizationRepository.findAll as jest.Mock).mockResolvedValue([]);
     (loreSubmissionRepository.listPublishedForEffectiveLore as jest.Mock).mockResolvedValue([]);
   });
@@ -263,7 +285,7 @@ describe('published lore effective query', () => {
   });
 
   it('uses DB-backed base events and filter/entity indexes from the active base dataset', async () => {
-    (getActiveLoreBaseDataset as jest.Mock).mockResolvedValue(dbDataset);
+    mockBaseDatasetLoad(dbDataset);
 
     const events = await getAllEffectiveLoreEvents();
     const archiveItems = await getEffectiveArchiveItems({
@@ -300,7 +322,7 @@ describe('published lore effective query', () => {
   });
 
   it('applies published canonization overrides to DB-backed base events', async () => {
-    (getActiveLoreBaseDataset as jest.Mock).mockResolvedValue(dbDataset);
+    mockBaseDatasetLoad(dbDataset);
     (loreCanonizationRepository.findAll as jest.Mock).mockResolvedValueOnce([
       {
         eventId: dbOnlyEvent.id,
@@ -315,7 +337,7 @@ describe('published lore effective query', () => {
   });
 
   it('does not let published submission id or slug collisions override base lore', async () => {
-    (getActiveLoreBaseDataset as jest.Mock).mockResolvedValue(dbDataset);
+    mockBaseDatasetLoad(dbDataset);
     (loreSubmissionRepository.listPublishedForEffectiveLore as jest.Mock).mockResolvedValue([
       {
         submission: {
@@ -459,12 +481,86 @@ describe('published lore effective query', () => {
     });
   });
 
+  it('reflects public, canonized, decanonized, and hidden submission states in effective archive visibility', async () => {
+    const baseSubmission = makeSubmissionDetail({
+      id: 'eeeeeeee-ffff-0000-1111-222222222222',
+      title: 'Bell State Witness',
+      summary: 'A community record used to lock publication state visibility.',
+      body_markdown: 'The bell state changed under operator action.',
+      published_slug: 'bell-state-witness',
+      token_id: '4242',
+      character_ids: [],
+      location_ids: ['location-ashen-road'],
+      status: 'public',
+      visibility: 'public',
+      published_kind: 'community',
+      canon_status: 'community',
+      canon_stage_id: 'community_recorded',
+      canonized_at: null,
+      closed_at: null,
+    });
+
+    const mockPublishedSubmissions = (detail: LoreSubmissionDetailDto) => {
+      (loreSubmissionRepository.listPublishedForEffectiveLore as jest.Mock).mockResolvedValueOnce([detail]);
+    };
+
+    mockPublishedSubmissions(baseSubmission);
+    await expect(getEffectiveArchiveItems({ keyword: 'bell state' })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({
+        slug: 'bell-state-witness',
+        kind: 'community',
+        canon: expect.objectContaining({ status: 'community', stageId: 'community_recorded' }),
+      })]),
+    );
+
+    mockPublishedSubmissions(makeSubmissionDetail({
+      ...baseSubmission.submission,
+      status: 'canonized',
+      published_kind: 'official',
+      canon_status: 'canon',
+      canon_stage_id: 'canonized',
+      canonized_at: '2026-05-10T00:00:00.000Z',
+    }));
+    await expect(getEffectiveOfficialEventBySlug('bell-state-witness')).resolves.toEqual(
+      expect.objectContaining({
+        slug: 'bell-state-witness',
+        kind: 'official',
+        canon: expect.objectContaining({ status: 'canon', stageId: 'canonized' }),
+      }),
+    );
+
+    mockPublishedSubmissions(makeSubmissionDetail({
+      ...baseSubmission.submission,
+      status: 'public',
+      published_kind: 'community',
+      canon_status: 'community',
+      canon_stage_id: 'community_recorded',
+      canonized_at: null,
+    }));
+    await expect(getEffectiveCommunityEventBySlug('bell-state-witness')).resolves.toEqual(
+      expect.objectContaining({
+        slug: 'bell-state-witness',
+        kind: 'community',
+        canon: expect.objectContaining({ status: 'community', stageId: 'community_recorded' }),
+      }),
+    );
+
+    mockPublishedSubmissions(makeSubmissionDetail({
+      ...baseSubmission.submission,
+      status: 'closed',
+      visibility: 'hidden',
+      published_kind: 'community',
+      closed_at: '2026-05-11T00:00:00.000Z',
+    }));
+    await expect(getEffectiveLoreEventBySlug('bell-state-witness')).resolves.toBeUndefined();
+  });
+
   it('returns undefined for invalid or unmatched token ids', async () => {
     await expect(getEffectiveTokenCharacterLore(0)).resolves.toBeUndefined();
-    expect(getActiveLoreBaseDataset).not.toHaveBeenCalled();
+    expect(getActiveLoreBaseDatasetWithDiagnostics).not.toHaveBeenCalled();
 
     await expect(getEffectiveTokenCharacterLore(987654321)).resolves.toBeUndefined();
-    expect(getActiveLoreBaseDataset).toHaveBeenCalledTimes(1);
+    expect(getActiveLoreBaseDatasetWithDiagnostics).toHaveBeenCalledTimes(1);
   });
 
   it('resolves token lore with deterministic match and appearance ordering plus first-seen dedupe', async () => {
@@ -543,7 +639,7 @@ describe('published lore effective query', () => {
       }),
     ];
 
-    (getActiveLoreBaseDataset as jest.Mock).mockResolvedValue(createLoreBaseDataset({
+    mockBaseDatasetLoad(createLoreBaseDataset({
       source: 'database',
       events,
       characters,
@@ -600,7 +696,7 @@ describe('published lore effective query', () => {
       }),
     ];
 
-    (getActiveLoreBaseDataset as jest.Mock).mockResolvedValue(createLoreBaseDataset({
+    mockBaseDatasetLoad(createLoreBaseDataset({
       source: 'database',
       events,
       characters: [character],
@@ -684,5 +780,86 @@ describe('published lore effective query', () => {
     ]);
 
     await expect(getEffectiveTokenCharacterLore(tokenId)).resolves.toBeUndefined();
+  });
+
+  it('reports DB base fallback diagnostics', async () => {
+    mockBaseDatasetLoad(staticDataset, {
+      activeSource: 'static',
+      fallback: { used: true, reason: 'database unavailable' },
+    });
+
+    const diagnostics = await getEffectiveLoreDiagnostics();
+
+    expect(diagnostics.generatedAt).toEqual(expect.any(String));
+    expect(diagnostics.base).toMatchObject({
+      configuredSource: 'auto',
+      activeSource: 'static',
+      fallback: { used: true, reason: 'database unavailable' },
+      counts: {
+        events: staticDataset.events.length,
+        characters: staticDataset.characters.length,
+      },
+    });
+  });
+
+  it('reports override fetch failure diagnostics', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    (loreCanonizationRepository.findAll as jest.Mock).mockRejectedValueOnce(new Error('override store down'));
+
+    const diagnostics = await getEffectiveLoreDiagnostics();
+
+    expect(diagnostics.overrides).toEqual({
+      status: 'error',
+      count: 0,
+      error: 'override store down',
+    });
+    expect(diagnostics.submissions).toMatchObject({ status: 'ok', count: 0, adaptedCount: 0 });
+    warnSpy.mockRestore();
+  });
+
+  it('reports submission fetch failure diagnostics', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    (loreSubmissionRepository.listPublishedForEffectiveLore as jest.Mock).mockRejectedValueOnce(
+      new Error('submission store down'),
+    );
+
+    const diagnostics = await getEffectiveLoreDiagnostics();
+
+    expect(diagnostics.submissions).toEqual({
+      status: 'error',
+      count: 0,
+      adaptedCount: 0,
+      error: 'submission store down',
+    });
+    expect(diagnostics.overrides).toMatchObject({ status: 'ok', count: 0 });
+    warnSpy.mockRestore();
+  });
+
+  it('reports published submission collision diagnostics', async () => {
+    mockBaseDatasetLoad(dbDataset);
+    (loreSubmissionRepository.listPublishedForEffectiveLore as jest.Mock).mockResolvedValue([
+      makeSubmissionDetail({
+        id: 'dddddddd-eeee-ffff-0000-111111111111',
+        title: 'Collision',
+        summary: 'A colliding community submission.',
+        body_markdown: 'This should not replace base lore.',
+        published_slug: dbOnlyEvent.slug,
+        season_id: dbOnlyEvent.seasonId,
+        character_ids: dbOnlyEvent.characterIds,
+        location_ids: dbOnlyEvent.locationIds,
+      }),
+    ]);
+
+    const diagnostics = await getEffectiveLoreDiagnostics();
+
+    expect(diagnostics.submissions).toMatchObject({ status: 'ok', count: 1, adaptedCount: 1 });
+    expect(diagnostics.collisions).toEqual({
+      skippedCount: 1,
+      skipped: [{
+        id: 'lore-submission:dddddddd-eeee-ffff-0000-111111111111',
+        slug: dbOnlyEvent.slug,
+        reason: 'base-event-slug',
+      }],
+    });
   });
 });

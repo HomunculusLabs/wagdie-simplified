@@ -4,13 +4,19 @@ import React from 'react';
 import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import Link from 'next/link'
-import { useAccount } from 'wagmi'
 import { Navigation } from './Navigation'
 import { WalletButton } from '@/components/wallet/WalletButton'
+import { useAuth } from '@/hooks/useAuth'
 import { isAdmin } from '@/lib/auth/admin'
 import { lockBodyScroll, unlockBodyScroll } from '@/lib/utils/bodyScrollLock'
 
 const showLoreNav = process.env.NEXT_PUBLIC_SHOW_LORE_NAV === 'true'
+
+function formatAddress(address?: string | null): string {
+  if (!address) return 'Unknown pilgrim'
+
+  return `${address.slice(0, 6)}...${address.slice(-4)}`
+}
 
 /**
  * Header Component
@@ -20,7 +26,8 @@ export function Header() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [isDrawerOpen, setIsDrawerOpen] = useState(false)
   const [darkMode, setDarkMode] = useState(true)
-  const { address } = useAccount()
+  const { address, isConnected } = useAuth()
+  const showConnectedActions = isConnected && Boolean(address)
   const isAdminWallet = isAdmin(address)
 
   const toggleMobileMenu = () => {
@@ -86,7 +93,7 @@ export function Header() {
           </Link>
 
           {/* Desktop Navigation */}
-          <Navigation className="hidden md:flex" />
+          <Navigation className="hidden md:flex" showConnectedActions={showConnectedActions} />
 
           {/* Mobile Menu Button */}
           <button
@@ -113,7 +120,7 @@ export function Header() {
               title="More options"
               aria-label="Open menu drawer"
             >
-              More
+              {showConnectedActions ? `Welcome, ${formatAddress(address)}` : 'Menu'}
             </button>
 
             <WalletButton />
@@ -123,7 +130,11 @@ export function Header() {
         {/* Mobile Menu */}
         {isMobileMenuOpen && (
           <div className="md:hidden py-4 border-t border-neutral-800">
-            <Navigation isMobile onNavClick={closeMobileMenu} />
+            <Navigation
+              isMobile
+              onNavClick={closeMobileMenu}
+              showConnectedActions={showConnectedActions}
+            />
             <div className="mt-4 flex flex-col gap-2 px-2">
               <button
                 onClick={() => {
@@ -149,12 +160,17 @@ export function Header() {
           onClick={closeDrawer}
         >
           <div
-            className="fixed right-0 top-0.5 h-[calc(100vh-4rem)] w-80 bg-soul-950 border-l border-neutral-800 shadow-2xl overflow-y-auto"
+            className="fixed right-0 top-0.5 h-[calc(100vh-4rem)] w-full max-w-sm bg-soul-950 border-l border-neutral-800 shadow-2xl overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Drawer Header */}
-            <div className="flex items-center justify-between p-6 border-b border-neutral-800">
-              <h2 className="text-sm font-eskapade text-neutral-200">Menu</h2>
+            <div className="flex items-center justify-between border-b border-neutral-800 px-6 py-5">
+              <div>
+                <p className="font-display text-[11px] uppercase tracking-[0.4em] text-neutral-500">
+                  We Are All Going to Die
+                </p>
+                <h2 className="mt-1 text-sm font-eskapade text-neutral-200">Menu</h2>
+              </div>
               <button
                 onClick={closeDrawer}
                 className="p-2 text-neutral-500 hover:text-red-500 transition-colors"
@@ -167,48 +183,100 @@ export function Header() {
             </div>
 
             {/* Drawer Content */}
-            <nav className="p-4 space-y-1">
-              <Link
-                href="/map"
-                onClick={closeDrawer}
-                className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                World Map
-              </Link>
-              {showLoreNav && (
+            <div className="space-y-5 p-5">
+              {showConnectedActions ? (
+                <section className="border border-soul-accent/30 bg-black/20 p-4">
+                  <div className="flex items-center gap-4">
+                    <div className="flex h-20 w-20 shrink-0 items-center justify-center border border-soul-accent/25 bg-neutral-900/80 p-2">
+                      <Image
+                        src="/images/wagdie.png"
+                        alt="WAGDIE"
+                        width={1910}
+                        height={588}
+                        className="w-full object-contain opacity-90"
+                      />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-eskapade text-sm text-soul-accent">Welcome</p>
+                      <p className="truncate font-display text-2xl text-bone" title={address ?? undefined}>
+                        {formatAddress(address)}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="mt-4 font-eskapade text-xs text-neutral-500">Choose your fate.</p>
+                </section>
+              ) : (
+                <section className="border border-neutral-800 bg-black/20 p-4">
+                  <p className="font-display text-xl text-bone">Welcome, pilgrim</p>
+                  <p className="mt-2 font-eskapade text-sm text-neutral-500">
+                    Connect your wallet to reveal Searing, Spread, and other character actions.
+                  </p>
+                  <div className="mt-4">
+                    <WalletButton />
+                  </div>
+                </section>
+              )}
+
+              <nav className="space-y-1" aria-label="Menu links">
                 <Link
-                  href="/lore"
+                  href="/map"
                   onClick={closeDrawer}
                   className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
                 >
-                  Lore & History
+                  Travel on the World Map
                 </Link>
+                {showLoreNav && (
+                  <Link
+                    href="/lore"
+                    onClick={closeDrawer}
+                    className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
+                  >
+                    Lore & History
+                  </Link>
+                )}
+                <Link
+                  href="/videos"
+                  onClick={closeDrawer}
+                  className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
+                >
+                  Low Poly Videos
+                </Link>
+              </nav>
+
+              {showConnectedActions && (
+                <nav
+                  className="border-y border-neutral-800 py-4 space-y-1"
+                  aria-label="Connected actions"
+                >
+                  <Link
+                    href="/searing"
+                    onClick={closeDrawer}
+                    className="block px-4 py-3 text-bone hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-display text-xl"
+                  >
+                    Sear Your Equipment
+                  </Link>
+                  <Link
+                    href="/lore/submit"
+                    onClick={closeDrawer}
+                    className="block px-4 py-3 text-bone hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-display text-xl"
+                  >
+                    Lore Submission
+                  </Link>
+                  <Link
+                    href="/spread"
+                    onClick={closeDrawer}
+                    className="block px-4 py-3 text-bone hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-display text-xl"
+                  >
+                    Spread Infection
+                  </Link>
+                </nav>
               )}
-              <Link
-                href="/videos"
-                onClick={closeDrawer}
-                className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                Low Poly Videos
-              </Link>
-              <Link
-                href="/spread"
-                onClick={closeDrawer}
-                className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                Spread Infection
-              </Link>
-              <Link
-                href="/searing"
-                onClick={closeDrawer}
-                className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                Searing
-              </Link>
 
               {isAdminWallet && (
-                <>
-                  <div className="my-4 h-px bg-neutral-800" />
+                <nav className="space-y-1" aria-label="Admin links">
+                  <p className="px-4 font-eskapade text-[11px] uppercase tracking-[0.25em] text-neutral-600">
+                    Admin
+                  </p>
                   <Link
                     href="/map-editor"
                     onClick={closeDrawer}
@@ -223,45 +291,39 @@ export function Header() {
                   >
                     Searing Map Editor
                   </Link>
-                </>
+                </nav>
               )}
 
-              <div className="my-4 h-px bg-neutral-800" />
-
-              <a
-                href="https://discord.gg/wagdie"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-between px-4 py-3 text-neutral-500 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
+              <nav
+                className="grid grid-cols-3 gap-3 border-t border-neutral-800 pt-5"
+                aria-label="Social links"
               >
-                <span>Discord</span>
-                <svg className="w-4 h-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-              </a>
-              <a
-                href="https://twitter.com/WAGDIE_ETH"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-between px-4 py-3 text-neutral-500 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                <span>Twitter</span>
-                <svg className="w-4 h-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-              </a>
-              <a
-                href="https://opensea.io/collection/we-are-all-going-to-die"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-between px-4 py-3 text-neutral-500 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                <span>OpenSea</span>
-                <svg className="w-4 h-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-              </a>
-            </nav>
+                <a
+                  href="https://discord.gg/wagdie"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex h-12 items-center justify-center border border-neutral-800 text-neutral-400 hover:border-soul-accent/50 hover:text-soul-accent transition-all duration-300 font-eskapade text-sm"
+                >
+                  Discord
+                </a>
+                <a
+                  href="https://twitter.com/WAGDIE_ETH"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex h-12 items-center justify-center border border-neutral-800 text-neutral-400 hover:border-soul-accent/50 hover:text-soul-accent transition-all duration-300 font-eskapade text-sm"
+                >
+                  X
+                </a>
+                <a
+                  href="https://opensea.io/collection/we-are-all-going-to-die"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex h-12 items-center justify-center border border-neutral-800 text-neutral-400 hover:border-soul-accent/50 hover:text-soul-accent transition-all duration-300 font-eskapade text-sm"
+                >
+                  OpenSea
+                </a>
+              </nav>
+            </div>
           </div>
         </div>
       )}

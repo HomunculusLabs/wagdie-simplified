@@ -50,16 +50,16 @@ export function LoreSubmissionReviewPanel({ detail, onUpdated }: LoreSubmissionR
   return (
     <section className="space-y-4 rounded-xl border border-soul-accent/20 bg-soul-shadow/70 p-5">
       <div>
-        <h2 className="font-display text-xl text-soul-accent">Review actions</h2>
+        <h2 className="font-display text-xl text-soul-accent">Moderation actions</h2>
         <p className="mt-1 text-sm text-soul-mist/70">
-Public submissions are already community lore. Use this panel to request changes, close/reject, or append an audit note.
+          Valid token-owner submissions auto-publish as community lore. Use this panel for submitted edge cases, post-public closure/rejection, or audit notes.
         </p>
       </div>
 
       {error && <div role="alert" className="rounded border border-soul-ember/40 bg-soul-ember/10 p-3 text-sm whitespace-pre-line text-soul-ember">{error}</div>}
 
       <label className="block space-y-1 text-sm text-soul-mist">
-        <span className="font-display uppercase tracking-wide">Review note</span>
+        <span className="font-display uppercase tracking-wide">Moderation note</span>
         <textarea
           value={note}
           onChange={(event) => setNote(event.target.value)}

@@ -19,6 +19,10 @@ const meta: Meta<typeof Navigation> = {
       action: 'navigation clicked',
       description: 'Click handler for navigation items',
     },
+    showConnectedActions: {
+      control: 'boolean',
+      description: 'Shows connected-only links such as Searing and Spread',
+    },
   },
 };
 
@@ -29,11 +33,27 @@ export const Desktop: Story = {
   args: {
     className: 'flex gap-6',
     isMobile: false,
+    showConnectedActions: false,
   },
   parameters: {
     docs: {
       description: {
-        story: 'Desktop horizontal navigation layout. Links highlight based on current path.',
+        story: 'Public desktop navigation. Connected-only links such as Searing and Spread are hidden.',
+      },
+    },
+  },
+};
+
+export const ConnectedDesktop: Story = {
+  args: {
+    className: 'flex gap-6',
+    isMobile: false,
+    showConnectedActions: true,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story: 'Connected desktop navigation with Searing and Spread visible.',
       },
     },
   },
@@ -42,6 +62,7 @@ export const Desktop: Story = {
 export const Mobile: Story = {
   args: {
     isMobile: true,
+    showConnectedActions: false,
   },
   parameters: {
     viewport: {
@@ -49,7 +70,24 @@ export const Mobile: Story = {
     },
     docs: {
       description: {
-        story: 'Mobile vertical navigation layout. Stack layout for smaller screens.',
+        story: 'Public mobile navigation. Connected-only links such as Searing and Spread are hidden.',
+      },
+    },
+  },
+};
+
+export const ConnectedMobile: Story = {
+  args: {
+    isMobile: true,
+    showConnectedActions: true,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'mobile1',
+    },
+    docs: {
+      description: {
+        story: 'Connected mobile navigation with Searing and Spread visible.',
       },
     },
   },
@@ -58,6 +96,7 @@ export const Mobile: Story = {
 export const WithClickHandler: Story = {
   args: {
     onNavClick: () => alert('Navigation item clicked!'),
+    showConnectedActions: true,
   },
   parameters: {
     docs: {

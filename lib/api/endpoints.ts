@@ -115,7 +115,7 @@ export const authApi = {
    * Get nonce for SIWE
    */
   getNonce: (address: string) =>
-    apiClient.post<{ nonce: string }>('/api/auth/nonce', { address }, {
+    apiClient.post<{ nonce: string; domain?: string; uri?: string; chainId?: number }>('/api/auth/nonce', { address }, {
       fallbackMessage: 'Failed to generate nonce',
     }),
 

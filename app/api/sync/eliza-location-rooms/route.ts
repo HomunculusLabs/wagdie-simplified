@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
 import { jsonRaw, jsonRawError } from '@/lib/api/responses'
+import { verifySyncAuthorization } from '@/lib/api/sync-auth'
 import {
   LocationRoomFeatureDisabledError,
   LocationRoomGameplayConfigError,
@@ -10,21 +11,6 @@ import {
 
 export const runtime = 'nodejs'
 
-function verifyAuthorization(request: NextRequest): boolean {
-  const syncSecret = process.env.SYNC_SECRET_KEY
-  if (!syncSecret) {
-    console.error('SYNC_SECRET_KEY not configured')
-    return false
-  }
-
-  const authHeader = request.headers.get('authorization')
-  if (authHeader?.replace('Bearer ', '') === syncSecret) {
-    return true
-  }
-
-  return request.nextUrl.searchParams.get('secret') === syncSecret
-}
-
 export async function GET(request: NextRequest) {
   return handleSync(request)
 }
@@ -34,7 +20,7 @@ export async function POST(request: NextRequest) {
 }
 
 async function handleSync(request: NextRequest) {
-  if (!verifyAuthorization(request)) {
+  if (!verifySyncAuthorization(request)) {
     return jsonRawError('Unauthorized', 401)
   }
 

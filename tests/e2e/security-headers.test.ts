@@ -1,114 +1,67 @@
-/**
- * E2E tests for security headers
- * Tests T048 [US6] - Security headers on page responses
- *
- * Note: This test is designed to be run against a running dev/production server
- * For CI, you would need to start the server first
- */
+type Header = { key: string; value: string }
+type HeaderRule = { source: string; headers: Header[] }
+
+const nextConfig = require('../../next.config.js') as {
+  headers: () => Promise<HeaderRule[]>
+}
+
+function headersByKey(headers: Header[]): Record<string, string> {
+  return Object.fromEntries(headers.map((header) => [header.key, header.value]))
+}
 
 describe('Security Headers', () => {
-  // These tests verify the expected header configuration
-  // In a real e2e test, you would fetch from the actual server
+  let headerRules: HeaderRule[]
 
-  const expectedHeaders = {
-    'X-Frame-Options': 'DENY',
-    'X-Content-Type-Options': 'nosniff',
-    'Referrer-Policy': 'strict-origin-when-cross-origin',
-  }
-
-  describe('Required security headers', () => {
-    it('should have X-Frame-Options: DENY', () => {
-      expect(expectedHeaders['X-Frame-Options']).toBe('DENY')
-    })
-
-    it('should have X-Content-Type-Options: nosniff', () => {
-      expect(expectedHeaders['X-Content-Type-Options']).toBe('nosniff')
-    })
-
-    it('should have Referrer-Policy: strict-origin-when-cross-origin', () => {
-      expect(expectedHeaders['Referrer-Policy']).toBe('strict-origin-when-cross-origin')
-    })
+  beforeAll(async () => {
+    headerRules = await nextConfig.headers()
   })
 
-  describe('Content Security Policy', () => {
-    const cspDirectives = {
-      'default-src': ["'self'"],
-      'script-src': ["'self'", "'unsafe-inline'", "'unsafe-eval'"], // Next.js needs these
-      'style-src': ["'self'", "'unsafe-inline'"], // Tailwind needs inline styles
-      'img-src': [
-        "'self'",
-        'data:',
-        'blob:',
-        'https://ipfs.io',
-        'https://gateway.pinata.cloud',
-        'https://cloudflare-ipfs.com',
-        'https://*.tile.openstreetmap.org',
-      ],
-      'connect-src': [
-        "'self'",
-        'https://*.supabase.co',
-        'https://*.alchemy.com',
-        'wss://*.alchemy.com',
-      ],
-      'font-src': ["'self'"],
-      'frame-ancestors': ["'none'"],
-    }
+  it('applies global security headers to normal routes', () => {
+    const globalRule = headerRules.find((rule) => rule.source.includes('(?!characters/'))
+    expect(globalRule).toBeDefined()
 
-    it('should define default-src as self', () => {
-      expect(cspDirectives['default-src']).toContain("'self'")
-    })
-
-    it('should allow IPFS sources for images', () => {
-      expect(cspDirectives['img-src']).toContain('https://ipfs.io')
-      expect(cspDirectives['img-src']).toContain('https://gateway.pinata.cloud')
-    })
-
-    it('should allow Supabase connections', () => {
-      expect(cspDirectives['connect-src']).toContain('https://*.supabase.co')
-    })
-
-    it('should allow Alchemy connections', () => {
-      expect(cspDirectives['connect-src']).toContain('https://*.alchemy.com')
-    })
-
-    it('should block framing with frame-ancestors none', () => {
-      expect(cspDirectives['frame-ancestors']).toContain("'none'")
-    })
+    const headers = headersByKey(globalRule!.headers)
+    expect(headers['X-Frame-Options']).toBe('DENY')
+    expect(headers['X-Content-Type-Options']).toBe('nosniff')
+    expect(headers['Referrer-Policy']).toBe('strict-origin-when-cross-origin')
+    expect(headers['X-DNS-Prefetch-Control']).toBe('off')
+    expect(headers['Permissions-Policy']).toBe('camera=(), microphone=(), geolocation=()')
   })
 
-  describe('Header values format', () => {
-    it('should use correct X-Frame-Options format', () => {
-      // DENY is more secure than SAMEORIGIN
-      expect(['DENY', 'SAMEORIGIN']).toContain(expectedHeaders['X-Frame-Options'])
-    })
+  it('defines a compatible Content Security Policy for normal routes', () => {
+    const globalRule = headerRules.find((rule) => rule.source.includes('(?!characters/'))
+    const csp = headersByKey(globalRule!.headers)['Content-Security-Policy']
 
-    it('should use correct X-Content-Type-Options value', () => {
-      // nosniff is the only valid value
-      expect(expectedHeaders['X-Content-Type-Options']).toBe('nosniff')
-    })
+    expect(csp).toContain("default-src 'self'")
+    expect(csp).toContain("base-uri 'self'")
+    expect(csp).toContain("object-src 'none'")
+    expect(csp).toContain("frame-ancestors 'none'")
+    expect(csp).toContain("script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:")
+    expect(csp).toContain("style-src 'self' 'unsafe-inline'")
+    expect(csp).toContain("img-src 'self' data: blob: https:")
+    expect(csp).toContain("connect-src 'self' https: wss:")
+  })
 
-    it('should use strict referrer policy', () => {
-      const validPolicies = [
-        'strict-origin-when-cross-origin',
-        'strict-origin',
-        'same-origin',
-        'no-referrer',
-      ]
-      expect(validPolicies).toContain(expectedHeaders['Referrer-Policy'])
-    })
+  it('preserves marketplace embedding for animated character pages', () => {
+    const animatedRule = headerRules.find((rule) => rule.source === '/characters/:tokenId/animated')
+    expect(animatedRule).toBeDefined()
+
+    const headers = headersByKey(animatedRule!.headers)
+    expect(headers['Access-Control-Allow-Origin']).toBe('*')
+    expect(headers['Access-Control-Allow-Methods']).toBe('GET, OPTIONS')
+    expect(headers['X-Content-Type-Options']).toBe('nosniff')
+    expect(headers['Referrer-Policy']).toBe('strict-origin-when-cross-origin')
+    expect(headers['X-Frame-Options']).toBeUndefined()
+    expect(headers['Content-Security-Policy']).toBeUndefined()
+  })
+
+  it('preserves CORS headers for character metadata API responses', () => {
+    const metadataRule = headerRules.find((rule) => rule.source === '/api/characters/metadata/:tokenId')
+    expect(metadataRule).toBeDefined()
+
+    const headers = headersByKey(metadataRule!.headers)
+    expect(headers['Access-Control-Allow-Origin']).toBe('*')
+    expect(headers['Access-Control-Allow-Methods']).toBe('GET, OPTIONS')
+    expect(headers['Access-Control-Allow-Headers']).toBe('Content-Type')
   })
 })
-
-/**
- * Manual testing instructions:
- *
- * 1. Start the dev server: npm run dev
- * 2. Open browser DevTools > Network tab
- * 3. Refresh the page
- * 4. Click on the main document request
- * 5. Check Response Headers for:
- *    - Content-Security-Policy
- *    - X-Frame-Options: DENY
- *    - X-Content-Type-Options: nosniff
- *    - Referrer-Policy: strict-origin-when-cross-origin
- */

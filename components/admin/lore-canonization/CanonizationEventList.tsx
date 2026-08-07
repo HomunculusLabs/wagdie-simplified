@@ -29,11 +29,11 @@ const eventKindLabels: Record<LoreEventKind, string> = {
 };
 
 const overrideOptions: { value: OverrideFilter; label: string }[] = [
-  { value: 'all', label: 'All override states' },
-  { value: 'with', label: 'Has override' },
-  { value: 'without', label: 'No override' },
-  { value: 'draft', label: 'Has draft' },
-  { value: 'published', label: 'Has published' },
+  { value: 'all', label: 'All base-event override states' },
+  { value: 'with', label: 'Has base-event override' },
+  { value: 'without', label: 'Static base canon only' },
+  { value: 'draft', label: 'Has draft override' },
+  { value: 'published', label: 'Has published override' },
 ];
 
 export function CanonizationEventList({ records, selectedEventId, onSelect }: CanonizationEventListProps) {
@@ -77,24 +77,24 @@ export function CanonizationEventList({ records, selectedEventId, onSelect }: Ca
     <aside className="space-y-4 rounded-lg border border-soul-accent/20 bg-soul-shadow/70 p-4">
       <div>
         <p className="text-xs font-display uppercase tracking-[0.18em] text-soul-accent">
-          Canonization records
+          Base event override records
         </p>
         <p className="mt-1 text-sm text-soul-mist/75">
-          {filteredRecords.length} of {records.length} visible
+          {filteredRecords.length} of {records.length} base events visible
         </p>
       </div>
 
       <div className="grid gap-3">
         <Input
           label="Keyword"
-          aria-label="Filter canonization events by keyword"
+          aria-label="Filter base event override records by keyword"
           value={keyword}
           placeholder="pilgrims, citadel..."
           onChange={(event) => setKeyword(event.target.value)}
         />
         <Select
-          label="Kind"
-          aria-label="Filter canonization events by kind"
+          label="Base archive kind"
+          aria-label="Filter base event override records by base archive kind"
           value={kind}
           options={[
             { value: '', label: 'All kinds' },
@@ -104,7 +104,7 @@ export function CanonizationEventList({ records, selectedEventId, onSelect }: Ca
         />
         <Select
           label="Status"
-          aria-label="Filter canonization events by status"
+          aria-label="Filter base event override records by status"
           value={status}
           options={[
             { value: '', label: 'All statuses' },
@@ -114,7 +114,7 @@ export function CanonizationEventList({ records, selectedEventId, onSelect }: Ca
         />
         <Select
           label="Stage"
-          aria-label="Filter canonization events by stage"
+          aria-label="Filter base event override records by stage"
           value={stage}
           options={[
             { value: '', label: 'All stages' },
@@ -123,8 +123,8 @@ export function CanonizationEventList({ records, selectedEventId, onSelect }: Ca
           onChange={(event) => setStage(event.target.value as '' | CanonizationStageId)}
         />
         <Select
-          label="Override"
-          aria-label="Filter canonization events by override state"
+          label="Base event override"
+          aria-label="Filter base event override records by override state"
           value={overrideFilter}
           options={overrideOptions}
           onChange={(event) => setOverrideFilter(event.target.value as OverrideFilter)}
@@ -153,7 +153,7 @@ export function CanonizationEventList({ records, selectedEventId, onSelect }: Ca
                 <div>
                   <p className="font-display text-base text-soul-bone">{record.event.title}</p>
                   <p className="mt-1 text-xs uppercase tracking-wide text-soul-mist/70">
-                    {eventKindLabels[record.event.kind]} / {stageDef.shortLabel}
+                    Base kind: {eventKindLabels[record.event.kind]} / {stageDef.shortLabel}
                   </p>
                 </div>
                 <span className="shrink-0 rounded border border-soul-accent/30 px-2 py-1 text-[0.65rem] uppercase tracking-wide text-soul-accent">
@@ -161,9 +161,9 @@ export function CanonizationEventList({ records, selectedEventId, onSelect }: Ca
                 </span>
               </div>
               <div className="mt-3 flex flex-wrap gap-2 text-[0.65rem] uppercase tracking-wide text-soul-mist/70">
-                {record.draftOverride && <span>Draft</span>}
-                {record.publishedOverride && <span>Published</span>}
-                {!record.draftOverride && !record.publishedOverride && <span>Static</span>}
+                {record.draftOverride && <span>Draft override</span>}
+                {record.publishedOverride && <span>Published override</span>}
+                {!record.draftOverride && !record.publishedOverride && <span>Static base canon</span>}
               </div>
             </button>
           );

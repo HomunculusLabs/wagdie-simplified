@@ -23,3 +23,4 @@ If a runbook becomes obsolete, mark it superseded in this index and link the rep
 | File | Classification | Summary / validation note |
 | --- | --- | --- |
 | `elizaos-dev-validation.md` | Runbook | Dev-server validation path for official ElizaOS setup and remaining cutover gates. Existing body has target assumptions and avoids hardcoded secrets; later operations docs may curate or point to it. |
+| `lore-operations.md` | Runbook | Operator guide for base-event canonization overrides, auto-public community submission moderation/curation, submission promotion, and Eliza/Game Master boundary stop conditions. Last validated 2026-06-10. |

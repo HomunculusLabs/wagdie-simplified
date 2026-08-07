@@ -13,6 +13,57 @@ export { ApiError } from './client-errors';
 
 export type ApiParseMode = 'json' | 'text' | 'blob' | 'response';
 
+const CSRF_COOKIE_NAME = 'csrf-token';
+const CSRF_HEADER_NAME = 'X-CSRF-Token';
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+export function getCsrfTokenFromCookie(cookieString?: string): string | null {
+  if (typeof document === 'undefined' && cookieString === undefined) {
+    return null;
+  }
+
+  const source = cookieString ?? document.cookie;
+  const cookies = source.split(';');
+
+  for (const cookie of cookies) {
+    const [rawName, ...valueParts] = cookie.trim().split('=');
+    if (rawName === CSRF_COOKIE_NAME) {
+      return decodeURIComponent(valueParts.join('='));
+    }
+  }
+
+  return null;
+}
+
+function shouldAttachCsrfHeader(method: string, url: string, headers: Headers): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  if (SAFE_METHODS.has(method.toUpperCase())) {
+    return false;
+  }
+
+  if (headers.has(CSRF_HEADER_NAME) || headers.has('Authorization')) {
+    return false;
+  }
+
+  return new URL(url).origin === window.location.origin;
+}
+
+export function applyCsrfHeader(headers: Headers, method: string, url: string): Headers {
+  if (!shouldAttachCsrfHeader(method, url, headers)) {
+    return headers;
+  }
+
+  const token = getCsrfTokenFromCookie();
+  if (token) {
+    headers.set(CSRF_HEADER_NAME, token);
+  }
+
+  return headers;
+}
+
 /**
  * Request configuration
  */
@@ -139,10 +190,13 @@ export class ApiClient {
     const body = hasJsonBody ? JSON.stringify(json) : fetchConfig.body;
 
     try {
+      const method = fetchConfig.method ?? 'GET';
+      const requestHeaders = applyCsrfHeader(this.buildHeaders(headers, hasJsonBody), method, url);
+
       const response = await fetch(url, {
         ...fetchConfig,
         body,
-        headers: this.buildHeaders(headers, hasJsonBody),
+        headers: requestHeaders,
       });
 
       if (parseAs === 'response') {

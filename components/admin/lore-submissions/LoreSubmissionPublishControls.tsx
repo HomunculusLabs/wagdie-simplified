@@ -13,9 +13,9 @@ export interface LoreSubmissionPublishControlsProps {
 }
 
 const labels: Record<PublishAction, string> = {
-  canonize: 'Canonize',
-  decanonize: 'Decanonize',
-  unpublish: 'Unpublish / hide',
+  canonize: 'Promote to canon',
+  decanonize: 'Return to community',
+  unpublish: 'Hide community lore',
 };
 
 export function LoreSubmissionPublishControls({ detail, onUpdated }: LoreSubmissionPublishControlsProps) {
@@ -47,9 +47,9 @@ export function LoreSubmissionPublishControls({ detail, onUpdated }: LoreSubmiss
   return (
     <section className="space-y-4 rounded-xl border border-soul-accent/20 bg-soul-shadow/70 p-5">
       <div>
-        <h2 className="font-display text-xl text-soul-accent">Publication controls</h2>
+        <h2 className="font-display text-xl text-soul-accent">Canon and visibility controls</h2>
         <p className="mt-1 text-sm text-soul-mist/70">
-          Promote public community lore to canon, decanonize it back to community, or hide public community lore.
+          Public community lore is already visible. Promote it to canon, return canonized lore to community status, or hide it from public lore.
         </p>
       </div>
 
@@ -67,13 +67,13 @@ export function LoreSubmissionPublishControls({ detail, onUpdated }: LoreSubmiss
 
       <div className="grid gap-2 sm:grid-cols-2">
         <Button type="button" onClick={() => submitAction('canonize')} disabled={status !== 'public'} isLoading={busyAction === 'canonize'}>
-          Canonize
+          Promote to canon
         </Button>
         <Button type="button" variant="secondary" onClick={() => submitAction('decanonize')} disabled={status !== 'canonized'} isLoading={busyAction === 'decanonize'}>
-          Decanonize
+          Return to community
         </Button>
         <Button type="button" variant="danger" onClick={() => submitAction('unpublish')} disabled={status !== 'public'} isLoading={busyAction === 'unpublish'}>
-          Unpublish / hide
+          Hide community lore
         </Button>
       </div>
     </section>

@@ -1,5 +1,8 @@
 import * as React from 'react';
-import { getActiveLoreBaseDataset } from './base-query';
+import {
+  getActiveLoreBaseDatasetWithDiagnostics,
+  type LoreBaseQueryDiagnostics,
+} from './base-query';
 import {
   createLoreBaseDataset,
   sortLoreCharacters,
@@ -50,6 +53,55 @@ export const applyPublishedCanonizationOverrides = (
   });
 };
 
+export type EffectiveLoreFetchStatus = 'ok' | 'error';
+
+export interface EffectiveLoreFetchDiagnostics {
+  status: EffectiveLoreFetchStatus;
+  count: number;
+  error?: string;
+}
+
+export interface EffectiveLoreSubmissionFetchDiagnostics extends EffectiveLoreFetchDiagnostics {
+  adaptedCount: number;
+}
+
+export type EffectiveLoreCollisionReason =
+  | 'base-event-id'
+  | 'base-event-slug'
+  | 'effective-submission-id'
+  | 'effective-submission-slug';
+
+export interface EffectiveLoreCollisionDiagnostic {
+  id: string;
+  slug: string;
+  reason: EffectiveLoreCollisionReason;
+}
+
+export interface EffectiveLoreDiagnostics {
+  generatedAt: string;
+  base: LoreBaseQueryDiagnostics & {
+    counts: {
+      events: number;
+      characters: number;
+      locations: number;
+      seasons: number;
+      sources: number;
+      media: number;
+    };
+  };
+  overrides: EffectiveLoreFetchDiagnostics;
+  submissions: EffectiveLoreSubmissionFetchDiagnostics;
+  collisions: {
+    skippedCount: number;
+    skipped: EffectiveLoreCollisionDiagnostic[];
+  };
+  cache: {
+    reactCacheAvailable: boolean;
+    publicHelpersBypassCacheInTests: boolean;
+    note: string;
+  };
+}
+
 let hasWarnedAboutOverrideFallback = false;
 let hasWarnedAboutSubmissionFallback = false;
 let hasWarnedAboutSubmissionCollision = false;
@@ -62,37 +114,68 @@ const summarizeQueryError = (error: unknown): string => {
   return String(error).slice(0, 240);
 };
 
-const fetchPublishedOverrideSets = async (): Promise<LoreCanonizationOverrideSet[]> => {
+const fetchPublishedOverrideSetsWithDiagnostics = async (): Promise<{
+  overrideSets: LoreCanonizationOverrideSet[];
+  diagnostics: EffectiveLoreFetchDiagnostics;
+}> => {
   try {
-    return await loreCanonizationRepository.findAll();
+    const overrideSets = await loreCanonizationRepository.findAll();
+    return {
+      overrideSets,
+      diagnostics: { status: 'ok', count: overrideSets.length },
+    };
   } catch (error) {
+    const summarizedError = summarizeQueryError(error);
     if (!hasWarnedAboutOverrideFallback) {
       hasWarnedAboutOverrideFallback = true;
       console.warn(
-        `Falling back to static lore canonization; published overrides unavailable: ${summarizeQueryError(error)}`,
+        `Falling back to static lore canonization; published overrides unavailable: ${summarizedError}`,
       );
     }
 
-    return [];
+    return {
+      overrideSets: [],
+      diagnostics: { status: 'error', count: 0, error: summarizedError },
+    };
   }
 };
 
-const fetchPublishedSubmissionLore = async (): Promise<AdaptedLoreSubmission[]> => {
+const fetchPublishedSubmissionLoreWithDiagnostics = async (): Promise<{
+  submissionLore: AdaptedLoreSubmission[];
+  diagnostics: EffectiveLoreSubmissionFetchDiagnostics;
+}> => {
   try {
     const details = await loreSubmissionRepository.listPublishedForEffectiveLore();
-    return details.flatMap((detail) => {
+    const submissionLore = details.flatMap((detail) => {
       const adapted = adaptLoreSubmissionToEffectiveLore(detail);
       return adapted ? [adapted] : [];
     });
+    return {
+      submissionLore,
+      diagnostics: {
+        status: 'ok',
+        count: details.length,
+        adaptedCount: submissionLore.length,
+      },
+    };
   } catch (error) {
+    const summarizedError = summarizeQueryError(error);
     if (!hasWarnedAboutSubmissionFallback) {
       hasWarnedAboutSubmissionFallback = true;
       console.warn(
-        `Falling back to static lore events; published submissions unavailable: ${summarizeQueryError(error)}`,
+        `Falling back to static lore events; published submissions unavailable: ${summarizedError}`,
       );
     }
 
-    return [];
+    return {
+      submissionLore: [],
+      diagnostics: {
+        status: 'error',
+        count: 0,
+        adaptedCount: 0,
+        error: summarizedError,
+      },
+    };
   }
 };
 
@@ -114,22 +197,32 @@ const warnSubmissionCollisionOnce = (message: string): void => {
 const filterCollidingSubmissionLore = (
   baseDataset: LoreBaseDataset,
   submissionLore: AdaptedLoreSubmission[],
-): AdaptedLoreSubmission[] => {
+): {
+  accepted: AdaptedLoreSubmission[];
+  skipped: EffectiveLoreCollisionDiagnostic[];
+} => {
   const eventIds = new Set(baseDataset.events.map((event) => event.id));
   const eventSlugs = new Set(baseDataset.events.map((event) => event.slug));
   const acceptedIds = new Set<string>();
   const acceptedSlugs = new Set<string>();
-  const skipped: string[] = [];
+  const skipped: EffectiveLoreCollisionDiagnostic[] = [];
 
   const accepted = submissionLore.filter((record) => {
     const { id, slug } = record.event;
-    const collides = eventIds.has(id)
-      || eventSlugs.has(slug)
-      || acceptedIds.has(id)
-      || acceptedSlugs.has(slug);
+    let reason: EffectiveLoreCollisionReason | undefined;
 
-    if (collides) {
-      skipped.push(`${id} (${slug})`);
+    if (eventIds.has(id)) {
+      reason = 'base-event-id';
+    } else if (eventSlugs.has(slug)) {
+      reason = 'base-event-slug';
+    } else if (acceptedIds.has(id)) {
+      reason = 'effective-submission-id';
+    } else if (acceptedSlugs.has(slug)) {
+      reason = 'effective-submission-slug';
+    }
+
+    if (reason) {
+      skipped.push({ id, slug, reason });
       return false;
     }
 
@@ -140,11 +233,11 @@ const filterCollidingSubmissionLore = (
 
   if (skipped.length > 0) {
     warnSubmissionCollisionOnce(
-      `Skipping published lore submissions with base/effective lore id or slug collisions: ${skipped.join(', ')}`,
+      `Skipping published lore submissions with base/effective lore id or slug collisions: ${skipped.map((record) => `${record.id} (${record.slug})`).join(', ')}`,
     );
   }
 
-  return accepted;
+  return { accepted, skipped };
 };
 
 const buildSubmissionTokenCharacters = (
@@ -197,13 +290,30 @@ const augmentBaseDatasetWithSubmissionCharacters = (
   });
 };
 
-const buildEffectiveLoreContextUncached = async (): Promise<EffectiveLoreContext> => {
-  const [baseDataset, overrideSets, submissionLore] = await Promise.all([
-    getActiveLoreBaseDataset(),
-    fetchPublishedOverrideSets(),
-    fetchPublishedSubmissionLore(),
+interface EffectiveLoreBuildSnapshot {
+  context: EffectiveLoreContext;
+  diagnostics: EffectiveLoreDiagnostics;
+}
+
+const countBaseDatasetRecords = (baseDataset: LoreBaseDataset): EffectiveLoreDiagnostics['base']['counts'] => ({
+  events: baseDataset.events.length,
+  characters: baseDataset.characters.length,
+  locations: baseDataset.locations.length,
+  seasons: baseDataset.seasons.length,
+  sources: baseDataset.sources.length,
+  media: baseDataset.media.length,
+});
+
+const buildEffectiveLoreSnapshotUncached = async (): Promise<EffectiveLoreBuildSnapshot> => {
+  const [baseResult, overrideResult, submissionResult] = await Promise.all([
+    getActiveLoreBaseDatasetWithDiagnostics(),
+    fetchPublishedOverrideSetsWithDiagnostics(),
+    fetchPublishedSubmissionLoreWithDiagnostics(),
   ]);
-  const acceptedSubmissionLore = filterCollidingSubmissionLore(baseDataset, submissionLore);
+  const { dataset: baseDataset, diagnostics: baseDiagnostics } = baseResult;
+  const { overrideSets, diagnostics: overrideDiagnostics } = overrideResult;
+  const { submissionLore, diagnostics: submissionDiagnostics } = submissionResult;
+  const { accepted: acceptedSubmissionLore, skipped } = filterCollidingSubmissionLore(baseDataset, submissionLore);
   const effectiveBaseDataset = augmentBaseDatasetWithSubmissionCharacters(baseDataset, acceptedSubmissionLore);
   const baseEvents = applyPublishedCanonizationOverrides([...effectiveBaseDataset.events], overrideSets);
   const events = [
@@ -229,13 +339,37 @@ const buildEffectiveLoreContextUncached = async (): Promise<EffectiveLoreContext
   });
 
   return {
-    baseDataset: effectiveBaseDataset,
-    events,
-    eventsById: new Map(events.map((event) => [event.id, event])),
-    eventsBySlug: new Map(events.map((event) => [event.slug, event])),
-    sourcesById,
-    mediaById,
+    context: {
+      baseDataset: effectiveBaseDataset,
+      events,
+      eventsById: new Map(events.map((event) => [event.id, event])),
+      eventsBySlug: new Map(events.map((event) => [event.slug, event])),
+      sourcesById,
+      mediaById,
+    },
+    diagnostics: {
+      generatedAt: new Date().toISOString(),
+      base: {
+        ...baseDiagnostics,
+        counts: countBaseDatasetRecords(baseDataset),
+      },
+      overrides: overrideDiagnostics,
+      submissions: submissionDiagnostics,
+      collisions: {
+        skippedCount: skipped.length,
+        skipped,
+      },
+      cache: {
+        reactCacheAvailable: Boolean(reactCache),
+        publicHelpersBypassCacheInTests: process.env.NODE_ENV === 'test',
+        note: 'Public helpers use React.cache when available outside tests; this diagnostics path rebuilds uncached state for operator freshness checks.',
+      },
+    },
   };
+};
+
+const buildEffectiveLoreContextUncached = async (): Promise<EffectiveLoreContext> => {
+  return (await buildEffectiveLoreSnapshotUncached()).context;
 };
 
 const reactCache = (React as typeof React & {
@@ -249,6 +383,10 @@ const buildEffectiveLoreContext = async (): Promise<EffectiveLoreContext> => {
   return process.env.NODE_ENV === 'test'
     ? buildEffectiveLoreContextUncached()
     : getCachedEffectiveLoreContext();
+};
+
+export const getEffectiveLoreDiagnostics = async (): Promise<EffectiveLoreDiagnostics> => {
+  return (await buildEffectiveLoreSnapshotUncached()).diagnostics;
 };
 
 const matchesIdOrSlug = (

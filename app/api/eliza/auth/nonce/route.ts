@@ -15,6 +15,9 @@ import { getSession, generateNonce } from '@/lib/auth/session'
 import { getElizaClient } from '@/lib/eliza/client'
 import { elizaConfig } from '@/lib/eliza/config'
 import { createSIWEMessage } from '@/lib/eliza/siwe'
+import { getTrustedSiweConfig } from '@/lib/auth/siwe-config'
+import { withCsrfProtection } from '@/lib/middleware/csrf'
+import { withRateLimit } from '@/lib/middleware/rate-limit'
 
 type ElizaAuthNonceResponse = {
   sessionId: string
@@ -28,26 +31,7 @@ type ErrorResponse = {
   message: string
 }
 
-function getRequestHost(request: NextRequest): string {
-  return (
-    request.headers.get('x-forwarded-host') ||
-    request.headers.get('host') ||
-    new URL(request.url).host
-  )
-}
-
-function getRequestOrigin(request: NextRequest): string {
-  const origin = request.headers.get('origin')
-  if (origin) return origin
-
-  const host = getRequestHost(request)
-  const proto = request.headers.get('x-forwarded-proto') || 'https'
-  if (host) return `${proto}://${host}`
-
-  return new URL(request.url).origin
-}
-
-export async function POST(
+async function handlePost(
   request: NextRequest
 ): Promise<NextResponse<ElizaAuthNonceResponse | ErrorResponse>> {
   try {
@@ -72,20 +56,18 @@ export async function POST(
     // Step 2: build the SIWE message for Eliza (client will sign this exact string)
     const issuedAt = new Date().toISOString()
 
-    const domain = getRequestHost(request)
-    const uri = getRequestOrigin(request)
+    const siweConfig = getTrustedSiweConfig(request)
 
     // Note: `elizaConfig.baseUrl` is the Eliza API URL, but SIWE domain/uri should represent
-    // the requesting application. We derive from request headers for deployment correctness.
-    // (If we later add a dedicated app URL config, we can switch this here.)
+    // the trusted requesting application, not request-spoofable host headers.
     void elizaConfig.baseUrl
 
     const message = createSIWEMessage({
-      domain,
+      domain: siweConfig.domain,
       address: session.address,
       statement: 'Sign in to Eliza AI',
-      uri,
-      chainId: 1,
+      uri: siweConfig.uri,
+      chainId: siweConfig.chainId,
       nonce,
       issuedAt,
     })
@@ -119,3 +101,5 @@ export async function POST(
     )
   }
 }
+
+export const POST = withRateLimit(withCsrfProtection(handlePost))

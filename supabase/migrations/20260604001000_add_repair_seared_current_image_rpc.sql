@@ -12,6 +12,7 @@ create or replace function repair_seared_current_character_image(
 returns void
 language plpgsql
 security definer
+set search_path = public
 as $$
 begin
   update searing_events
@@ -47,3 +48,8 @@ begin
   end if;
 end;
 $$;
+
+REVOKE ALL ON FUNCTION repair_seared_current_character_image(integer, uuid, text, jsonb, jsonb)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION repair_seared_current_character_image(integer, uuid, text, jsonb, jsonb)
+  TO service_role;

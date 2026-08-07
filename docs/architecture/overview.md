@@ -33,7 +33,7 @@ Pages are grouped by user-facing product area under `app/`:
 - `app/map/page.tsx` — Phaser-backed world map and staking sidebar.
 - `app/map-editor/*` and `app/searing-map-editor/*` — map editing tooling.
 - `app/searing/*` and `app/spread/*` — searing, infection, cure, and related token flows.
-- `app/lore/*` — canonical lore, community submissions, and admin review flows.
+- `app/lore/*` — effective public lore built from base lore, published base-event overrides, and auto-public community submissions; see `docs/architecture/lore-source-of-truth.md` for source boundaries and `docs/architecture/lore-submission-lifecycle.md` for submission lifecycle/admin moderation semantics.
 - `app/videos/*` — low-poly video gallery.
 - `app/admin/*` — admin-only management surfaces.
 
@@ -59,7 +59,7 @@ Supabase/Postgres access is centralized where practical:
 - Location, lore, searing, concord, event, and Eliza persistence have repositories under `lib/repositories/*`, `lib/lore/*`, and `lib/eliza/*`.
 - Official ElizaOS conversation mappings are persisted by `lib/eliza/officialConversationRepository.ts` in the `eliza_official_conversation_links` table created by migrations.
 
-Treat `supabase/migrations/` and typed data access files as the source of truth. Avoid copying schema checklists into docs.
+Treat `supabase/migrations/` and typed data access files as the source of truth. For lore-specific source boundaries, use `docs/architecture/lore-source-of-truth.md`. Avoid copying schema checklists into docs.
 
 ## Blockchain and authentication
 
@@ -97,4 +97,5 @@ Eliza integration uses WAGDIE-owned API routes as the stable browser contract. `
 - Keep browser-only APIs behind client components or runtime guards; Phaser and wallet providers should not be imported into server components directly.
 - Keep API routes focused on HTTP parsing, authorization, and response shape. Put reusable behavior in `lib/api/handlers`, services, repositories, or integration clients.
 - Keep schema facts in migrations and data-access code.
+- Keep lore source-of-truth and canonization vocabulary aligned with `docs/architecture/lore-source-of-truth.md`.
 - Keep operational procedures under `docs/operations/*` and route inventories under `docs/reference/*`.

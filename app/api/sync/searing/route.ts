@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server'
 import { jsonNoStore, jsonNoStoreError } from '@/lib/api/responses'
+import { verifySyncAuthorization } from '@/lib/api/sync-auth'
 import { searingMaterializationService } from '@/lib/services/searing-materialization-service'
 
 export const runtime = 'nodejs'
@@ -14,22 +15,6 @@ type BulkSyncBody = {
   includeFailed?: unknown
   retryFailed?: unknown
   tokenIds?: unknown
-}
-
-function verifyAuthorization(request: NextRequest): boolean {
-  const syncSecret = process.env.SYNC_SECRET_KEY
-  if (!syncSecret) {
-    console.error('SYNC_SECRET_KEY not configured')
-    return false
-  }
-
-  const authHeader = request.headers.get('authorization')
-  if (authHeader) {
-    const token = authHeader.replace('Bearer ', '')
-    if (token === syncSecret) return true
-  }
-
-  return request.nextUrl.searchParams.get('secret') === syncSecret
 }
 
 function parseLimit(value: unknown): number {
@@ -54,7 +39,7 @@ function parseTokenIds(value: unknown): number[] | undefined {
 }
 
 export async function POST(request: NextRequest) {
-  if (!verifyAuthorization(request)) {
+  if (!verifySyncAuthorization(request)) {
     return jsonNoStoreError('Unauthorized', 401)
   }
 

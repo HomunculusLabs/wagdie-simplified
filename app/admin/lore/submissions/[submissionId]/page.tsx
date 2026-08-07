@@ -30,8 +30,8 @@ export default async function LoreSubmissionAdminDetailPage({ params }: LoreSubm
   return (
     <AdminGate>
       <AdminShell
-        title="Review Lore Submission"
-        description="Inspect submitter content, sanitize Markdown previews, curate graph metadata, and run review/publication workflow actions."
+        title="Moderate Lore Submission"
+        description="Inspect auto-public community lore, sanitize Markdown previews, curate graph metadata, hide records when needed, and run canon workflow actions."
       >
         <LoreSubmissionAdminDetail submissionId={submissionId} referenceOptions={referenceOptions} />
       </AdminShell>

@@ -3,12 +3,35 @@
  * Iron session setup for SIWE authentication
  */
 
+import { randomBytes } from 'crypto'
 import { getIronSession, IronSession } from 'iron-session'
 import { cookies } from 'next/headers'
 import type { UserSession } from '@/types/wallet'
 
+const DEV_SESSION_SECRET = 'development_session_secret_at_least_32_characters_long'
+const MIN_SESSION_SECRET_LENGTH = 32
+
+function resolveSessionSecret(): string {
+  const configuredSecret = process.env.SESSION_SECRET
+  const hasConfiguredSecret = typeof configuredSecret === 'string' && configuredSecret.length > 0
+
+  if (!hasConfiguredSecret) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('SESSION_SECRET is required in production')
+    }
+
+    return DEV_SESSION_SECRET
+  }
+
+  if (configuredSecret.length < MIN_SESSION_SECRET_LENGTH) {
+    throw new Error(`SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters long`)
+  }
+
+  return configuredSecret
+}
+
 export const sessionOptions = {
-  password: process.env.SESSION_SECRET || 'complex_password_at_least_32_characters_long_for_production',
+  password: resolveSessionSecret(),
   cookieName: 'wagdie_session',
   cookieOptions: {
     secure: process.env.NODE_ENV === 'production',
@@ -25,5 +48,5 @@ export async function getSession(): Promise<IronSession<UserSession>> {
 }
 
 export function generateNonce(): string {
-  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
+  return randomBytes(16).toString('hex')
 }

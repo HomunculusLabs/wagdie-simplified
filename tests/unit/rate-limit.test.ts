@@ -120,7 +120,7 @@ describe('RateLimiter', () => {
       })
 
       // Simulate storage failure by making the map throw
-      jest.spyOn(brokenLimiter as any, 'store', 'get').mockImplementation(() => {
+      ;(brokenLimiter as any).store.get = jest.fn(() => {
         throw new Error('Storage unavailable')
       })
 

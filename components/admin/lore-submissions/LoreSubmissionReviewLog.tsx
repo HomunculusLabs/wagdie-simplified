@@ -17,10 +17,10 @@ function formatDate(value: string) {
 export function LoreSubmissionReviewLog({ reviews }: LoreSubmissionReviewLogProps) {
   return (
     <section className="rounded-xl border border-soul-accent/20 bg-soul-shadow/70 p-5">
-      <h2 className="font-display text-xl text-soul-accent">Review log</h2>
+      <h2 className="font-display text-xl text-soul-accent">Moderation log</h2>
       <div className="mt-4 space-y-3">
         {reviews.length === 0 ? (
-          <p className="text-sm text-soul-mist/70">No review entries yet.</p>
+          <p className="text-sm text-soul-mist/70">No moderation entries yet.</p>
         ) : reviews.map((review) => (
           <div key={review.id} className="rounded border border-soul-accent/10 bg-abyss/40 p-3 text-sm">
             <div className="flex flex-wrap justify-between gap-2">

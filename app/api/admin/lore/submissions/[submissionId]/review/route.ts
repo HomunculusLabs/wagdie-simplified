@@ -7,4 +7,5 @@ export const POST = createAdminLoreSubmissionActionHandler({
     loreSubmissionService.reviewSubmission(submissionId, body, adminAddress)
   ),
   failureMessage: 'Failed to review lore submission',
+  revalidateEffectiveLore: true,
 });

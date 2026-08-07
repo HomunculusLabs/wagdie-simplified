@@ -239,19 +239,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const promise = (async () => {
       try {
-        const { nonce } = await api.auth.getNonce(wallet.address!)
+        const nonceResponse = await api.auth.getNonce(wallet.address!)
+        const { nonce } = nonceResponse
 
         if (latestAddressRef.current !== normalizedAddress) {
           return false
         }
 
         const message = new SiweMessage({
-          domain: typeof window !== 'undefined' ? window.location.host : 'localhost',
+          domain: nonceResponse.domain ?? (typeof window !== 'undefined' ? window.location.host : 'localhost'),
           address: wallet.address!,
           statement: 'Sign in to WAGDIE',
-          uri: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
+          uri: nonceResponse.uri ?? (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000'),
           version: '1',
-          chainId: 1,
+          chainId: nonceResponse.chainId ?? 1,
           nonce,
         })
 
