@@ -60,8 +60,12 @@ export function recentCheckTypeRun(checkTypes: readonly GameplayCheckType[]): Re
 }
 
 function normalizePromptText(content: string): string {
-  return content
-    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+  const withoutControlCharacters = Array.from(content, (character) => {
+    const codePoint = character.codePointAt(0) ?? 0
+    return codePoint <= 31 || codePoint === 127 ? ' ' : character
+  }).join('')
+
+  return withoutControlCharacters
     .replace(/\s+/g, ' ')
     .trim()
 }

@@ -17,7 +17,7 @@ function parseCharacterPngFile(file: string): number | null {
 }
 
 function imageResponse(bytes: Uint8Array, init: { contentType?: string | null; version?: string | null }) {
-  return new NextResponse(bytes, {
+  return new NextResponse(Uint8Array.from(bytes).buffer, {
     status: 200,
     headers: {
       'Content-Type': init.contentType || 'image/png',

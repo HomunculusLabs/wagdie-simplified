@@ -124,7 +124,7 @@ function mergeMetadata(
     }
   }
 
-  ;(merged as CharacterMetadata).attributes = mergeDynamicAttributes(
+  merged.attributes = mergeDynamicAttributes(
     merged.attributes,
     remoteMetadata.attributes
   )
@@ -141,7 +141,7 @@ async function mapWithConcurrency<T, TResult>(
   let index = 0
 
   async function run(): Promise<void> {
-    while (true) {
+    for (;;) {
       const currentIndex = index
       index += 1
       if (currentIndex >= items.length) {

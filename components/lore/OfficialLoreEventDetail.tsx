@@ -113,7 +113,7 @@ export function OfficialLoreEventDetail({
           Back
         </Link>
 
-        <div className="relative mt-3 aspect-[4.35/1] min-h-52 overflow-hidden bg-soul-900/70">
+        <div className="relative mt-3 h-52 w-full overflow-hidden bg-soul-900/70 sm:aspect-[4.35/1] sm:h-auto">
           {cover.src ? (
             <Image
               src={cover.src}

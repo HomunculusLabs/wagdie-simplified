@@ -68,8 +68,8 @@ export async function POST(request: NextRequest) {
   if (isAuthError(auth)) return auth
 
   const parsed = parseConcordSearingMapUpsert(await readJson(request))
-  if ('error' in parsed) {
-    return jsonRawError(parsed.error, 400)
+  if (!parsed.entry) {
+    return jsonRawError(parsed.error ?? 'Invalid Concord searing map', 400)
   }
 
   try {

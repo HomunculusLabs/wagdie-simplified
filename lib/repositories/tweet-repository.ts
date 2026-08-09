@@ -7,6 +7,13 @@
 import { supabase } from '../supabase'
 import type { Tweet, TweetFilters, TweetsResponse } from '@/types/tweet'
 
+function requireSupabase() {
+  if (!supabase) {
+    throw new Error('Supabase client is not configured')
+  }
+  return supabase
+}
+
 export interface ITweetRepository {
   findMany(filters: TweetFilters): Promise<TweetsResponse>
 }
@@ -20,7 +27,7 @@ export class TweetRepository implements ITweetRepository {
    * Filters out replies and retweets by default
    */
   async findMany(filters: TweetFilters): Promise<TweetsResponse> {
-    let query = supabase
+    let query = requireSupabase()
       .from('tweets')
       .select('*')
       // Always filter out replies and retweets

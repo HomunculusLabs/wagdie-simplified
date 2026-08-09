@@ -74,7 +74,7 @@ export interface GatewayNonceResponse {
   sessionId: string
 }
 
-export interface GatewayVerifyResponse extends AuthTokens {}
+export type GatewayVerifyResponse = AuthTokens
 
 export interface GatewayCharacterCreateInput {
   externalId?: string | null

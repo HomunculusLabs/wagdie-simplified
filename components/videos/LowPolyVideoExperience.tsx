@@ -17,9 +17,12 @@ type LowPolyVideoExperienceProps = {
 
 const PLAYER_ALLOW = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share';
 
-function getValidEpisodeIdFromHash(hash: string, episodes: LowPolyEpisode[]) {
+function getValidEpisodeIdFromHash(
+  hash: string,
+  episodes: LowPolyEpisode[]
+): LowPolyEpisode['id'] | null {
   const id = hash.replace(/^#/, '');
-  return episodes.some((episode) => episode.id === id) ? id : null;
+  return episodes.find((episode) => episode.id === id)?.id ?? null;
 }
 
 export function LowPolyVideoExperience({
@@ -35,7 +38,7 @@ export function LowPolyVideoExperience({
     [episodes, selectedEpisodeId]
   );
 
-  const selectEpisode = useCallback((episodeId: string, updateHash = true) => {
+  const selectEpisode = useCallback((episodeId: LowPolyEpisode['id'], updateHash = true) => {
     setSelectedEpisodeId(episodeId);
     setLoadedEpisodeId(null);
 

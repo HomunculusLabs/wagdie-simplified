@@ -5,7 +5,7 @@
 - Source visual truth: Adobe XD `Wagdie_UI_UX` eight-artboard spec, captured under `.audit/reference/`.
 - Rendered implementation: local Next.js app at `http://localhost:3002/`; the connected profile state was rendered from the production component in Storybook at `http://localhost:6007/iframe.html?id=pages-profile-profilepageclient--authenticated&viewMode=story` because wallet authentication is not available in the unauthenticated browser session.
 - Theme/state: dark desktop theme, static/consent-safe home hero, default archive filters, connected profile fixture, first viewport or the source-matched scrolled results region.
-- CSS viewport: `1920 × 1080` at `deviceScaleFactor: 1`. Responsive smoke test also ran at `390 × 844`; both home and archive reported `scrollWidth === innerWidth`.
+- CSS viewport: `1920 × 1080` at `deviceScaleFactor: 1`. Responsive QA also ran at `390 × 844`; the Archive and event detail both report `scrollWidth === innerWidth` after the event-banner correction.
 - Density normalization: artboards 1–5 were exported at `960 px` width (0.5× of the 1920 px XD frame); implementation captures were downsampled from `1920 × 1080` to `960 × 540`. Artboards 6–8 were captured at `480 px` width (0.25×); source crops were normalized to `960 × 540` after matching the same CSS region. Every judgment below used a combined source/implementation image, not separate screenshots.
 
 ## Eight-artboard evidence
@@ -30,6 +30,7 @@
 - Copy and content: production lore copy and real archive records replace the mock lorem ipsum shown in XD. The content length stays within the source hierarchy and does not break the intended composition.
 - Icons and chrome: the shared header now uses the XD route labels (`Home`, `Archive`, `Pilgrims`, `World`), social icon group, filled wallet action, and outlined menu control. The shared footer now uses the XD's compact social-icon treatment.
 - Interaction and accessibility: Timeline/Characters navigation, Location/Character/Canon/Keywords filtering, Date/Title sorting, clear-filters behavior, story navigation, speech narration play/pause, source destinations, and Next Chapter were exercised in the browser. Fresh post-fix Archive and event loads produced no browser errors.
+- Mobile responsive evidence: `.audit/mobile-fix/lore-mobile-top.png`, `.audit/mobile-fix/lore-mobile-rows.png`, `.audit/mobile-fix/event-mobile-top-after.png`, and `.audit/mobile-fix/event-mobile-references.png` are `390 × 844` viewport captures at 1× density. The Archive title/filter/results hierarchy, stacked event references, source action, header navigation drawer, Timeline-to-Characters navigation, and narration play/pause were exercised at that size.
 
 ## Comparison history
 
@@ -63,11 +64,19 @@
 - [P2 fixed] Shared navigation and footer chrome did not match the XD route labels, social placement, wallet treatment, or compact icon footer.
 - Final normalized comparisons show no remaining actionable P0, P1, or P2 differences for `/lore` and `/lore/events/[slug]`. Real production copy and event artwork intentionally replace the XD mock copy and sample art.
 
+### Pass 5 — mobile event correction passed
+
+- [P2 fixed] The event banner combined a desktop aspect ratio with a mobile minimum height, causing its auto width to expand to `905 px` inside a `390 px` viewport and forcing horizontal scrolling.
+- Fix: the event banner now uses an explicit `w-full h-52` mobile frame and restores the XD desktop aspect ratio at the `sm` breakpoint.
+- Post-fix evidence: `.audit/mobile-fix/event-mobile-top-after.png` and `.audit/mobile-fix/event-mobile-references.png`; the document and banner now measure `390 px` and `324 px` wide respectively with no root overflow. Archive mobile evidence also remains overflow-free in `.audit/mobile-fix/lore-mobile-top.png` and `.audit/mobile-fix/lore-mobile-rows.png`.
+
 ## Verification
 
-- Jest correction gate: 4 suites, 17 tests passed (header, drawer, navigation, Archive).
-- ESLint: changed app/component files passed with zero errors.
+- Jest correction gate: 9 suites, 80 tests passed (header, drawer, navigation, Archive, location-room diagnostics/coordinator, character materialization, and current-image handling).
+- ESLint: repository lint passed with zero errors (pre-existing warnings remain).
+- TypeScript: `bunx tsc --noEmit` passed.
+- Production build: `bun run build` passed under Node `23.3.0`.
 - Storybook production build: passed; static WAGDIE assets copied successfully.
-- Full TypeScript check remains blocked by pre-existing errors in unrelated API, Supabase, video, diagnostics, and repository files; none of the reported errors point to the visual implementation files in this review.
+- Full Jest run remains red in pre-existing archived/e2e and legacy suites (missing Playwright/Leaflet modules, stale mocks, and outdated copy assertions); targeted regression suites for this change pass.
 
 final result: passed
