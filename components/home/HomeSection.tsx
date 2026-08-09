@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Separator } from '@/components/ui';
+import { EditorialHeading } from '@/components/shared/EditorialHeading';
 
 interface HomeSectionProps {
   title: string;
@@ -9,28 +9,27 @@ interface HomeSectionProps {
 
 const getHeadingId = (title: string) => `${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-heading`;
 
+/**
+ * Centered editorial section wrapper. Heading semantics are owned by
+ * EditorialHeading (always an h2 here) so visual size never dictates level.
+ */
 export function HomeSection({ title, subtitle, children }: HomeSectionProps) {
   const headingId = getHeadingId(title);
 
   return (
-    <section className="py-24 relative" aria-labelledby={headingId}>
-      <div className="flex flex-col items-center mb-16 text-center space-y-4">
-        <div className="flex items-center gap-4 w-full max-w-md opacity-50" aria-hidden="true">
-          <Separator className="flex-1" />
-          <div className="w-2 h-2 rotate-45 border border-soul-accent" />
-          <Separator className="flex-1" />
-        </div>
-        <h2 id={headingId} className="text-h2 font-display text-neutral-200">
-          {title}
-        </h2>
-        {subtitle && (
-          <p className="text-soul-accent/60 italic text-body max-w-2xl font-eskapade">
-            {subtitle}
-          </p>
-        )}
+    <section className="relative mt-8 border border-midnight-light/70 bg-midnight/20 px-4 py-10 sm:px-6 lg:mt-12 lg:px-10 lg:py-12" aria-labelledby={headingId}>
+      <div className="mb-9 flex justify-center px-4 lg:mb-10">
+        <EditorialHeading
+          headingLevel={2}
+          align="center"
+          id={headingId}
+          title={title}
+          description={subtitle}
+        />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+      {/* Fixed responsive columns reflow cleanly when a persistent dock narrows content. */}
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3 lg:gap-6">
         {children}
       </div>
     </section>

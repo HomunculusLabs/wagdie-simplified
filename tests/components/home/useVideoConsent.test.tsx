@@ -1,5 +1,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { useVideoConsent, VIDEO_CONSENT_COOKIE } from '@/components/home/useVideoConsent';
+import {
+  useVideoConsent,
+  VIDEO_CONSENT_COOKIE,
+  VIDEO_CONSENT_DISMISSED_SESSION_KEY,
+} from '@/components/home/useVideoConsent';
 
 const clearCookies = () => {
   document.cookie.split(';').forEach((cookie) => {
@@ -13,10 +17,12 @@ const clearCookies = () => {
 describe('useVideoConsent', () => {
   beforeEach(() => {
     clearCookies();
+    window.sessionStorage.clear();
   });
 
   afterEach(() => {
     clearCookies();
+    window.sessionStorage.clear();
   });
 
   it('shows the modal after mount when no stored choice exists', async () => {
@@ -60,8 +66,8 @@ describe('useVideoConsent', () => {
     expect(document.cookie).toContain(`${VIDEO_CONSENT_COOKIE}=denied`);
   });
 
-  it('treats closing the modal as a session-only dismissal', async () => {
-    const { result } = renderHook(() => useVideoConsent());
+  it('keeps a dismissal for the current browser session without persisting denial', async () => {
+    const { result, unmount } = renderHook(() => useVideoConsent());
 
     await waitFor(() => expect(result.current.isConsentLoaded).toBe(true));
 
@@ -73,6 +79,14 @@ describe('useVideoConsent', () => {
     expect(result.current.hasVideoConsent).toBe(false);
     expect(result.current.shouldShowConsentModal).toBe(false);
     expect(document.cookie).not.toContain(VIDEO_CONSENT_COOKIE);
+    expect(window.sessionStorage.getItem(VIDEO_CONSENT_DISMISSED_SESSION_KEY)).toBe('1');
+
+    unmount();
+    const remounted = renderHook(() => useVideoConsent());
+    await waitFor(() => expect(remounted.result.current.isConsentLoaded).toBe(true));
+
+    expect(remounted.result.current.videoConsent).toBeNull();
+    expect(remounted.result.current.shouldShowConsentModal).toBe(false);
   });
 
   it('uses stored grant choices after mount', async () => {

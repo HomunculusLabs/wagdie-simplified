@@ -4,40 +4,93 @@
  */
 
 import React, { createContext, useContext, ReactNode } from 'react';
+import type { UseAuthReturn } from '../hooks/useAuth';
 
 // ============================================================================
 // Mock Contexts
 // ============================================================================
 
-/**
- * Mock Auth Context
- */
-const MockAuthContext = createContext({
-  address: '0x1234567890123456789012345678901234567890',
+export type MockAuthValue = UseAuthReturn;
+
+const DEFAULT_ADDRESS = '0x1234567890123456789012345678901234567890';
+const defaultSession = {
+  address: DEFAULT_ADDRESS,
+  expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
+  selectedCharacter: undefined,
+};
+
+const defaultAuthValue: MockAuthValue = {
+  address: DEFAULT_ADDRESS,
   isConnected: true,
   isConnecting: false,
   isAuthenticated: true,
   isAuthenticating: false,
   isHydrating: false,
   hasHydrated: true,
-  hydrationStatus: 'matched',
-  session: {
-    address: '0x1234567890123456789012345678901234567890',
-    expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-    selectedCharacter: null,
-  },
+  session: defaultSession,
   siweStep: 'complete',
   error: null,
   connect: () => {},
   disconnect: async () => {},
   authenticate: async () => {},
-  refreshSession: async () => ({
-    address: '0x1234567890123456789012345678901234567890',
-    expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-    selectedCharacter: null,
-  }),
+  refreshSession: async () => defaultSession,
   clearError: () => {},
-});
+};
+
+export const MOCK_AUTH_STATES = {
+  connected: {},
+  connecting: {
+    address: undefined,
+    isConnected: false,
+    isConnecting: true,
+    isAuthenticated: false,
+    session: null,
+    siweStep: 'idle',
+  },
+  disconnected: {
+    address: undefined,
+    isConnected: false,
+    isAuthenticated: false,
+    session: null,
+    siweStep: 'idle',
+  },
+  loading: {
+    isAuthenticated: false,
+    isHydrating: true,
+    hasHydrated: false,
+    session: null,
+    siweStep: 'idle',
+  },
+  authenticating: {
+    isAuthenticated: false,
+    isAuthenticating: true,
+    session: null,
+    siweStep: 'signing',
+  },
+  signatureRejected: {
+    isAuthenticated: false,
+    session: null,
+    siweStep: 'error',
+    error: { message: 'Wallet signature was rejected.' },
+  },
+  admin: {
+    address: '0x5a7F5938deA6238137043415e28efd99A6532dD3',
+    session: {
+      address: '0x5a7F5938deA6238137043415e28efd99A6532dD3',
+      expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      selectedCharacter: undefined,
+    },
+  },
+  error: {
+    isAuthenticated: false,
+    session: null,
+    siweStep: 'error',
+    error: { message: 'Mock wallet error.' },
+  },
+} satisfies Record<string, Partial<MockAuthValue>>;
+
+/** Mock Auth Context used by the Storybook `@/hooks/useAuth` alias. */
+const MockAuthContext = createContext<MockAuthValue>(defaultAuthValue);
 
 /**
  * Mock Character Ownership Context
@@ -78,36 +131,15 @@ const MockStakingStatusContext = createContext({
  * Mock Auth Provider
  * For components using useAuth hook
  */
-export const MockAuthProvider = ({ children }: { children: ReactNode }) => {
+export const MockAuthProvider = ({
+  children,
+  state,
+}: {
+  children: ReactNode;
+  state?: Partial<MockAuthValue>;
+}) => {
   return (
-    <MockAuthContext.Provider
-      value={{
-        address: '0x1234567890123456789012345678901234567890',
-        isConnected: true,
-        isConnecting: false,
-        isAuthenticated: true,
-        isAuthenticating: false,
-        isHydrating: false,
-        hasHydrated: true,
-        hydrationStatus: 'matched',
-        session: {
-          address: '0x1234567890123456789012345678901234567890',
-          expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-          selectedCharacter: null,
-        },
-        siweStep: 'complete',
-        error: null,
-        connect: () => {},
-        disconnect: async () => {},
-        authenticate: async () => {},
-        refreshSession: async () => ({
-          address: '0x1234567890123456789012345678901234567890',
-          expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-          selectedCharacter: null,
-        }),
-        clearError: () => {},
-      }}
-    >
+    <MockAuthContext.Provider value={{ ...defaultAuthValue, ...state }}>
       {children}
     </MockAuthContext.Provider>
   );
@@ -210,34 +242,7 @@ export const MockStakingStatusProvider = ({
 /**
  * Mock useAuth hook for Storybook
  */
-export const useAuth = () => {
-  return {
-    address: '0x1234567890123456789012345678901234567890',
-    isConnected: true,
-    isConnecting: false,
-    isAuthenticated: true,
-    isAuthenticating: false,
-    isHydrating: false,
-    hasHydrated: true,
-    hydrationStatus: 'matched',
-    session: {
-      address: '0x1234567890123456789012345678901234567890',
-      expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-      selectedCharacter: null,
-    },
-    siweStep: 'complete',
-    error: null,
-    connect: () => console.log('Mock connect'),
-    disconnect: async () => console.log('Mock disconnect'),
-    authenticate: async () => console.log('Mock authenticate'),
-    refreshSession: async () => ({
-      address: '0x1234567890123456789012345678901234567890',
-      expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-      selectedCharacter: null,
-    }),
-    clearError: () => {},
-  };
-};
+export const useAuth = (): MockAuthValue => useContext(MockAuthContext);
 
 /**
  * Mock useCharacterOwnership hook for Storybook

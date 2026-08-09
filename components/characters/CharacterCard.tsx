@@ -7,6 +7,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import Image from 'next/image'
+import Link from 'next/link'
 import { Card, CardContent, Badge, Button } from '@/components/ui'
 import type { Character } from '@/types/character'
 import { OwnershipBadge } from '@/components/OwnershipVerificationBanner'
@@ -15,12 +16,13 @@ import { getCharacterImageDisclosure } from '@/lib/utils/image'
 interface CharacterCardProps {
   character: Character
   onClick?: (tokenId: number) => void
+  href?: string
   onSearClick?: (tokenId: number) => void
   showSearingLink?: boolean
   className?: string
 }
 
-export function CharacterCard({ character, onClick, onSearClick, showSearingLink = false, className = '' }: CharacterCardProps) {
+export function CharacterCard({ character, onClick, href, onSearClick, showSearingLink = false, className = '' }: CharacterCardProps) {
   const [isLoading, setIsLoading] = useState(true)
   const infectionStatus = character.infection_status ?? (character.infected ? 'infected' : 'healthy')
   const imageDisclosure = useMemo(
@@ -77,25 +79,33 @@ export function CharacterCard({ character, onClick, onSearClick, showSearingLink
 
   return (
     <Card
-      onClick={() => onClick?.(character.token_id)}
-      onKeyDown={handleKeyDown}
-      tabIndex={onClick ? 0 : undefined}
-      role={onClick ? 'button' : undefined}
-      aria-label={onClick ? `View ${name}` : undefined}
-      className={`group overflow-hidden rounded-md cursor-pointer transition-all duration-500 hover:-translate-y-0.5 hover:border-soul-accent/40 hover:shadow-[0_0_24px_rgba(200,170,110,0.12)] focus:outline-none focus-visible:ring-2 focus-visible:ring-soul-accent focus-visible:ring-offset-2 focus-visible:ring-offset-soul-950 ${className}`}
+      onClick={href ? undefined : () => onClick?.(character.token_id)}
+      onKeyDown={href ? undefined : handleKeyDown}
+      tabIndex={!href && onClick ? 0 : undefined}
+      role={!href && onClick ? 'button' : undefined}
+      aria-label={!href && onClick ? `View ${name}` : undefined}
+      className={`group overflow-hidden bg-midnight/55 transition-all duration-300 hover:-translate-y-0.5 hover:border-parchment/45 hover:shadow-[0_0_24px_rgba(233,199,147,0.12)] ${href || onClick ? 'cursor-pointer' : ''} ${!href && onClick ? 'focus:outline-none focus-visible:ring-2 focus-visible:ring-parchment focus-visible:ring-offset-2 focus-visible:ring-offset-soul-950' : ''} ${className}`}
     >
+      {href && (
+        <Link
+          href={href}
+          className="absolute inset-0 z-20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-parchment"
+        >
+          <span className="sr-only">View {name}</span>
+        </Link>
+      )}
       {/* Character Image */}
-      <div className="relative w-full aspect-square overflow-hidden bg-neutral-900">
+      <div className="relative aspect-square w-full overflow-hidden border-b border-midnight-light/60 bg-midnight">
         {/* Loading skeleton */}
         {isLoading && (
-          <div className="absolute inset-0 bg-midnight animate-pulse" />
+          <div className="absolute inset-0 animate-pulse bg-midnight-light/70 motion-reduce:animate-none" />
         )}
         <Image
           src={imageUrl}
           alt={name}
           fill
           sizes="(max-width: 640px) 100vw, (max-width: 768px) 50vw, (max-width: 1024px) 33vw, (max-width: 1280px) 25vw, 20vw"
-          className={`object-cover [image-rendering:pixelated] group-hover:scale-105 transition-all duration-500 ${isLoading ? 'opacity-0' : 'opacity-100'}`}
+          className={`object-cover [image-rendering:pixelated] transition-all duration-500 group-hover:scale-105 group-focus-visible:scale-105 ${isLoading ? 'opacity-0' : 'opacity-100'}`}
           unoptimized
           onLoad={() => setIsLoading(false)}
           onError={handleImageError}
@@ -156,30 +166,33 @@ export function CharacterCard({ character, onClick, onSearClick, showSearingLink
       <CardContent className="p-3 sm:p-4">
         <h3
           title={name}
-          className="text-body-sm sm:text-h4 font-display text-bone group-hover:text-soul-accent transition-colors duration-300 line-clamp-2 min-h-[2.5em] leading-tight lowercase"
+          className="min-h-[2.5em] line-clamp-2 font-display text-body-sm lowercase leading-tight text-bone transition-colors duration-300 group-hover:text-parchment group-focus-visible:text-parchment sm:text-h4"
         >
           {name.toLowerCase()}
         </h3>
         {(characterClass || level) && (
-          <p className="text-body-sm text-mist font-eskapade mt-1 lowercase">
+          <p className="mt-2 font-ui text-xs lowercase leading-5 text-mist sm:text-sm">
             {characterClass && `${characterClass.toLowerCase()}`}
             {characterClass && level && ' · '}
             {level && `level ${level}`}
           </p>
         )}
-        {showSearingLink && (
+      </CardContent>
+
+      {showSearingLink && (
+        <div className="relative z-30 p-3 pt-0 sm:p-4 sm:pt-0">
           <Button
             type="button"
             variant="primary"
             size="sm"
-            className="mt-3 w-full lowercase"
+            className="min-h-11 w-full font-ui lowercase"
             onClick={handleSearClick}
             onKeyDown={handleSearKeyDown}
           >
             sear concord
           </Button>
-        )}
-      </CardContent>
+        </div>
+      )}
     </Card>
   )
 }

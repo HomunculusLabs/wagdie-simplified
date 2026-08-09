@@ -41,8 +41,8 @@ export function MobileFilterBar({
   return (
     <div
       className={`
-        lg:hidden sticky top-0 z-30 -mx-6 mb-6 px-6 py-3
-        bg-soul-950/90 backdrop-blur-md border-b border-neutral-800
+        sticky top-16 z-30 -mx-4 mb-6 border-b border-midnight-light/60
+        bg-soul-950/95 px-4 py-3 backdrop-blur-md sm:-mx-6 sm:px-6 lg:hidden
         flex items-center gap-2
         ${className}
       `}
@@ -50,7 +50,7 @@ export function MobileFilterBar({
       {/* Filters button (opens drawer) */}
       <button
         onClick={onOpenFilters}
-        className="flex items-center gap-2 px-3 py-2 bg-black/40 border border-neutral-800 rounded-sm text-neutral-300 hover:text-soul-accent hover:border-soul-accent/50 transition-colors font-eskapade text-sm tracking-wider flex-shrink-0"
+        className="flex min-h-11 flex-shrink-0 items-center gap-2 border border-midnight-light/70 bg-midnight/60 px-3 py-2 font-ui text-sm tracking-wide text-ash transition-colors hover:border-arcane-bright hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arcane-bright"
         aria-label="Open filters"
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -58,7 +58,7 @@ export function MobileFilterBar({
         </svg>
         <span>Filters</span>
         {activeFilterCount > 0 && (
-          <span className="flex items-center justify-center min-w-5 h-5 px-1 bg-soul-accent/20 text-soul-accent rounded-full text-xs">
+          <span className="flex h-5 min-w-5 items-center justify-center bg-arcane/20 px-1 font-ui text-xs text-arcane-bright">
             {activeFilterCount}
           </span>
         )}
@@ -69,11 +69,11 @@ export function MobileFilterBar({
         <select
           value={tab}
           onChange={(e) => onTabChange(e.target.value as CharacterFilterTab)}
-          className="w-full appearance-none bg-black/40 border border-neutral-800 rounded-sm py-2 pl-3 pr-8 text-sm font-eskapade text-neutral-300 focus:outline-none focus:border-soul-accent/50 transition-colors"
+          className="min-h-11 w-full appearance-none border border-midnight-light/70 bg-midnight/60 py-2 pl-3 pr-8 font-ui text-sm text-ash transition-colors focus:border-arcane-bright focus:outline-none focus:ring-1 focus:ring-arcane-bright"
           aria-label="Category"
         >
           {TAB_OPTIONS.map((option) => (
-            <option key={option.id} value={option.id} className="bg-soul-950 text-neutral-200">
+            <option key={option.id} value={option.id} className="bg-soul-950 text-bone">
               {option.label}
             </option>
           ))}
@@ -91,7 +91,7 @@ export function MobileFilterBar({
       {/* Sort toggle */}
       <button
         onClick={() => onSortChange(sort === 'asc' ? 'desc' : 'asc')}
-        className="flex items-center gap-1 px-3 py-2 bg-black/40 border border-neutral-800 rounded-sm text-neutral-400 hover:text-soul-accent hover:border-soul-accent/50 transition-colors font-eskapade text-sm flex-shrink-0"
+        className="flex min-h-11 flex-shrink-0 items-center gap-1 border border-midnight-light/70 bg-midnight/60 px-3 py-2 font-ui text-sm text-ash transition-colors hover:border-arcane-bright hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arcane-bright"
         aria-label={`Sort by token ID, currently ${sort === 'asc' ? 'low to high' : 'high to low'}`}
         title="Sort by token ID"
       >

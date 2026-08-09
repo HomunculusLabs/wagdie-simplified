@@ -2,6 +2,7 @@ import type { StorybookConfig } from '@storybook/react-vite';
 import { resolve } from 'path';
 
 const config: StorybookConfig = {
+  staticDirs: ['../public'],
   stories: [
     '../components/**/*.stories.@(js|jsx|ts|tsx)',
     '../src/**/*.stories.@(js|jsx|ts|tsx)',
@@ -23,6 +24,8 @@ const config: StorybookConfig = {
     config.resolve = config.resolve || {};
     config.resolve.alias = {
       ...config.resolve.alias,
+      '@/hooks/useAuth': resolve(__dirname, './mock-providers'),
+      '@/hooks/useCharacters': resolve(__dirname, './mocks/hooks/useCharacters'),
       '@/hooks/useSearing': resolve(__dirname, './mocks/hooks/useSearing'),
       '@/hooks/useSearingConcords': resolve(__dirname, './mocks/hooks/useSearingConcords'),
       '@/hooks/useSpread': resolve(__dirname, './mocks/hooks/useSpread'),

@@ -147,7 +147,7 @@ export function FilterSidebar({
       {showMobileToggle && (
         <button
           onClick={toggleMobile}
-          className="lg:hidden fixed bottom-4 right-4 z-50 flex items-center gap-2 px-4 py-3 bg-soul-accent text-black font-eskapade text-sm tracking-wider rounded-sm shadow-lg hover:bg-soul-accent/90 transition-colors"
+          className="fixed bottom-4 right-4 z-50 flex min-h-11 items-center gap-2 border border-parchment bg-parchment px-4 py-3 font-ui text-sm tracking-wide text-soul-950 shadow-lg transition-colors hover:bg-bone focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment focus-visible:ring-offset-2 focus-visible:ring-offset-soul-950 lg:hidden"
           aria-label="Toggle filters"
         >
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -178,24 +178,24 @@ export function FilterSidebar({
         className={`
           ${className}
           ${isCollapsed ? 'lg:w-16' : 'lg:w-72'}
-          w-[min(85vw,20rem)] lg:w-72
+          w-[min(88vw,20rem)]
           fixed inset-y-0 left-0 lg:relative lg:inset-auto
           ${isMobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
           z-50 lg:z-10
-          h-[100dvh] lg:h-auto lg:self-start lg:sticky lg:top-4
-          bg-soul-950 border-r border-neutral-800
+          h-[100dvh] lg:h-auto lg:self-start lg:sticky lg:top-20
+          bg-soul-950 border-r border-midnight-light/60
           shadow-2xl lg:shadow-none
           transition-transform duration-300 ease-in-out
           overflow-hidden flex-shrink-0
         `}
       >
         {/* Sidebar Header */}
-        <div className="flex items-center justify-between p-4 border-b border-neutral-800">
+        <div className="flex min-h-16 items-center justify-between border-b border-midnight-light/60 p-4">
           {!isCollapsed && (
             <div className="flex items-center gap-2">
-              <h2 className="font-eskapade text-lg text-neutral-200 tracking-wider">Filters</h2>
+              <h2 className="font-display text-xl tracking-wide text-parchment">Filters</h2>
               {activeFilterCount > 0 && (
-                <span className="flex items-center justify-center w-5 h-5 bg-soul-accent/20 text-soul-accent rounded-full text-xs font-eskapade">
+                <span className="flex h-5 min-w-5 items-center justify-center bg-arcane/20 px-1 font-ui text-xs text-arcane-bright">
                   {activeFilterCount}
                 </span>
               )}
@@ -205,7 +205,7 @@ export function FilterSidebar({
           {/* Collapse Toggle (Desktop) */}
           <button
             onClick={toggleCollapse}
-            className="hidden lg:flex items-center justify-center w-8 h-8 text-neutral-500 hover:text-neutral-300 transition-colors"
+            className="hidden h-11 w-11 items-center justify-center text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment lg:flex"
             aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
             <svg
@@ -221,7 +221,7 @@ export function FilterSidebar({
           {/* Close Button (Mobile) */}
           <button
             onClick={toggleMobile}
-            className="lg:hidden flex items-center justify-center w-8 h-8 text-neutral-500 hover:text-neutral-300 transition-colors"
+            className="flex h-11 w-11 items-center justify-center text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment lg:hidden"
             aria-label="Close filters"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -232,18 +232,18 @@ export function FilterSidebar({
 
         {/* Scrollable Content */}
         {!isCollapsed && (
-          <div className="flex flex-col overflow-y-auto max-h-[calc(100vh-180px)] lg:max-h-[calc(100vh-120px)]">
+          <div className="flex max-h-[calc(100vh-180px)] flex-col overflow-y-auto lg:max-h-[calc(100vh-9rem)]">
             {/* Results Count */}
-            <div className="px-4 py-3 border-b border-neutral-800/50">
-              <p className="text-sm text-neutral-500 font-eskapade">
+            <div className="border-b border-midnight-light/40 px-4 py-3">
+              <p className="font-ui text-sm text-mist">
                 {totalCount.toLocaleString()} characters
               </p>
             </div>
 
             {/* Search Input */}
-            <div className="p-4 border-b border-neutral-800/50">
-              <label className="block text-xs font-eskapade text-neutral-500 mb-2 tracking-wider">
-                SEARCH
+            <div className="border-b border-midnight-light/40 p-4">
+              <label htmlFor="character-search" className="mb-2 block font-ui text-xs uppercase tracking-[0.16em] text-mist">
+                Search
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
@@ -258,16 +258,17 @@ export function FilterSidebar({
                   </svg>
                 </div>
                 <input
+                  id="character-search"
                   type="text"
                   value={search.value}
                   onChange={(e) => search.onChange(e.target.value)}
                   placeholder="Name or token ID..."
-                  className="w-full bg-black/40 border border-neutral-800 rounded-sm py-2 pl-10 pr-8 text-sm font-eskapade text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-soul-accent/50 focus:ring-1 focus:ring-soul-accent/30 transition-all"
+                  className="min-h-11 w-full border border-midnight-light/70 bg-midnight/45 py-2 pl-10 pr-10 font-ui text-sm text-bone placeholder:text-dark transition-colors focus:border-arcane-bright focus:outline-none focus:ring-1 focus:ring-arcane-bright"
                 />
                 {search.value && (
                   <button
                     onClick={search.onClear}
-                    className="absolute inset-y-0 right-0 flex items-center pr-2 text-neutral-500 hover:text-neutral-300 transition-colors"
+                    className="absolute inset-y-0 right-0 flex min-w-11 items-center justify-center text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-parchment"
                     aria-label="Clear search"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
@@ -279,10 +280,10 @@ export function FilterSidebar({
             </div>
 
             {/* Category Tabs */}
-            <div className="p-4 border-b border-neutral-800/50">
-              <label className="block text-xs font-eskapade text-neutral-500 mb-2 tracking-wider">
-                CATEGORY
-              </label>
+            <div className="border-b border-midnight-light/40 p-4">
+              <p className="mb-2 font-ui text-xs uppercase tracking-[0.16em] text-mist">
+                Category
+              </p>
               <Tabs
                 items={TAB_ITEMS}
                 activeId={tab.value}
@@ -292,13 +293,13 @@ export function FilterSidebar({
             </div>
 
             {/* Sort Toggle */}
-            <div className="p-4 border-b border-neutral-800/50">
-              <label className="block text-xs font-eskapade text-neutral-500 mb-2 tracking-wider">
-                SORT ORDER
-              </label>
+            <div className="border-b border-midnight-light/40 p-4">
+              <p className="mb-2 font-ui text-xs uppercase tracking-[0.16em] text-mist">
+                Sort order
+              </p>
               <button
                 onClick={() => sort.onChange(sort.value === 'asc' ? 'desc' : 'asc')}
-                className="flex items-center justify-between w-full px-3 py-2 bg-black/40 border border-neutral-800 rounded-sm text-neutral-400 hover:text-soul-accent hover:border-soul-accent/50 transition-colors font-eskapade text-sm"
+                className="flex min-h-11 w-full items-center justify-between border border-midnight-light/70 bg-midnight/45 px-3 py-2 font-ui text-sm text-ash transition-colors hover:border-arcane-bright hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arcane-bright"
               >
                 <span>Token ID</span>
                 <div className="flex items-center gap-2">
@@ -317,10 +318,10 @@ export function FilterSidebar({
             </div>
 
             {/* Trait Filters Section */}
-            <div className="p-4 border-b border-neutral-800/50">
-              <label className="block text-xs font-eskapade text-neutral-500 mb-3 tracking-wider">
-                TRAIT FILTERS
-              </label>
+            <div className="border-b border-midnight-light/40 p-4">
+              <p className="mb-3 font-ui text-xs uppercase tracking-[0.16em] text-mist">
+                Trait filters
+              </p>
 
               <div className="space-y-3">
                 {toggles.map((toggle) => (
@@ -338,10 +339,10 @@ export function FilterSidebar({
             </div>
 
             {/* Equipment Filters Section */}
-            <div className="p-4 border-b border-neutral-800/50">
-              <label className="block text-xs font-eskapade text-neutral-500 mb-3 tracking-wider">
-                EQUIPMENT FILTERS
-              </label>
+            <div className="border-b border-midnight-light/40 p-4">
+              <p className="mb-3 font-ui text-xs uppercase tracking-[0.16em] text-mist">
+                Equipment filters
+              </p>
 
               <div className="space-y-3">
                 {traitGroups.equipment.map(renderTraitDropdown)}
@@ -353,7 +354,7 @@ export function FilterSidebar({
               <div className="p-4">
                 <button
                   onClick={onClearAllFilters}
-                  className="w-full px-4 py-2 border border-neutral-700 text-neutral-400 hover:text-soul-accent hover:border-soul-accent/50 transition-colors font-eskapade text-sm tracking-wider rounded-sm"
+                  className="min-h-11 w-full border border-midnight-light/70 px-4 py-2 font-ui text-sm tracking-wide text-ash transition-colors hover:border-arcane-bright hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arcane-bright"
                 >
                   Clear All Filters ({activeFilterCount})
                 </button>
@@ -371,7 +372,7 @@ export function FilterSidebar({
             {/* Search Icon */}
             <button
               onClick={toggleCollapse}
-              className="p-2 text-neutral-500 hover:text-neutral-300 transition-colors"
+              className="flex h-11 w-11 items-center justify-center text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment"
               title="Search"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -382,7 +383,7 @@ export function FilterSidebar({
             {/* Filter Icon */}
             <button
               onClick={toggleCollapse}
-              className="p-2 text-neutral-500 hover:text-neutral-300 transition-colors relative"
+              className="relative flex h-11 w-11 items-center justify-center text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment"
               title="Filters"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -398,7 +399,7 @@ export function FilterSidebar({
             {/* Sort Icon */}
             <button
               onClick={toggleCollapse}
-              className="p-2 text-neutral-500 hover:text-neutral-300 transition-colors"
+              className="flex h-11 w-11 items-center justify-center text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment"
               title="Sort"
             >
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

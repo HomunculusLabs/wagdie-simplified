@@ -48,12 +48,12 @@ export function OriginDropdown({
         onClick={() => !disabled && !isLoading && setIsOpen(!isOpen)}
         disabled={disabled || isLoading}
         className={`
-          flex items-center gap-2 px-3 py-2 min-w-[160px]
-          bg-black/40 border rounded-sm
-          font-eskapade text-md  tracking-wider
+          flex min-h-11 items-center gap-2 px-3 py-2 min-w-[160px]
+          bg-midnight/45 border
+          font-ui text-sm tracking-wide
           transition-all duration-200
-          ${isOpen ? 'border-soul-accent text-soul-accent' : 'border-neutral-700 text-neutral-400'}
-          ${disabled || isLoading ? 'opacity-50 cursor-not-allowed' : 'hover:border-neutral-600'}
+          ${isOpen ? 'border-arcane-bright text-arcane-bright' : 'border-midnight-light/70 text-ash'}
+          ${disabled || isLoading ? 'cursor-not-allowed opacity-50' : 'hover:border-arcane-bright hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arcane-bright'}
         `}
         aria-haspopup="listbox"
         aria-expanded={isOpen}
@@ -87,7 +87,7 @@ export function OriginDropdown({
       {isOpen && !isLoading && (
         <div
           className="absolute z-50 mt-1 w-64 max-h-72 overflow-y-auto
-            bg-soul-950 border border-neutral-700 rounded-sm shadow-xl"
+            border border-midnight-light/70 bg-soul-950 shadow-xl"
           role="listbox"
         >
           {/* Clear option */}
@@ -98,9 +98,9 @@ export function OriginDropdown({
               setIsOpen(false)
             }}
             className={`
-              w-full px-3 py-2 text-left text-md font-eskapade  tracking-wider
-              transition-colors hover:bg-neutral-800/50
-              ${!value ? 'text-soul-accent bg-soul-accent/10' : 'text-neutral-400'}
+              min-h-11 w-full px-3 py-2 text-left font-ui text-sm tracking-wide
+              transition-colors hover:bg-arcane/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-arcane-bright
+              ${!value ? 'bg-arcane/10 text-arcane-bright' : 'text-ash'}
             `}
             role="option"
             aria-selected={!value}
@@ -108,7 +108,7 @@ export function OriginDropdown({
             All Origins
           </button>
 
-          <div className="border-t border-neutral-800" />
+          <div className="border-t border-midnight-light/50" />
 
           {/* Origin options */}
           {options.map((option) => (
@@ -120,10 +120,9 @@ export function OriginDropdown({
                 setIsOpen(false)
               }}
               className={`
-                w-full px-3 py-2 text-left text-md font-eskapade
-                transition-colors hover:bg-neutral-800/50
-                flex items-center justify-between
-                ${value === option.origin ? 'text-soul-accent bg-soul-accent/10' : 'text-neutral-300'}
+                flex min-h-11 w-full items-center justify-between px-3 py-2 text-left font-ui text-sm
+                transition-colors hover:bg-arcane/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-arcane-bright
+                ${value === option.origin ? 'bg-arcane/10 text-arcane-bright' : 'text-bone'}
               `}
               role="option"
               aria-selected={value === option.origin}

@@ -48,8 +48,8 @@ export function ActiveFilters({
   if (activeCount === 0) return null
 
   return (
-    <div className="flex flex-wrap items-center gap-2 mb-6 py-2 px-3 bg-black/20 border border-neutral-800/50 rounded-sm">
-      <span className="text-[14px] text-neutral-500 mr-2">
+    <section aria-label="Active character filters" className="mb-6 flex flex-wrap items-center gap-2 border border-midnight-light/50 bg-midnight/35 px-3 py-3">
+      <span className="mr-2 font-ui text-xs uppercase tracking-[0.16em] text-mist">
         Active Filters:
       </span>
 
@@ -127,12 +127,12 @@ export function ActiveFilters({
       {activeCount > 1 && (
         <button
           onClick={onClearAll}
-          className="ml-auto text-[12px] font-eskapade  tracking-widest text-neutral-500 hover:text-soul-accent transition-colors"
+          className="ml-auto min-h-11 px-2 font-ui text-xs uppercase tracking-[0.14em] text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment"
         >
           Clear All
         </button>
       )}
-    </div>
+    </section>
   )
 }
 
@@ -143,13 +143,13 @@ interface FilterBadgeProps {
 
 function FilterBadge({ label, onRemove }: FilterBadgeProps) {
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-soul-accent/10 border border-soul-accent/30 rounded-sm">
-      <span className="text-md font-eskapade text-soul-accent truncate max-w-[150px]">
+    <span className="inline-flex min-h-9 items-center gap-1.5 border border-arcane-muted/50 bg-arcane/10 py-1 pl-2.5 pr-1">
+      <span className="max-w-[180px] truncate font-ui text-sm text-arcane-bright">
         {label}
       </span>
       <button
         onClick={onRemove}
-        className="text-soul-accent/70 hover:text-soul-accent transition-colors"
+        className="flex h-8 w-8 items-center justify-center text-arcane-bright/75 transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment"
         aria-label={`Remove ${label} filter`}
       >
         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">

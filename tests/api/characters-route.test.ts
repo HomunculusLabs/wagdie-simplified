@@ -97,6 +97,29 @@ describe('Characters API Route', () => {
     }))
   })
 
+  it('preserves owner-or-staker custody records through the owned API response', async () => {
+    const wallet = '0x1234567890123456789012345678901234567890'
+    const result = {
+      characters: [{
+        token_id: 7,
+        owner_address: '0x9999999999999999999999999999999999999999',
+        staker_address: wallet,
+      }],
+      hasMore: false,
+      totalCount: 1,
+    }
+    ;(getCharacters as jest.Mock).mockResolvedValueOnce(result)
+
+    const response = await GET_PLURAL(createRequest(`?tab=owned&wallet=${wallet}`))
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual(result)
+    expect(getCharacters).toHaveBeenCalledWith(expect.objectContaining({
+      tab: 'owned',
+      wallet,
+    }))
+  })
+
   it('forwards the ElizaOS profile filter to the character service', async () => {
     const result = {
       characters: [],
