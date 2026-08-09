@@ -1,76 +1,86 @@
-'use client'
+'use client';
 
-import React from 'react';
-import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 
 interface NavItem {
-  label: string
-  path: string
+  label: string;
+  path: string;
+  requiresArchiveFlag?: boolean;
 }
 
-const showLoreNav = process.env.NEXT_PUBLIC_SHOW_LORE_NAV === 'true'
+const showLoreNav = process.env.NEXT_PUBLIC_SHOW_LORE_NAV !== 'false';
 
 const NAV_ITEMS: NavItem[] = [
   { label: 'Home', path: '/' },
-  { label: 'Characters', path: '/characters' },
-  { label: 'Searing', path: '/searing' },
-  { label: 'World Map', path: '/map' },
-  ...(showLoreNav ? [{ label: 'Lore', path: '/lore' }] : []),
-  { label: 'Low Poly', path: '/videos' },
-  { label: 'Spread', path: '/spread' },
-]
+  { label: 'Archive', path: '/lore', requiresArchiveFlag: true },
+  { label: 'Pilgrims', path: '/characters' },
+  { label: 'World', path: '/map' },
+];
 
-interface NavigationProps {
-  className?: string
-  isMobile?: boolean
-  onNavClick?: () => void
+export interface NavigationProps {
+  className?: string;
+  isMobile?: boolean;
+  onNavClick?: () => void;
+  showConnectedActions?: boolean;
+  showArchive?: boolean;
+}
+
+function isActiveRoute(pathname: string, itemPath: string): boolean {
+  if (itemPath === '/') return pathname === '/';
+  return pathname === itemPath || pathname.startsWith(`${itemPath}/`);
 }
 
 /**
- * Navigation Component
- * Main navigation menu with active page highlighting using Next.js usePathname.
+ * Main route navigation. Home is exact-match; route families stay active on descendants.
  */
-export function Navigation({ className = '', isMobile = false, onNavClick }: NavigationProps) {
-  const pathname = usePathname()
-
-  const handleClick = () => {
-    if (onNavClick) {
-      onNavClick()
-    }
-  }
+export function Navigation({
+  className = '',
+  isMobile = false,
+  onNavClick,
+  showConnectedActions: _showConnectedActions = false,
+  showArchive = showLoreNav,
+}: NavigationProps) {
+  const pathname = usePathname();
+  const visibleItems = NAV_ITEMS.filter((item) => (
+    !item.requiresArchiveFlag || showArchive
+  ));
 
   return (
-    <nav className={`flex ${isMobile ? 'flex-col gap-2' : 'flex-row gap-1'} ${className}`}>
-      {NAV_ITEMS.map((item) => {
-        const isActive = pathname === item.path
+    <nav
+      aria-label={isMobile ? 'Mobile navigation' : 'Primary navigation'}
+      className={`flex ${isMobile ? 'flex-col gap-1' : 'flex-row gap-8 xl:gap-12'} ${className}`}
+    >
+      {visibleItems.map((item) => {
+        const isActive = isActiveRoute(pathname, item.path);
         return (
           <Link
             key={item.path}
             href={item.path}
+            aria-current={isActive ? 'page' : undefined}
             className={`
-              relative px-4 py-3 min-h-[44px] flex items-center
-              text-md font-eskapade
-              transition-all duration-300 group
+              group relative flex min-h-[44px] items-center px-3 py-3
+              font-eskapade text-sm transition-colors duration-300
+              focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment
               ${isActive
-                ? 'text-soul-accent'
-                : 'text-neutral-500 hover:text-neutral-300'
+                ? 'text-parchment'
+                : 'text-soul-accent/75 hover:text-parchment'
               }
             `}
-            onClick={handleClick}
+            onClick={onNavClick}
           >
             {item.label}
-            {/* Underline indicator */}
             <span
+              aria-hidden="true"
               className={`
-                absolute bottom-0 left-1/2 -translate-x-1/2 h-[1px] bg-soul-accent
+                absolute bottom-0 left-1/2 h-px -translate-x-1/2 bg-parchment
                 transition-all duration-300
-                ${isActive ? 'w-full' : 'w-0 group-hover:w-1/2'}
+                ${isActive ? 'w-full' : 'w-0 group-hover:w-1/2 group-focus-visible:w-1/2'}
               `}
             />
           </Link>
-        )
+        );
       })}
     </nav>
-  )
+  );
 }

@@ -28,13 +28,21 @@ export function useCharacterLocation(tokenId: number | null): UseCharacterLocati
       return
     }
 
+    const client = supabase
+    if (!client) {
+      setLocation(null)
+      setError(new Error('Supabase client is not configured'))
+      setIsLoading(false)
+      return
+    }
+
     const fetchLocation = async () => {
       try {
         setIsLoading(true)
         setError(null)
 
         // Get character's location_id
-        const { data: character, error: charError } = await supabase
+        const { data: character, error: charError } = await client
           .from(CHARACTERS_TABLE)
           .select('location_id')
           .eq('token_id', tokenId)
@@ -50,7 +58,7 @@ export function useCharacterLocation(tokenId: number | null): UseCharacterLocati
         }
 
         // Get location details
-        const { data: locationData, error: locError } = await supabase
+        const { data: locationData, error: locError } = await client
           .from('locations')
           .select('*')
           .eq('id', character.location_id)

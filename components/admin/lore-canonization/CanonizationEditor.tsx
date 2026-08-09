@@ -116,15 +116,15 @@ export function CanonizationEditor({
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs font-display uppercase tracking-[0.18em] text-soul-accent">
-            Canonization editor
+            Base event override editor
           </p>
           <h2 className="mt-2 font-display text-2xl text-soul-bone">{record.event.title}</h2>
           <p className="mt-2 text-sm leading-6 text-soul-mist/75">
-            {eventKindLabels[record.event.kind]} record / {record.event.id}
+            Base archive kind: {eventKindLabels[record.event.kind]} / {record.event.id}
           </p>
         </div>
         <div className="rounded border border-soul-accent/25 bg-black/20 px-3 py-2 text-right text-xs uppercase tracking-wide text-soul-mist/75">
-          <p>Editing {record.draftOverride ? 'draft override' : record.publishedOverride ? 'published baseline' : 'static baseline'}</p>
+          <p>Editing {record.draftOverride ? 'draft override' : record.publishedOverride ? 'published override' : 'static base canon'}</p>
           <p className="mt-1 text-soul-accent">Current stage: {stage.shortLabel}</p>
         </div>
       </div>
@@ -140,15 +140,15 @@ export function CanonizationEditor({
 
       <div className="grid gap-4 md:grid-cols-2">
         <Select
-          label="Status"
-          aria-label="Editor canon status"
+          label="Canon status"
+          aria-label="Base event override canon status"
           value={value.status}
           options={canonStatuses.map((status) => ({ value: status, label: canonStatusLabels[status] }))}
           onChange={(event) => updateCanon({ status: event.target.value as CanonStatus })}
         />
         <Select
-          label="Stage"
-          aria-label="Editor canon stage"
+          label="Canon stage"
+          aria-label="Base event override canon stage"
           value={value.stageId}
           options={getCanonizationStageOptions().map((item) => ({ value: item.id, label: item.label }))}
           onChange={(event) => updateCanon({ stageId: event.target.value as CanonizationStageId })}
@@ -156,11 +156,11 @@ export function CanonizationEditor({
       </div>
 
       <TextArea
-        label="Canon note"
-        aria-label="Editor canon note"
+        label="Base event canon note"
+        aria-label="Base event override canon note"
         value={value.note ?? ''}
         onChange={(event) => updateCanon({ note: ensureStringOrUndefined(event.target.value) })}
-        placeholder="Explain the canonization decision..."
+        placeholder="Explain the base-event canon override decision..."
       />
 
       <div className="space-y-3">
@@ -262,7 +262,7 @@ export function CanonizationEditor({
             isLoading={busyAction === 'publish'}
             title={canPublish ? undefined : 'Save a draft before publishing'}
           >
-            Publish
+            Publish override
           </Button>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -277,7 +277,7 @@ export function CanonizationEditor({
             disabled={!hasOverride}
             isLoading={busyAction === 'reset'}
           >
-            Reset to static
+            Reset to static canon
           </Button>
         </div>
       </div>

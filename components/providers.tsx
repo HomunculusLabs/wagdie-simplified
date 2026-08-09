@@ -31,7 +31,7 @@ function ChatDockContentWrapper({ children }: { children: React.ReactNode }) {
     ? chatDockWidth
     : isPersonaAssistantDockVisible
       ? personaAssistantDockWidth
-      : DOCK_DEFAULT_WIDTH
+      : 0
 
   useEffect(() => {
     const handlePersonaAssistantDockVisibility = (event: Event) => {

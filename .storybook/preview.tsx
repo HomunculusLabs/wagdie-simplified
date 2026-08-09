@@ -5,10 +5,20 @@ import { WagmiProvider } from 'wagmi';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createConfig, http, injected } from 'wagmi';
 import { mainnet, sepolia } from '@/lib/contracts/chains';
-import { MockAuthProvider, MockTokenBalancesProvider, MockStakingStatusProvider, MockCharacterOwnershipProvider } from './mock-providers';
+import {
+  MOCK_AUTH_STATES,
+  MockAuthProvider,
+  MockTokenBalancesProvider,
+  MockStakingStatusProvider,
+  MockCharacterOwnershipProvider,
+} from './mock-providers';
 import { handlers } from './mocks/handlers';
 import { HookMocksProvider } from './mocks/hook-mocks/HookMocksProvider';
 import { setupWorker } from 'msw/browser';
+
+// Storybook's Vite transform can preserve classic JSX for Next.js modules.
+// Keep React available to those story-only renders without changing app code.
+(globalThis as typeof globalThis & { React: typeof React }).React = React;
 
 // Initialize MSW worker for Storybook
 const worker = setupWorker(...handlers);
@@ -48,37 +58,26 @@ const queryClient = new QueryClient({
   },
 });
 
-// Mock data for different states
-const mockStates = {
-  connected: {
-    isConnected: true,
-    address: '0x1234567890123456789012345678901234567890',
-  },
-  disconnected: {
-    isConnected: false,
-    address: undefined,
-  },
-  error: {
-    isConnected: false,
-    error: 'Mock error state',
-  },
-};
-
 // Global decorator to wrap all stories with providers
 const withProviders = (Story: React.ComponentType, context: any) => {
   // Check if story has mock state parameter
-  const mockState = context.globals?.mockState || 'connected';
+  const mockState = context.parameters?.mockState || context.globals?.mockState || 'connected';
+  const authState = {
+    ...(MOCK_AUTH_STATES[mockState] || MOCK_AUTH_STATES.connected),
+    ...(context.parameters?.authState || {}),
+  };
   const hookMocks = context.parameters?.hookMocks;
+  const isFullscreen = context.parameters?.layout === 'fullscreen';
 
   return (
     <HookMocksProvider mocks={hookMocks}>
       <WagmiProvider config={storybookConfig}>
         <QueryClientProvider client={queryClient}>
-          <MockAuthProvider>
+          <MockAuthProvider state={authState}>
             <MockTokenBalancesProvider>
               <MockStakingStatusProvider>
                 <MockCharacterOwnershipProvider>
-                  <div style={{ padding: '1rem' }}>
+                  <div style={{ padding: isFullscreen ? 0 : '1rem', minHeight: '100vh' }}>
                     <Story />
                   </div>
                 </MockCharacterOwnershipProvider>
@@ -122,9 +121,13 @@ const preview: Preview = {
         icon: 'gear',
         items: [
           { value: 'connected', title: 'Connected' },
+          { value: 'connecting', title: 'Connecting' },
           { value: 'disconnected', title: 'Disconnected' },
+          { value: 'loading', title: 'Hydrating' },
+          { value: 'authenticating', title: 'Authenticating' },
+          { value: 'signatureRejected', title: 'Signature rejected' },
+          { value: 'admin', title: 'Admin' },
           { value: 'error', title: 'Error' },
-          { value: 'loading', title: 'Loading' },
         ],
       },
     },

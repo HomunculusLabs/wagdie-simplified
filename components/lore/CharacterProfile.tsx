@@ -6,6 +6,7 @@ import { CharacterPortrait } from './CharacterPortrait';
 import { EntityChips } from './EntityChips';
 import { MediaGallery } from './MediaGallery';
 import { SourceList } from './SourceList';
+import { describeLoreCharacterAppearances } from '@/lib/lore/archive-character-summary';
 import { getLoreEventHref, getLoreCharacterHref } from '@/lib/lore/navigation';
 import type {
   LoreCharacterConnection,
@@ -40,22 +41,29 @@ export function CharacterProfile({
   allLocations,
   sources,
 }: CharacterProfileProps) {
+  const officialAppearanceCount = appearedInEvents.filter((event) => event.kind === 'official').length;
+  const communityAppearanceCount = appearedInEvents.length - officialAppearanceCount;
+  const appearanceDescription = describeLoreCharacterAppearances(
+    officialAppearanceCount,
+    communityAppearanceCount,
+  );
+
   return (
-    <main className="container mx-auto space-y-8 px-4 py-8 md:py-10">
-      <Link href="/lore" className="text-sm font-serif uppercase tracking-[0.24em] text-neutral-300 transition-colors hover:text-soul-accent">
+    <main className="mx-auto w-full max-w-[1680px] space-y-8 px-4 py-8 sm:px-6 md:py-12 lg:px-10">
+      <Link href="/lore" className="font-ui text-sm text-ash transition-colors hover:text-parchment">
         ← Back to lore archive
       </Link>
 
-      <Card className="overflow-hidden border-midnight-light/60 bg-soul-900/50">
+      <Card className="overflow-hidden rounded-none border-midnight-light/60 bg-soul-900/50">
         <CardContent className="p-0">
-          <section className="grid gap-0 lg:grid-cols-[0.75fr_1.25fr]">
-            <div className="border-b border-midnight-light/50 bg-black/20 p-6 lg:border-b-0 lg:border-r md:p-8">
+          <section className="grid gap-0 lg:grid-cols-[20rem_minmax(0,1fr)] xl:grid-cols-[24rem_minmax(0,1fr)]">
+            <div className="border-b border-midnight-light/50 bg-black/20 p-5 lg:border-b-0 lg:border-r xl:p-6">
               {character.imageUrl ? (
-                <figure className="space-y-4">
-                  <div className="relative mx-auto aspect-square max-w-sm overflow-hidden border border-soul-accent/30 bg-soul-950/80">
-                    <Image src={character.imageUrl} alt={character.name} fill sizes="(min-width: 1024px) 33vw, 80vw" className="object-cover" priority />
+                <figure className="space-y-3">
+                  <div className="relative mx-auto aspect-square w-full overflow-hidden border border-midnight-light/60 bg-soul-950/80">
+                    <Image src={character.imageUrl} alt={character.name} fill sizes="(min-width: 1280px) 24rem, (min-width: 1024px) 20rem, 80vw" className="object-cover" priority />
                   </div>
-                  <figcaption className="text-center text-sm font-serif uppercase tracking-[0.06em] text-neutral-200">
+                  <figcaption className="text-center font-ui text-xs uppercase tracking-[0.14em] text-ash">
                     {character.tokenId ? `WAGDIE #${character.tokenId}` : 'Real character record'}
                   </figcaption>
                 </figure>
@@ -68,16 +76,19 @@ export function CharacterProfile({
               )}
             </div>
 
-            <div className="space-y-6 p-6 md:p-8">
+            <div className="space-y-5 p-6 md:p-8 xl:p-10">
               <div className="space-y-3">
-                <p className="text-sm font-serif uppercase tracking-[0.28em] text-soul-accent">
+                <p className="font-ui text-xs uppercase tracking-[0.18em] text-soul-accent">
                   Character profile
                 </p>
-                <h1 className="font-display text-4xl lowercase tracking-widest text-neutral-50 md:text-6xl">
+                <h1 className="font-display text-4xl leading-none text-parchment md:text-6xl">
                   {character.name}
                 </h1>
-                <p className="max-w-3xl font-serif text-xl leading-8 text-neutral-200">
-                  {character.summary}
+                <p className="max-w-4xl font-ui text-base leading-7 text-ash md:text-lg">
+                  {character.summary || 'No preserved character summary is available.'}
+                </p>
+                <p className="font-ui text-sm uppercase tracking-[0.16em] text-arcane-bright">
+                  {appearanceDescription}
                 </p>
               </div>
 
@@ -106,12 +117,20 @@ export function CharacterProfile({
 
               <div className="flex flex-wrap gap-3">
                 {character.tokenId ? (
-                  <Link
-                    href={`/lore/submit?tokenId=${encodeURIComponent(String(character.tokenId))}`}
-                    className="inline-flex items-center justify-center rounded border border-soul-accent/50 bg-soul-accent/10 px-4 py-2 font-display text-sm uppercase tracking-[0.16em] text-soul-accent transition-colors hover:border-soul-accent hover:bg-soul-accent/20 hover:text-soul-bone"
-                  >
-                    Add a story for WAGDIE #{character.tokenId}
-                  </Link>
+                  <>
+                    <Link
+                      href={`/lore/submit?tokenId=${encodeURIComponent(String(character.tokenId))}`}
+                      className="inline-flex min-h-11 items-center justify-center border border-arcane-muted bg-arcane/10 px-4 font-ui text-sm text-arcane-bright transition-colors hover:border-arcane-bright hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arcane-bright"
+                    >
+                      Add a story for WAGDIE #{character.tokenId}
+                    </Link>
+                    <Link
+                      href={`/characters/${character.tokenId}`}
+                      className="inline-flex min-h-11 items-center justify-center border border-midnight-light/70 px-4 font-ui text-sm text-bone transition-colors hover:border-parchment/60 hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment"
+                    >
+                      View NFT character sheet
+                    </Link>
+                  </>
                 ) : (
                   <p className="text-sm font-serif text-neutral-300">
                     Community stories can be submitted for token-linked characters.
@@ -124,7 +143,7 @@ export function CharacterProfile({
                   <p className="text-sm font-serif uppercase tracking-[0.22em] text-neutral-300">
                     First appearance
                   </p>
-                  <Link href={getLoreEventHref(firstAppearance)} className="mt-2 block font-display text-2xl lowercase tracking-widest text-neutral-50 transition-colors hover:text-soul-accent">
+                  <Link href={getLoreEventHref(firstAppearance)} className="mt-2 block font-display text-2xl text-parchment transition-colors hover:text-soul-accent">
                     {firstAppearance.title}
                   </Link>
                   <p className="mt-2 text-sm font-eskapade leading-relaxed text-neutral-300">
@@ -137,30 +156,34 @@ export function CharacterProfile({
         </CardContent>
       </Card>
 
-      <section className="grid gap-6 lg:grid-cols-[0.7fr_1.3fr]">
-        <aside className="space-y-5 border border-midnight-light/50 bg-soul-900/40 p-5 md:p-6">
+      <section className="space-y-8">
+        <AppearedInTimeline events={appearedInEvents} seasons={seasons} locations={allLocations} />
+
+        <aside className="grid gap-6 border border-midnight-light/50 bg-soul-900/40 p-5 md:grid-cols-3 md:p-6">
           <div>
-            <p className="text-sm font-serif uppercase tracking-[0.28em] text-soul-accent">
+            <p className="font-ui text-xs uppercase tracking-[0.18em] text-soul-accent">
               Profile context
             </p>
-            <h2 className="mt-2 font-display text-2xl lowercase tracking-widest text-neutral-50">
+            <h2 className="mt-2 font-display text-2xl text-parchment">
               Associated places
             </h2>
+            <div className="mt-4">
+              <EntityChips
+                label="Locations"
+                items={associatedLocations.map((location) => ({
+                  label: location.name,
+                  href: `/lore/locations/${location.slug}`,
+                }))}
+                emptyLabel="No associated locations"
+              />
+            </div>
           </div>
-          <EntityChips
-            label="Locations"
-            items={associatedLocations.map((location) => ({
-              label: location.name,
-              href: `/lore/locations/${location.slug}`,
-            }))}
-            emptyLabel="No associated locations"
-          />
 
           <div>
             <p className="text-sm font-serif uppercase tracking-[0.06em] text-soul-accent">
               Appears with
             </p>
-            <div className="mt-3 grid gap-3">
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 md:grid-cols-1 xl:grid-cols-2">
               {characterConnections.length > 0 ? characterConnections.slice(0, 8).map((connection) => (
                 <div key={connection.character.id} className="space-y-2">
                   <CharacterPortrait
@@ -178,12 +201,10 @@ export function CharacterProfile({
             </div>
           </div>
 
-          <p className="font-serif text-base leading-7 text-neutral-200">
-            This profile gathers every official and community event that references {character.name}, ordered by the shared lore timeline.
+          <p className="font-ui text-sm leading-7 text-ash">
+            {appearanceDescription}. This profile gathers the records that reference {character.name}; canon status remains attached to each individual event.
           </p>
         </aside>
-
-        <AppearedInTimeline events={appearedInEvents} seasons={seasons} locations={allLocations} />
       </section>
 
       <SourceList sources={sources} title="Source-backed appearances" />

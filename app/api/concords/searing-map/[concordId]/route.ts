@@ -32,8 +32,8 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   }
 
   const parsed = parseConcordSearingMapUpsert(await readJson(request), concordId)
-  if ('error' in parsed) {
-    return jsonRawError(parsed.error, 400)
+  if (!parsed.entry) {
+    return jsonRawError(parsed.error ?? 'Invalid Concord searing map', 400)
   }
 
   if (parsed.entry.concord_token_id !== concordId) {

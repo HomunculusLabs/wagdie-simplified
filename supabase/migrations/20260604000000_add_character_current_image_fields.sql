@@ -37,5 +37,33 @@ CREATE INDEX IF NOT EXISTS idx_wagdie_characters_current_image_kind
 CREATE INDEX IF NOT EXISTS idx_wagdie_characters_current_image_updated_at
   ON public.wagdie_characters (current_image_updated_at);
 
-GRANT SELECT ON public.wagdie_characters TO authenticated;
-GRANT SELECT ON public.wagdie_characters TO anon;
+-- Public clients must not read storage internals directly. App-facing image
+-- metadata/provenance should flow through sanitized Next.js routes instead.
+REVOKE SELECT ON public.wagdie_characters FROM authenticated;
+REVOKE SELECT ON public.wagdie_characters FROM anon;
+
+GRANT SELECT (
+  token_id,
+  name,
+  image_url,
+  original_image_url,
+  original_metadata_sha256,
+  current_image_url,
+  current_image_version,
+  current_image_kind,
+  current_image_sha256,
+  current_image_updated_at
+) ON public.wagdie_characters TO authenticated;
+
+GRANT SELECT (
+  token_id,
+  name,
+  image_url,
+  original_image_url,
+  original_metadata_sha256,
+  current_image_url,
+  current_image_version,
+  current_image_kind,
+  current_image_sha256,
+  current_image_updated_at
+) ON public.wagdie_characters TO anon;

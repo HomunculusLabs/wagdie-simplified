@@ -75,6 +75,7 @@ export function buildUnpublishTransition(args: {
     updates: {
       status: 'closed',
       visibility: 'hidden',
+      published_kind: null,
       status_reason: args.note ?? 'Unpublished by admin',
       review_note: note,
       last_admin_address: args.admin,
@@ -116,6 +117,7 @@ export function buildCloseTransition(args: {
     updates: {
       status: 'closed',
       visibility: 'hidden',
+      published_kind: null,
       review_note: args.note,
       status_reason: args.note,
       last_admin_address: args.admin,

@@ -48,7 +48,7 @@ export function LoreCanonizationAdminContainer() {
       try {
         const response = await fetch('/api/admin/lore/canonization', { cache: 'no-store' });
         if (!response.ok) {
-          setErrors(await extractErrors(response, 'Failed to load canonization records'));
+          setErrors(await extractErrors(response, 'Failed to load base event override records'));
           return;
         }
 
@@ -59,7 +59,7 @@ export function LoreCanonizationAdminContainer() {
         setSelectedEventId((current) => current ?? body.events[0]?.eventId);
       } catch (error) {
         if (mounted) {
-          setErrors([error instanceof Error ? error.message : 'Failed to load canonization records']);
+          setErrors([error instanceof Error ? error.message : 'Failed to load base event override records']);
         }
       } finally {
         if (mounted) setLoading(false);
@@ -122,7 +122,7 @@ export function LoreCanonizationAdminContainer() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ canon: editorCanon }),
       },
-    ), 'Failed to save canonization draft');
+    ), 'Failed to save base event override draft');
   };
 
   const handlePublish = () => {
@@ -131,20 +131,20 @@ export function LoreCanonizationAdminContainer() {
     submitRecordAction('publish', () => fetch(
       `/api/admin/lore/canonization/${encodeURIComponent(selectedRecord.eventId)}/publish`,
       { method: 'POST' },
-    ), 'Failed to publish canonization draft');
+    ), 'Failed to publish base event override');
   };
 
   const handleReset = () => {
     if (!selectedRecord) return;
 
-    if (!window.confirm(`Reset ${selectedRecord.event.title} to the static canonization state?`)) {
+    if (!window.confirm(`Reset ${selectedRecord.event.title} to the static base-event canon state?`)) {
       return;
     }
 
     submitRecordAction('reset', () => fetch(
       `/api/admin/lore/canonization/${encodeURIComponent(selectedRecord.eventId)}`,
       { method: 'DELETE' },
-    ), 'Failed to reset canonization override');
+    ), 'Failed to reset base event override');
   };
 
   if (loading) {

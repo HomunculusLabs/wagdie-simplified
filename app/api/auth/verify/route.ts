@@ -4,6 +4,9 @@ import { verifySiweMessage, upsertUser } from '@/lib/auth/siwe'
 import { cookies } from 'next/headers'
 import { getSession } from '@/lib/auth/session'
 import { jsonRaw, jsonRawError } from '@/lib/api/responses'
+import { getTrustedSiweConfig } from '@/lib/auth/siwe-config'
+import { withCsrfProtection } from '@/lib/middleware/csrf'
+import { withRateLimit } from '@/lib/middleware/rate-limit'
 
 interface VerifyBody {
   message?: unknown
@@ -22,7 +25,7 @@ function extractNonce(message: string): string | null {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function handlePost(request: NextRequest) {
   try {
     const body = await request.json() as VerifyBody
     const message = parseRequiredString(body.message)
@@ -45,8 +48,14 @@ export async function POST(request: NextRequest) {
       return jsonRawError('Invalid nonce', 401)
     }
 
-    // Verify the SIWE message
-    const verification = await verifySiweMessage(message, signature)
+    // Verify the SIWE message against trusted app configuration
+    const siweConfig = getTrustedSiweConfig(request)
+    const verification = await verifySiweMessage(message, signature, {
+      nonce,
+      domain: siweConfig.domain,
+      uri: siweConfig.uri,
+      chainId: siweConfig.chainId,
+    })
 
     if (!verification.success || !verification.address) {
       return jsonRawError(verification.error || 'Verification failed', 401)
@@ -93,3 +102,5 @@ export async function POST(request: NextRequest) {
     return jsonRawError('Verification failed', 500)
   }
 }
+
+export const POST = withRateLimit(withCsrfProtection(handlePost))

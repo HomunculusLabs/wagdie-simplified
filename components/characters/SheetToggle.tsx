@@ -28,7 +28,7 @@ export function SheetToggle({
   return (
     <label
       className={`
-        inline-flex items-center gap-2 cursor-pointer select-none
+        inline-flex min-h-11 cursor-pointer select-none items-center gap-3 font-ui
         ${disabled ? 'opacity-50 cursor-not-allowed' : ''}
         ${className}
       `}
@@ -43,24 +43,23 @@ export function SheetToggle({
           className="sr-only peer"
         />
         <div className={`
-          w-10 h-5 rounded-sm border transition-all duration-200
+          h-5 w-10 border transition-all duration-200
           ${checked
-            ? 'bg-soul-accent/30 border-soul-accent'
-            : 'bg-black/40 border-neutral-700 hover:border-neutral-600'
+            ? 'border-arcane-bright bg-arcane/35'
+            : 'border-midnight-light/70 bg-midnight/45 hover:border-arcane-muted'
           }
-          peer-focus:ring-2 peer-focus:ring-soul-accent/30
+          peer-focus-visible:ring-2 peer-focus-visible:ring-arcane-bright
         `}>
           <div className={`
-            absolute top-0.5 left-0.5 w-4 h-4 rounded-sm transition-transform duration-200
+            absolute left-0.5 top-0.5 h-4 w-4 transition-transform duration-200
             ${checked
-              ? 'translate-x-5 bg-soul-accent'
-              : 'translate-x-0 bg-neutral-600'
+              ? 'translate-x-5 bg-arcane-bright'
+              : 'translate-x-0 bg-mist'
             }
           `} />
         </div>
       </span>
-      {/* REPOMARK:SCOPE: 1 - Replace font-display with font-eskapade for SheetToggle label text (UI font contract) */}
-      <span className="text-md font-eskapade  tracking-wider text-neutral-400">
+      <span className="font-ui text-sm tracking-wide text-ash">
         {label}
       </span>
     </label>

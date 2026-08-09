@@ -13,6 +13,7 @@ import { POST as ADMIN_PUBLISH } from '@/app/api/admin/lore/submissions/[submiss
 import { POST as ADMIN_REVIEW } from '@/app/api/admin/lore/submissions/[submissionId]/review/route';
 import { POST as ADMIN_UNPUBLISH } from '@/app/api/admin/lore/submissions/[submissionId]/unpublish/route';
 import { requireAdmin, requireAuth } from '@/lib/api/auth';
+import { revalidatePath } from 'next/cache';
 import {
   LoreSubmissionConflictError,
   LoreSubmissionValidationError,
@@ -23,6 +24,10 @@ jest.mock('@/lib/api/auth', () => ({
   requireAuth: jest.fn(),
   requireAdmin: jest.fn(),
   isAuthError: (result: unknown) => result instanceof NextResponse,
+}));
+
+jest.mock('next/cache', () => ({
+  revalidatePath: jest.fn(),
 }));
 
 jest.mock('@/lib/services/lore-submission-service', () => {
@@ -73,7 +78,7 @@ const noteActionRoutes: Array<{
   serviceMethod: NoteActionMethod;
 }> = [
   {
-    label: 'publishes admin-approved lore',
+    label: 'publishes exceptional submitted community lore',
     handler: ADMIN_PUBLISH,
     path: 'publish',
     serviceMethod: 'publishSubmission',
@@ -105,7 +110,7 @@ describe('lore submission API routes', () => {
     (requireAdmin as jest.Mock).mockResolvedValue({ address: '0xAdmin' });
   });
 
-  it('requires auth and creates community submissions through the workflow service', async () => {
+  it('requires auth and creates auto-public community submissions through the workflow service', async () => {
     (loreSubmissionService.createSubmission as jest.Mock).mockResolvedValueOnce({ submission: { id: 'sub-1' } });
     const body = { tokenId: '42' };
 
@@ -191,7 +196,9 @@ describe('lore submission API routes', () => {
   });
 
   it.each(noteActionRoutes)('$label through the workflow service', async ({ handler, path, serviceMethod }) => {
-    (loreSubmissionService[serviceMethod] as jest.Mock).mockResolvedValueOnce({ submission: { id: 'sub-1' } });
+    (loreSubmissionService[serviceMethod] as jest.Mock).mockResolvedValueOnce({
+      submission: { id: 'sub-1', published_slug: 'bell-glow-witness' },
+    });
 
     const response = await handler(
       jsonRequest(`http://localhost/api/admin/lore/submissions/sub-1/${path}`, 'POST', { note: '  ship it  ' }),
@@ -201,14 +208,37 @@ describe('lore submission API routes', () => {
     expect(response.status).toBe(200);
     expect(requireAdmin).toHaveBeenCalledTimes(1);
     expect(loreSubmissionService[serviceMethod]).toHaveBeenCalledWith('sub-1', '0xAdmin', 'ship it');
+    expect(revalidatePath).toHaveBeenCalledWith('/lore');
+    expect(revalidatePath).toHaveBeenCalledWith('/lore/events/bell-glow-witness');
+    expect(revalidatePath).toHaveBeenCalledWith('/lore/community/bell-glow-witness');
     await expect(response.json()).resolves.toEqual({
       success: true,
-      data: { submission: { id: 'sub-1' } },
+      data: { submission: { id: 'sub-1', published_slug: 'bell-glow-witness' } },
     });
   });
 
-  it('routes admin review actions through the workflow service', async () => {
-    (loreSubmissionService.reviewSubmission as jest.Mock).mockResolvedValueOnce({ submission: { id: 'sub-1' } });
+  it('keeps successful public-affecting mutations successful when revalidation fails', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    (loreSubmissionService.publishSubmission as jest.Mock).mockResolvedValueOnce({ submission: { id: 'sub-1' } });
+    (revalidatePath as jest.Mock).mockImplementationOnce(() => {
+      throw new Error('cache unavailable');
+    });
+
+    const response = await ADMIN_PUBLISH(
+      jsonRequest('http://localhost/api/admin/lore/submissions/sub-1/publish', 'POST', { note: 'ship it' }),
+      routeContext(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(loreSubmissionService.publishSubmission).toHaveBeenCalledWith('sub-1', '0xAdmin', 'ship it');
+    expect(warnSpy).toHaveBeenCalledWith('Failed to revalidate effective lore routes:', expect.any(Error));
+    warnSpy.mockRestore();
+  });
+
+  it('routes admin review actions through the workflow service and revalidates effective lore', async () => {
+    (loreSubmissionService.reviewSubmission as jest.Mock).mockResolvedValueOnce({
+      submission: { id: 'sub-1', published_slug: 'bell-glow-witness' },
+    });
     const body = { action: 'request_changes', note: 'Please add source context.' };
 
     const response = await ADMIN_REVIEW(
@@ -219,9 +249,12 @@ describe('lore submission API routes', () => {
     expect(response.status).toBe(200);
     expect(requireAdmin).toHaveBeenCalledTimes(1);
     expect(loreSubmissionService.reviewSubmission).toHaveBeenCalledWith('sub-1', body, '0xAdmin');
+    expect(revalidatePath).toHaveBeenCalledWith('/lore');
+    expect(revalidatePath).toHaveBeenCalledWith('/lore/events/bell-glow-witness');
+    expect(revalidatePath).toHaveBeenCalledWith('/lore/community/bell-glow-witness');
     await expect(response.json()).resolves.toEqual({
       success: true,
-      data: { submission: { id: 'sub-1' } },
+      data: { submission: { id: 'sub-1', published_slug: 'bell-glow-witness' } },
     });
   });
 
@@ -235,6 +268,7 @@ describe('lore submission API routes', () => {
 
     expect(response.status).toBe(403);
     expect(loreSubmissionService.canonizeSubmission).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
   });
 
   it('maps stale helper-backed action transitions to conflicts', async () => {
@@ -249,5 +283,6 @@ describe('lore submission API routes', () => {
 
     expect(response.status).toBe(409);
     expect(loreSubmissionService.publishSubmission).toHaveBeenCalledWith('sub-1', '0xAdmin', 'ship it');
+    expect(revalidatePath).not.toHaveBeenCalled();
   });
 });

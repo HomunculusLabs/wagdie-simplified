@@ -9,7 +9,7 @@ interface CharacterDetailPageProps {
   params: Promise<{ tokenId: string }>
 }
 
-const showLoreNav = process.env.NEXT_PUBLIC_SHOW_LORE_NAV === 'true'
+const showLoreNav = process.env.NEXT_PUBLIC_SHOW_LORE_NAV !== 'false'
 
 function parsePositiveTokenIdParam(tokenIdParam: string): number | null {
   if (!/^\d+$/.test(tokenIdParam)) return null

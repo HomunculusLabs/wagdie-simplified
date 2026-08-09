@@ -1,8 +1,10 @@
+import { NextRequest } from 'next/server'
 import { cookies } from 'next/headers'
 import { getSession } from '@/lib/auth/session'
 import { jsonRaw, jsonRawError } from '@/lib/api/responses'
+import { withCsrfProtection } from '@/lib/middleware/csrf'
 
-export async function POST() {
+async function handlePost(_request: NextRequest) {
   try {
     const cookieStore = await cookies()
 
@@ -32,4 +34,10 @@ export async function POST() {
     console.error('Logout error:', error)
     return jsonRawError('Logout failed', 500)
   }
+}
+
+const protectedPost = withCsrfProtection(handlePost)
+
+export async function POST(request: NextRequest) {
+  return protectedPost(request)
 }

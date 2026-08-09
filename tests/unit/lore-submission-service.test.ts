@@ -108,6 +108,12 @@ function validPayload(overrides: Record<string, unknown> = {}) {
 function createRepository(overrides: Partial<Record<keyof LoreSubmissionRepository, jest.Mock>> = {}) {
   return {
     createSubmission: jest.fn(async () => detail()),
+    createPublishedSubmission: jest.fn(async () => detail({
+      status: 'public',
+      visibility: 'public',
+      published_kind: 'community',
+      published_slug: 'a-fallen-bell-rings',
+    })),
     listForSubmitter: jest.fn(async () => []),
     findDetail: jest.fn(async () => detail()),
     findById: jest.fn(async () => submission()),
@@ -118,6 +124,12 @@ function createRepository(overrides: Partial<Record<keyof LoreSubmissionReposito
     updateCuration: jest.fn(async () => detail()),
     updateStatusConditional: jest.fn(async () => detail({ status: 'public' })),
     reviseSubmission: jest.fn(async () => detail({ status: 'submitted' })),
+    revisePublishedSubmission: jest.fn(async () => detail({
+      status: 'public',
+      visibility: 'public',
+      published_kind: 'community',
+      published_slug: 'a-revised-bell-rings',
+    })),
     addReview: jest.fn(async () => ({
       id: 'review-1',
       submission_id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
@@ -150,23 +162,57 @@ describe('LoreSubmissionService', () => {
     expect(ownershipVerifier).toHaveBeenCalledWith({ tokenId: '42', walletAddress: wallet });
     expect(repository.findOpenBySubmitterAndToken).toHaveBeenCalledWith(wallet, '42');
     expect(repository.countRecentBySubmitter).toHaveBeenCalledWith(wallet, expect.any(String));
-    expect(repository.createSubmission).toHaveBeenCalledWith(
+    expect(repository.createSubmission).not.toHaveBeenCalled();
+    expect(repository.createPublishedSubmission).toHaveBeenCalledWith(
       expect.objectContaining({ tokenId: '42', tags: ['bell'] }),
       wallet,
-    );
-    expect(repository.updateStatusConditional).toHaveBeenCalledWith(
-      'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
-      ['submitted'],
       expect.objectContaining({
+        submissionId: expect.any(String),
+        publishedSlug: 'a-fallen-bell-rings',
+        publishedAt: expect.any(String),
+      }),
+    );
+    expect(repository.updateStatusConditional).not.toHaveBeenCalled();
+  });
+
+  it('auto-publishes valid revisions after requested changes as public community lore', async () => {
+    const repository = createRepository({
+      findById: jest.fn(async () => submission({ status: 'changes_requested' })),
+      revisePublishedSubmission: jest.fn(async () => detail({
         status: 'public',
         visibility: 'public',
         published_kind: 'community',
-        published_slug: 'a-fallen-bell-rings',
-        last_admin_address: null,
-        reviewed_at: null,
+        published_slug: 'a-revised-bell-rings',
+      })),
+    });
+    const ownershipVerifier = jest.fn(async () => ({ owns: true, reason: 'owned' }));
+    const service = new LoreSubmissionService(repository, {
+      ownershipVerifier,
+      loreBaseDatasetLoader: loadStaticDataset,
+    });
+
+    await service.reviseSubmission(
+      'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      validPayload({
+        title: 'A Revised Bell Rings',
+        summary: 'A revised community account of a strange bell echoing after the searing.',
+        bodyMarkdown: 'A revised bell rang beneath the ash.',
       }),
-      expect.objectContaining({ actorAddress: wallet, action: 'publish', note: null }),
+      '0xABCDEF0000000000000000000000000000000001',
     );
+
+    expect(ownershipVerifier).toHaveBeenCalledWith({ tokenId: '42', walletAddress: wallet });
+    expect(repository.reviseSubmission).not.toHaveBeenCalled();
+    expect(repository.revisePublishedSubmission).toHaveBeenCalledWith(
+      'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      expect.objectContaining({ title: 'A Revised Bell Rings', tags: ['bell'] }),
+      wallet,
+      expect.objectContaining({
+        publishedSlug: 'a-revised-bell-rings',
+        publishedAt: expect.any(String),
+      }),
+    );
+    expect(repository.updateStatusConditional).not.toHaveBeenCalled();
   });
 
   it('rejects submissions when the connected wallet does not own the token', async () => {
@@ -200,14 +246,14 @@ describe('LoreSubmissionService', () => {
     await expect(service.createSubmission(validPayload(), wallet)).rejects.toBeInstanceOf(LoreSubmissionRateLimitError);
   });
 
-  it('mints deterministic suffixed slugs when submitted titles collide with static lore', async () => {
+  it('mints deterministic suffixed slugs when publishing exceptional submitted rows', async () => {
     const repository = createRepository({
       findDetail: jest.fn(async () => detail({ curated_title: 'Genesis Mint' })),
       updateStatusConditional: jest.fn(async () => detail({ status: 'public', published_slug: 'genesis-mint-aaaaaaa' })),
     });
     const service = new LoreSubmissionService(repository, { loreBaseDatasetLoader: loadStaticDataset });
 
-    await service.publishSubmission('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', admin, 'approved');
+    await service.publishSubmission('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', admin, 'publish submitted edge case');
 
     expect(repository.updateStatusConditional).toHaveBeenCalledWith(
       'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
@@ -218,7 +264,7 @@ describe('LoreSubmissionService', () => {
         published_kind: 'community',
         published_slug: 'genesis-mint-aaaaaaaa',
       }),
-      expect.objectContaining({ actorAddress: admin, action: 'publish', note: 'approved' }),
+      expect.objectContaining({ actorAddress: admin, action: 'publish', note: 'publish submitted edge case' }),
     );
   });
 
@@ -287,6 +333,7 @@ describe('LoreSubmissionService', () => {
       {
         status: 'closed',
         visibility: 'hidden',
+        published_kind: null,
         status_reason: 'hide for now',
         review_note: 'hide for now',
         last_admin_address: admin,
@@ -326,6 +373,7 @@ describe('LoreSubmissionService', () => {
       {
         status: 'closed',
         visibility: 'hidden',
+        published_kind: null,
         review_note: 'not usable',
         status_reason: 'not usable',
         last_admin_address: admin,
@@ -401,7 +449,7 @@ describe('LoreSubmissionService', () => {
     });
     const service = new LoreSubmissionService(repository, { loreBaseDatasetLoader: loadStaticDataset });
 
-    await expect(service.publishSubmission('sub-1', admin, 'approved')).rejects.toMatchObject({
+    await expect(service.publishSubmission('sub-1', admin, 'publish submitted edge case')).rejects.toMatchObject({
       details: expect.arrayContaining([
         'seasonId references missing season: season-missing',
         'characterIds references missing character: character-missing',

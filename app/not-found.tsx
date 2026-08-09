@@ -3,27 +3,39 @@
  */
 
 import Link from 'next/link'
-import { Button } from '@/components/ui'
+import { EditorialHeading } from '@/components/shared/EditorialHeading'
+
+const linkClassName = 'inline-flex min-h-11 items-center justify-center border px-6 py-2 font-ui transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment focus-visible:ring-offset-2 focus-visible:ring-offset-soul-950'
 
 export default function NotFound() {
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 bg-soul-950">
-      <div className="text-center max-w-md">
-        <h1 className="text-[8rem] font-display text-soul-accent mb-4 leading-none">404</h1>
-        <h2 className="text-h2 font-display text-neutral-200 mb-4">Page Not Found</h2>
-        <p className="text-body text-neutral-500 font-eskapade mb-8">
-          The page you&apos;re looking for has ventured too deep into the abyss.
-        </p>
+    <div className="flex min-h-screen items-center justify-center bg-soul-950 px-4 py-16 text-bone">
+      <section className="w-full max-w-2xl border border-midnight-light/60 bg-midnight/45 px-5 py-10 text-center shadow-2xl sm:px-10 sm:py-14" aria-labelledby="not-found-heading">
+        <p className="font-display text-7xl leading-none text-parchment sm:text-8xl" aria-hidden="true">404</p>
+        <EditorialHeading
+          eyebrow="Lost in the abyss"
+          title="Page Not Found"
+          description="The page you’re looking for has ventured too deep into the abyss. Return home or continue with the NFT collection."
+          id="not-found-heading"
+          align="center"
+          className="mt-6"
+        />
 
-        <div className="flex gap-4 justify-center">
-          <Link href="/">
-            <Button>Return Home</Button>
+        <nav className="mt-8 flex flex-col justify-center gap-3 sm:flex-row sm:gap-4" aria-label="Not found recovery">
+          <Link
+            href="/"
+            className={`${linkClassName} border-parchment/50 bg-soul-900/80 text-parchment hover:border-parchment hover:bg-parchment/10`}
+          >
+            Return Home
           </Link>
-          <Link href="/characters">
-            <Button variant="secondary">Browse Characters</Button>
+          <Link
+            href="/characters"
+            className={`${linkClassName} border-arcane-muted/60 text-ash hover:border-arcane-bright hover:text-parchment`}
+          >
+            Browse Characters
           </Link>
-        </div>
-      </div>
+        </nav>
+      </section>
     </div>
   )
 }

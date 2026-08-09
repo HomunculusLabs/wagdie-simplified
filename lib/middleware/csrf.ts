@@ -50,18 +50,23 @@ export function shouldBypassCsrf(request: NextRequest): boolean {
 /**
  * T038: Middleware wrapper for route handlers with CSRF protection
  */
-export function withCsrfProtection(
+export type CsrfProtectionOptions = {
+  bypassAuthorizationHeader?: boolean
+}
+
+export function withCsrfProtection<P extends Record<string, string> = Record<string, string>>(
   handler: (
     request: NextRequest,
-    context?: { params: Promise<Record<string, string>> }
-  ) => Promise<NextResponse>
+    context?: { params: Promise<P> }
+  ) => Promise<NextResponse>,
+  options: CsrfProtectionOptions = {}
 ) {
   return async (
     request: NextRequest,
-    context?: { params: Promise<Record<string, string>> }
+    context?: { params: Promise<P> }
   ): Promise<NextResponse> => {
-    // T037: Bypass CSRF for API clients with Authorization header
-    if (shouldBypassCsrf(request)) {
+    // T037: Bypass CSRF only for routes that explicitly validate Authorization credentials.
+    if (options.bypassAuthorizationHeader && shouldBypassCsrf(request)) {
       return handler(request, context)
     }
 

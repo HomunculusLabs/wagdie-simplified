@@ -6,7 +6,7 @@
 
 'use client'
 
-import { useAccount, useDisconnect } from 'wagmi'
+import { useAccount, useConnect, useDisconnect } from 'wagmi'
 import { useConnectModal } from '@rainbow-me/rainbowkit'
 import type { Address } from '@/types/wallet'
 
@@ -35,6 +35,7 @@ export interface UseWalletReturn {
 export function useWallet(): UseWalletReturn {
   const { address, isConnected, isConnecting } = useAccount()
   const { openConnectModal } = useConnectModal()
+  const { connect: connectWallet, connectors } = useConnect()
   const { disconnectAsync } = useDisconnect()
 
   const status: WalletStatus = isConnecting
@@ -44,7 +45,15 @@ export function useWallet(): UseWalletReturn {
     : 'disconnected'
 
   const connect = () => {
-    openConnectModal?.()
+    if (openConnectModal) {
+      openConnectModal()
+      return
+    }
+
+    const connector = connectors.find((candidate) => candidate.id === 'injected') ?? connectors[0]
+    if (connector) {
+      connectWallet({ connector })
+    }
   }
 
   const disconnect = async () => {

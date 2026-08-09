@@ -1,5 +1,7 @@
+import Image from 'next/image';
 import Link from 'next/link';
 import { CanonStatusBadge } from './CanonStatusBadge';
+import { getLoreEventCover } from './lore-event-cover';
 import { getLoreEventHref } from '@/lib/lore/navigation';
 import type { LoreEvent, LoreLocation, LoreSeason } from '@/lib/lore/types';
 
@@ -37,43 +39,56 @@ export function AppearedInTimeline({ events, seasons, locations }: AppearedInTim
 
   return (
     <section className="space-y-4">
-      <div>
-        <p className="text-sm font-serif uppercase tracking-[0.06em] text-soul-accent">
+      <div className="border-b border-midnight-light/60 pb-4">
+        <p className="font-ui text-xs uppercase tracking-[0.18em] text-soul-accent">
           Appeared in
         </p>
-        <h2 className="mt-2 font-display text-2xl lowercase tracking-widest text-neutral-50">
+        <h2 className="mt-2 font-display text-3xl text-parchment">
           Timeline appearances
         </h2>
       </div>
 
-      <ol className="relative space-y-4">
+      <ol className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {orderedEvents.map((event) => {
           const season = event.seasonId ? seasonById.get(event.seasonId) : undefined;
           const eventLocations = event.locationIds.flatMap((locationId) => {
             const location = locationById.get(locationId);
             return location ? [location] : [];
           });
+          const cover = getLoreEventCover(event, []);
 
           return (
-            <li key={event.id} className="border border-midnight-light/50 bg-soul-900/40 p-4 transition-colors hover:border-soul-accent/40">
+            <li key={event.id} className="group flex min-h-full flex-col overflow-hidden border border-midnight-light/50 bg-soul-900/40 transition-colors hover:border-soul-accent/40">
+              {cover.src && (
+                <Link href={getLoreEventHref(event)} className="relative block aspect-[16/8] overflow-hidden border-b border-midnight-light/50">
+                  <Image
+                    src={cover.src}
+                    alt={cover.alt}
+                    fill
+                    sizes="(min-width: 1280px) 33vw, (min-width: 768px) 50vw, 100vw"
+                    className="object-cover opacity-90 transition duration-500 group-hover:scale-105 group-hover:opacity-100"
+                  />
+                </Link>
+              )}
+              <div className="flex flex-1 flex-col p-4">
               <div className="flex flex-wrap items-center gap-2">
                 <span className={`border px-2.5 py-1 text-sm font-serif uppercase tracking-[0.06em] ${event.kind === 'official' ? 'border-soul-accent/40 bg-soul-accent/10 text-soul-accent' : 'border-sky-400/40 bg-sky-400/10 text-sky-300'}`}>
                   {event.kind === 'official' ? 'Official' : 'Community'}
                 </span>
-                <CanonStatusBadge status={event.canon.status} />
+                <CanonStatusBadge status={event.canon.status} stageId={event.canon.stageId} />
               </div>
 
               <Link href={getLoreEventHref(event)} className="mt-3 block group">
-                <h3 className="font-display text-2xl lowercase tracking-widest text-neutral-50 transition-colors group-hover:text-soul-accent">
+                <h3 className="font-display text-2xl text-parchment transition-colors group-hover:text-soul-accent">
                   {event.title}
                 </h3>
               </Link>
 
-              <p className="mt-2 font-serif text-base leading-7 text-neutral-200">
+              <p className="mt-2 line-clamp-3 font-ui text-sm leading-6 text-ash">
                 {event.summary}
               </p>
 
-              <div className="mt-4 flex flex-wrap gap-2 text-sm font-serif uppercase tracking-[0.06em] text-neutral-200">
+              <div className="mt-auto flex flex-wrap gap-2 pt-4 font-ui text-xs text-mist">
                 <span>{season?.title ?? 'Unseasoned'}</span>
                 <span>/</span>
                 <span>{formatDate(event.occurredAt ?? event.publishedAt)}</span>
@@ -94,6 +109,7 @@ export function AppearedInTimeline({ events, seasons, locations }: AppearedInTim
                   ))}
                 </div>
               )}
+              </div>
             </li>
           );
         })}

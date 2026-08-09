@@ -8,4 +8,5 @@ export const POST = createAdminLoreSubmissionActionHandler({
     loreSubmissionService.canonizeSubmission(submissionId, adminAddress, note)
   ),
   failureMessage: 'Failed to canonize lore submission',
+  revalidateEffectiveLore: true,
 });

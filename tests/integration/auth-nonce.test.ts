@@ -18,6 +18,15 @@ describe('Auth Nonce Endpoint', () => {
     get: jest.Mock
     delete: jest.Mock
   }
+  let requestCounter = 0
+
+  function createRequest(method: 'GET' | 'POST' = 'GET'): NextRequest {
+    requestCounter += 1
+    return new NextRequest('https://example.com/api/auth/nonce', {
+      method,
+      headers: { 'x-forwarded-for': `127.0.0.${requestCounter}` },
+    })
+  }
 
   beforeEach(() => {
     mockCookieStore = {
@@ -34,7 +43,7 @@ describe('Auth Nonce Endpoint', () => {
 
   describe('GET /api/auth/nonce', () => {
     it('should return a nonce in the response body', async () => {
-      const response = await GET()
+      const response = await GET(createRequest())
       const data = await response.json()
 
       expect(response.status).toBe(200)
@@ -43,7 +52,7 @@ describe('Auth Nonce Endpoint', () => {
     })
 
     it('should generate a 32-character hex nonce', async () => {
-      const response = await GET()
+      const response = await GET(createRequest())
       const data = await response.json()
 
       // Secure nonce should be 32 hex characters (16 bytes)
@@ -52,7 +61,7 @@ describe('Auth Nonce Endpoint', () => {
     })
 
     it('should set nonce cookie with secure attributes', async () => {
-      await GET()
+      await GET(createRequest())
 
       expect(mockCookieStore.set).toHaveBeenCalledWith(
         'siwe-nonce',
@@ -67,8 +76,8 @@ describe('Auth Nonce Endpoint', () => {
     })
 
     it('should generate unique nonces on each request', async () => {
-      const response1 = await GET()
-      const response2 = await GET()
+      const response1 = await GET(createRequest())
+      const response2 = await GET(createRequest())
 
       const data1 = await response1.json()
       const data2 = await response2.json()
@@ -79,7 +88,7 @@ describe('Auth Nonce Endpoint', () => {
 
   describe('POST /api/auth/nonce', () => {
     it('should also generate nonce via POST', async () => {
-      const response = await POST()
+      const response = await POST(createRequest('POST'))
       const data = await response.json()
 
       expect(response.status).toBe(200)
@@ -93,7 +102,7 @@ describe('Auth Nonce Endpoint', () => {
       // Generate multiple nonces and verify they don't follow predictable patterns
       const nonces: string[] = []
       for (let i = 0; i < 10; i++) {
-        const response = await GET()
+        const response = await GET(createRequest())
         const data = await response.json()
         nonces.push(data.nonce)
       }
@@ -109,7 +118,7 @@ describe('Auth Nonce Endpoint', () => {
     })
 
     it('should set cookie TTL to 5 minutes (300 seconds)', async () => {
-      await GET()
+      await GET(createRequest())
 
       const setCookieCall = mockCookieStore.set.mock.calls[0]
       const cookieOptions = setCookieCall[2]
@@ -124,7 +133,7 @@ describe('Auth Nonce Endpoint', () => {
         throw new Error('Cookie store unavailable')
       })
 
-      const response = await GET()
+      const response = await GET(createRequest())
       const data = await response.json()
 
       expect(response.status).toBe(500)

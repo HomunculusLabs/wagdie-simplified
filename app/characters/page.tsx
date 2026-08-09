@@ -8,7 +8,7 @@
 
 import { useCallback, useMemo, useState, Suspense } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
-import { BannerHeader } from '@/components/shared/BannerHeader'
+import { EditorialHeading } from '@/components/shared/EditorialHeading'
 import { FilterSidebar } from '@/components/characters/FilterSidebar'
 import { MobileFilterBar } from '@/components/characters/MobileFilterBar'
 import { getFilterSidebarActiveCount } from '@/components/characters/filter-sidebar-types'
@@ -106,10 +106,6 @@ function CharactersPageContent() {
     mask: mask || undefined,
     enabled: canQuery,
   })
-
-  const handleCharacterClick = useCallback((tokenId: number) => {
-    router.push(`/characters/${tokenId}`)
-  }, [router])
 
   const handleCharacterSearClick = useCallback((tokenId: number) => {
     router.push(`/characters/${tokenId}?sear=true`)
@@ -216,13 +212,18 @@ function CharactersPageContent() {
   const activeFilterCount = getFilterSidebarActiveCount(filterSidebarModel)
 
   return (
-    <div className="min-h-screen bg-soul-950">
-      <BannerHeader
-        title="Characters"
-        subtitle="Explore the WAGDIE collection - 6,666 unique characters"
-      />
+    <div className="min-h-screen bg-soul-950 text-bone">
+      <header className="border-b border-midnight-light/60 bg-gradient-to-b from-midnight/60 to-soul-950">
+        <div className="mx-auto w-full max-w-[1680px] px-4 py-10 sm:px-6 sm:py-12 lg:px-10 lg:py-16">
+          <EditorialHeading
+            eyebrow="The NFT Collection"
+            title="Characters"
+            description="Explore the WAGDIE collection — 6,666 unique characters."
+          />
+        </div>
+      </header>
 
-      <div className="flex">
+      <div className="mx-auto flex w-full max-w-[1680px]">
         {/* Filter Sidebar */}
         <FilterSidebar
           model={filterSidebarModel}
@@ -232,8 +233,8 @@ function CharactersPageContent() {
         />
 
         {/* Main Content */}
-        <main className="flex-1 min-h-screen">
-          <div className="px-6 py-8">
+        <main className="min-h-screen min-w-0 flex-1">
+          <div className="px-4 py-6 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
             {/* Sticky mobile filter bar */}
             <MobileFilterBar
               tab={tab}
@@ -307,21 +308,24 @@ function CharactersPageContent() {
             {!isLoading && characters.length > 0 && (
               <>
                 {/* Results count */}
-                <div className="flex items-center justify-between mb-6">
-                  <p className="text-md font-eskapade text-neutral-500">
+                <div className="mb-6 flex min-h-8 items-center justify-between gap-4 border-b border-midnight-light/40 pb-4">
+                  <p className="font-ui text-sm leading-6 text-mist">
                     Showing {((page - 1) * ITEMS_PER_PAGE) + 1}-{Math.min(page * ITEMS_PER_PAGE, totalCount)} of {totalCount} characters
                   </p>
                   {isFetching && !isLoading && (
-                    <Spinner size="sm" />
+                    <span className="inline-flex items-center gap-2 font-ui text-xs uppercase tracking-[0.16em] text-arcane-bright">
+                      <Spinner size="sm" />
+                      Refreshing
+                    </span>
                   )}
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4 md:gap-6 mb-12">
+                <div className="mb-12 grid grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] gap-3 sm:grid-cols-[repeat(auto-fit,minmax(min(100%,12rem),1fr))] sm:gap-4 lg:grid-cols-[repeat(auto-fit,minmax(min(100%,14rem),1fr))] lg:gap-6">
                   {characters.filter(character => character && character.token_id).map((character) => (
                     <CharacterCard
                       key={character.token_id}
                       character={character}
-                      onClick={handleCharacterClick}
+                      href={`/characters/${character.token_id}`}
                       onSearClick={handleCharacterSearClick}
                       showSearingLink={canSearCharacter(character)}
                     />
@@ -330,7 +334,7 @@ function CharactersPageContent() {
 
                 {/* Pagination */}
                 {totalPages > 1 && (
-                  <div className="flex justify-center py-8 border-t border-neutral-800">
+                  <div className="flex justify-center border-t border-midnight-light/60 py-8">
                     <Pagination
                       currentPage={page}
                       totalPages={totalPages}
@@ -349,11 +353,11 @@ function CharactersPageContent() {
 
 function LoadingFallback() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-soul-950">
-      <div className="flex flex-col items-center gap-4">
+    <div className="flex min-h-screen items-center justify-center bg-soul-950 px-4">
+      <div className="flex flex-col items-center gap-4 border border-midnight-light/60 bg-midnight/40 px-10 py-12">
         <Spinner size="lg" />
-        <p className="text-neutral-500 font-eskapade text-md">
-          Loading Characters
+        <p className="font-ui text-sm uppercase tracking-[0.2em] text-mist">
+          Loading characters
         </p>
       </div>
     </div>

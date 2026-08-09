@@ -216,7 +216,7 @@ export class CharacterMaterializationRepository {
 
     return {
       ...character,
-      searing_metadata: hydrated.metadata ?? character.metadata,
+      searing_metadata: isRecord(hydrated.metadata) ? hydrated.metadata : character.metadata,
     }
   }
 

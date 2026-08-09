@@ -324,7 +324,8 @@ export function normalizeLocationMetadata(rawMetadata: unknown): NormalizedLocat
         : ([[0, 0], [0, 0]] as LocationBounds));
 
   const adventureCatalog = normalizeLocationAdventureCatalog(meta.adventureCatalog);
-  const { adventureCatalog: _rawAdventureCatalog, ...restMeta } = meta;
+  const restMeta = { ...meta };
+  delete restMeta.adventureCatalog;
 
   return {
     ...restMeta,

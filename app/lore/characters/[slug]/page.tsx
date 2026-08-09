@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { BannerHeader } from '@/components/shared/BannerHeader';
 import { CharacterProfile } from '@/components/lore/CharacterProfile';
 import {
   getAllEffectiveLoreEvents,
@@ -89,10 +88,6 @@ export default async function LoreCharacterPage({ params }: LoreCharacterPagePro
 
   return (
     <div className="min-h-screen bg-soul-950">
-      <BannerHeader
-        title="Character Lore Profile"
-        subtitle="Every official and community appearance for a character, ordered through the shared lore timeline."
-      />
       <CharacterProfile
         character={data.character}
         image={data.image}

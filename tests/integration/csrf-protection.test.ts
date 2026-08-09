@@ -3,7 +3,7 @@
  * Tests T034 [US4] - CSRF protection on state-changing endpoints
  */
 
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { PATCH } from '@/app/api/characters/[tokenId]/route'
 import { CSRF_COOKIE_NAME, CSRF_HEADER_NAME } from '@/lib/middleware/csrf'
 
@@ -39,85 +39,75 @@ describe('CSRF Protection on Character Updates', () => {
     const headers = new Headers()
     headers.set('Content-Type', 'application/json')
 
+    const cookieParts: string[] = []
     if (csrfHeader) {
       headers.set(CSRF_HEADER_NAME, csrfHeader)
+    }
+    if (csrfCookie) {
+      cookieParts.push(`${CSRF_COOKIE_NAME}=${csrfCookie}`)
     }
     if (authHeader) {
       headers.set('Authorization', authHeader)
     }
-
-    const cookies = new Map<string, { name: string; value: string }>()
-    if (csrfCookie) {
-      cookies.set(CSRF_COOKIE_NAME, { name: CSRF_COOKIE_NAME, value: csrfCookie })
+    if (cookieParts.length > 0) {
+      headers.set('Cookie', cookieParts.join('; '))
     }
 
-    return {
-      json: jest.fn().mockResolvedValue(body),
+    return new NextRequest('https://example.com/api/characters/123', {
+      method: 'PATCH',
       headers,
-      cookies: {
-        get: (name: string) => cookies.get(name),
-      },
-    } as unknown as NextRequest
+      body: JSON.stringify(body),
+    })
   }
 
-  describe('Without CSRF protection applied', () => {
-    // Note: These tests verify current behavior before CSRF is applied
-    it('should currently allow requests without CSRF token', async () => {
-      const request = createMockRequest({ name: 'New Name' })
-      const context = { params: Promise.resolve({ tokenId: '123' }) }
+  const context = { params: Promise.resolve({ tokenId: '123' }) }
 
-      const response = await PATCH(request, context)
+  it('should reject PATCH request without CSRF token', async () => {
+    const request = createMockRequest({ name: 'New Name' })
 
-      // Currently allowed - will change after CSRF is applied
-      expect(response.status).toBe(200)
-    })
+    const response = await PATCH(request, context)
+    const data = await response.json()
+
+    expect(response.status).toBe(403)
+    expect(data.error).toContain('CSRF')
   })
 
-  describe('With CSRF protection applied (expected behavior)', () => {
-    it('should reject PATCH request without CSRF token', () => {
-      // This test documents expected behavior after CSRF is applied
-      const request = createMockRequest({ name: 'New Name' })
+  it('should reject PATCH request with mismatched CSRF tokens', async () => {
+    const request = createMockRequest(
+      { name: 'New Name' },
+      'cookie-token',
+      'different-header-token'
+    )
 
-      // Expected: 403 Forbidden when CSRF token is missing
-      expect(request.headers.get(CSRF_HEADER_NAME)).toBeNull()
-    })
+    const response = await PATCH(request, context)
 
-    it('should reject PATCH request with mismatched CSRF tokens', () => {
-      const request = createMockRequest(
-        { name: 'New Name' },
-        'cookie-token',
-        'different-header-token'
-      )
+    expect(response.status).toBe(403)
+  })
 
-      // Tokens don't match
-      expect(request.cookies.get(CSRF_COOKIE_NAME)?.value).not.toBe(
-        request.headers.get(CSRF_HEADER_NAME)
-      )
-    })
+  it('should allow PATCH request with valid matching CSRF tokens', async () => {
+    const request = createMockRequest(
+      { name: 'New Name' },
+      validToken,
+      validToken
+    )
 
-    it('should allow PATCH request with valid matching CSRF tokens', () => {
-      const request = createMockRequest(
-        { name: 'New Name' },
-        validToken,
-        validToken
-      )
+    const response = await PATCH(request, context)
+    const data = await response.json()
 
-      // Tokens match
-      expect(request.cookies.get(CSRF_COOKIE_NAME)?.value).toBe(
-        request.headers.get(CSRF_HEADER_NAME)
-      )
-    })
+    expect(response.status).toBe(200)
+    expect(data.name).toBe('Updated Character')
+  })
 
-    it('should bypass CSRF for requests with Authorization header', () => {
-      const request = createMockRequest(
-        { name: 'New Name' },
-        undefined, // No CSRF cookie
-        undefined, // No CSRF header
-        'Bearer api-token-12345'
-      )
+  it('should not bypass CSRF for cookie-authenticated routes just because Authorization is present', async () => {
+    const request = createMockRequest(
+      { name: 'New Name' },
+      undefined,
+      undefined,
+      'Bearer api-token-12345'
+    )
 
-      // Has Authorization header
-      expect(request.headers.get('Authorization')).toBeTruthy()
-    })
+    const response = await PATCH(request, context)
+
+    expect(response.status).toBe(403)
   })
 })

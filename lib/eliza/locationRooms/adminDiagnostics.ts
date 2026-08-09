@@ -355,6 +355,7 @@ const CROWS_DEN_CANONICAL_ID = '11'
 function createDefaultPersonaDiagnosticsClient(): WagdieElizaClient {
   // Lazily load the Official client so admin diagnostics tests and non-persona
   // diagnostics do not parse the hosted SDK's ESM bundle unless this check runs.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const clientModule = require('@/lib/eliza/client') as typeof import('@/lib/eliza/client')
   return clientModule.createOfficialServerClient()
 }
@@ -1208,6 +1209,7 @@ export class LocationRoomAdminDiagnosticsService {
       : [null, [], null, null, [], [], null, []] as const
 
     const latestBeat = latestBeats[0] ?? null
+    const mutableLatestBeats = [...latestBeats]
     const latestBeatPublicNarrationPresent = latestBeat
       ? Boolean(latestBeat.publicNarration?.trim())
       : null
@@ -1219,7 +1221,7 @@ export class LocationRoomAdminDiagnosticsService {
     )
     const durableIntent = buildDurableIntentSummary(activeTicks, recentTicks)
     const retryCadence = buildRetryCadenceSummary(room, activeTicks, now, config.tickIntervalMinutes)
-    const gmGeneration = summarizeGmGeneration(latestBeat, latestBeats)
+    const gmGeneration = summarizeGmGeneration(latestBeat, mutableLatestBeats)
     const adventureCatalog = buildAdventureCatalogSummary(location, narrativeState)
     const triggerReadiness = buildTriggerReadinessSummary(
       narrativeState,
@@ -1231,7 +1233,7 @@ export class LocationRoomAdminDiagnosticsService {
       narrativeState,
       gameplayEnabledForLocation,
       activeEncounter?.status ?? null,
-      latestBeats
+      mutableLatestBeats
     )
     const diagnostics: LocationRoomHealthDiagnostics = {
       generatedAt: now.toISOString(),

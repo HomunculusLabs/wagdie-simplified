@@ -87,11 +87,11 @@ export function LoreSubmissionAdminDetail({ submissionId, referenceOptions }: Lo
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Link href="/admin/lore/submissions" className="text-sm font-display text-soul-accent hover:text-soul-bone">← Submission queue</Link>
+        <Link href="/admin/lore/submissions" className="text-sm font-display text-soul-accent hover:text-soul-bone">← Community lore queue</Link>
         <div className="flex flex-wrap items-center gap-3">
           {href && (
             <Link href={href} className="text-sm font-display text-soul-accent hover:text-soul-bone">
-              View public route
+              View public lore
             </Link>
           )}
           <SubmissionStatusBadge status={submission.status} visibility={submission.visibility} />
@@ -102,7 +102,7 @@ export function LoreSubmissionAdminDetail({ submissionId, referenceOptions }: Lo
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div>
             <p className="text-xs uppercase tracking-wide text-soul-mist/60">
-              Token #{submission.token_id} · submitted {formatDate(submission.submitted_at)}
+              Token #{submission.token_id} · received {formatDate(submission.submitted_at)}
             </p>
             <h1 className="mt-2 font-display text-3xl text-soul-accent">{submission.curated_title ?? submission.title}</h1>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-soul-mist/80">{submission.curated_summary ?? submission.summary}</p>
@@ -117,8 +117,8 @@ export function LoreSubmissionAdminDetail({ submissionId, referenceOptions }: Lo
               <dd className="mt-1 text-soul-bone">{submission.canon_status} · {submission.canon_stage_id}</dd>
             </div>
             <div className="rounded border border-soul-accent/10 bg-abyss/40 p-3">
-              <dt className="text-xs uppercase tracking-wide text-soul-mist/50">Slug</dt>
-              <dd className="mt-1 break-all text-soul-bone">{submission.published_slug ?? 'Not published'}</dd>
+              <dt className="text-xs uppercase tracking-wide text-soul-mist/50">Public slug</dt>
+              <dd className="mt-1 break-all text-soul-bone">{submission.published_slug ?? 'Not public'}</dd>
             </div>
           </dl>
         </div>
@@ -127,7 +127,7 @@ export function LoreSubmissionAdminDetail({ submissionId, referenceOptions }: Lo
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="space-y-5">
           <section className="rounded-xl border border-soul-accent/20 bg-soul-shadow/70 p-5">
-            <h2 className="font-display text-xl text-soul-accent">Preview</h2>
+            <h2 className="font-display text-xl text-soul-accent">Effective public preview</h2>
             <div className="mt-4 rounded border border-soul-accent/10 bg-abyss/50 p-4">
               <MarkdownPreview markdown={curatedBody} />
             </div>

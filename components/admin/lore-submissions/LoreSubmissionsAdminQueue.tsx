@@ -33,7 +33,7 @@ function displayTitle(submission: LoreSubmission) {
 
 const statusFilterLabels: Record<LoreSubmissionStatus | 'all', string> = {
   all: 'All',
-  submitted: 'Submitted',
+  submitted: 'Submitted / publication pending',
   changes_requested: 'Changes requested',
   public: 'Public',
   canonized: 'Canonized',
@@ -41,7 +41,7 @@ const statusFilterLabels: Record<LoreSubmissionStatus | 'all', string> = {
 };
 
 export function LoreSubmissionsAdminQueue() {
-  const [status, setStatus] = useState<LoreSubmissionStatus | 'all'>('submitted');
+  const [status, setStatus] = useState<LoreSubmissionStatus | 'all'>('public');
   const [searchInput, setSearchInput] = useState('');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -126,7 +126,7 @@ export function LoreSubmissionsAdminQueue() {
       ) : result.submissions.length === 0 ? (
         <div className="rounded-xl border border-soul-accent/20 bg-soul-shadow/70 p-8 text-center">
           <h2 className="font-display text-xl text-soul-bone">No submissions found</h2>
-          <p className="mt-2 text-sm text-soul-mist/70">Adjust filters or wait for new community submissions.</p>
+          <p className="mt-2 text-sm text-soul-mist/70">Adjust filters or wait for new auto-public community lore.</p>
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border border-soul-accent/20 bg-soul-shadow/70">
@@ -140,7 +140,7 @@ export function LoreSubmissionsAdminQueue() {
                 <div className="min-w-0">
                   <h2 className="font-display text-xl text-soul-accent">{displayTitle(submission)}</h2>
                   <p className="mt-1 text-xs uppercase tracking-wide text-soul-mist/60">
-                    Token #{submission.token_id} · {formatDate(submission.submitted_at)} · {submission.submitter_address}
+                    Token #{submission.token_id} · received {formatDate(submission.submitted_at)} · {submission.submitter_address}
                   </p>
                 </div>
                 <SubmissionStatusBadge status={submission.status} visibility={submission.visibility} />

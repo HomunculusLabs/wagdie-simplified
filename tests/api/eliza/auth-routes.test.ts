@@ -9,7 +9,8 @@ import { GET as authStatusHandler } from '@/app/api/eliza/auth/route'
 import { getSession } from '@/lib/auth/session'
 import { getElizaClient } from '@/lib/eliza/client'
 import { elizaConfig } from '@/lib/eliza/config'
-import { verifySiweMessage } from '@/lib/auth/siwe'
+import { validateSiweMessageFields, verifySiweMessage } from '@/lib/auth/siwe'
+import { CSRF_COOKIE_NAME, CSRF_HEADER_NAME } from '@/lib/middleware/csrf'
 import { getOfficialElizaUserIdForWallet } from '@/lib/eliza/authBridge'
 
 jest.mock('@/lib/auth/session', () => ({
@@ -17,12 +18,21 @@ jest.mock('@/lib/auth/session', () => ({
   generateNonce: jest.fn(() => 'app-nonce-1'),
 }))
 jest.mock('@/lib/eliza/client', () => ({ getElizaClient: jest.fn() }))
-jest.mock('@/lib/auth/siwe', () => ({ verifySiweMessage: jest.fn() }))
+jest.mock('@/lib/auth/siwe', () => ({
+  validateSiweMessageFields: jest.fn(() => ({ ok: true })),
+  verifySiweMessage: jest.fn(),
+}))
 
 function request(url: string, body?: unknown) {
+  const csrfToken = 'valid-csrf-token'
   return new NextRequest(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', host: 'wagdie.example' },
+    headers: {
+      'Content-Type': 'application/json',
+      host: 'wagdie.example',
+      [CSRF_HEADER_NAME]: csrfToken,
+      Cookie: `${CSRF_COOKIE_NAME}=${csrfToken}`,
+    },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
 }
@@ -77,6 +87,13 @@ describe('Eliza auth routes', () => {
     const response = await verifyHandler(request('https://wagdie.example/api/eliza/auth/verify', { signature: '0xsig' }))
 
     expect(response.status).toBe(200)
+    expect(validateSiweMessageFields).toHaveBeenCalledWith('siwe-message', {
+      nonce: 'nonce-1',
+      domain: 'wagdie.example',
+      uri: 'https://wagdie.example',
+      chainId: 1,
+      address: session.address,
+    })
     expect(verify).toHaveBeenCalledWith('siwe-message', '0xsig', 'session-1')
     expect(session.eliza.tokens).toMatchObject({
       accessToken: 'access-token',
@@ -135,7 +152,13 @@ describe('Eliza auth routes', () => {
     expect(data.accessToken).toMatch(/^wagdie_eliza_/)
     expect(data).not.toHaveProperty('officialUserId')
     expect(getElizaClient).not.toHaveBeenCalled()
-    expect(verifySiweMessage).toHaveBeenCalledWith('siwe-message', '0xsig')
+    expect(verifySiweMessage).toHaveBeenCalledWith('siwe-message', '0xsig', {
+      nonce: 'app-nonce-1',
+      domain: 'wagdie.example',
+      uri: 'https://wagdie.example',
+      chainId: 1,
+      address,
+    })
     expect(session.eliza.tokens).toMatchObject({
       accessToken: data.accessToken,
       mode: 'official',

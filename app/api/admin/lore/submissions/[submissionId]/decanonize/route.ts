@@ -8,4 +8,5 @@ export const POST = createAdminLoreSubmissionActionHandler({
     loreSubmissionService.decanonizeSubmission(submissionId, adminAddress, note)
   ),
   failureMessage: 'Failed to decanonize lore submission',
+  revalidateEffectiveLore: true,
 });

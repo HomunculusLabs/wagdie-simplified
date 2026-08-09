@@ -1,7 +1,6 @@
 import React from 'react';
 import type { Meta, StoryObj } from '@storybook/react';
-import { LegacyModal as Modal } from './LegacyModal';
-import { Button } from '@/components/ui';
+import { Button, Modal } from '@/components/ui';
 
 const meta: Meta<typeof Modal> = {
   component: Modal,
@@ -11,11 +10,6 @@ const meta: Meta<typeof Modal> = {
     isOpen: {
       control: 'boolean',
       description: 'Whether the modal is open',
-    },
-    size: {
-      control: 'select',
-      options: ['sm', 'md', 'lg', 'xl'],
-      description: 'Size of the modal',
     },
     title: {
       control: 'text',
@@ -47,20 +41,19 @@ export const Default: Story = {
   },
 };
 
-export const Small: Story = {
+export const BodyOnly: Story = {
   args: {
     isOpen: true,
-    size: 'sm',
-    title: 'Small Modal',
-    children: <p>Small modal content</p>,
+    hideFooter: true,
+    title: 'Body-only Modal',
+    children: <p>Modal content without the default action footer.</p>,
   },
 };
 
-export const Large: Story = {
+export const LongContent: Story = {
   args: {
     isOpen: true,
-    size: 'lg',
-    title: 'Large Modal',
+    title: 'Long-content Modal',
     children: (
       <div>
         <p className="mb-4">This is a large modal with more content.</p>
@@ -87,20 +80,12 @@ export const NoTitle: Story = {
   },
 };
 
-export const NoBackdropClose: Story = {
+export const CustomFooter: Story = {
   args: {
     isOpen: true,
-    title: 'Modal without backdrop close',
-    children: (
-      <div>
-        <p className="mb-4">This modal cannot be closed by clicking the backdrop.</p>
-        <div className="flex gap-2 justify-end">
-          <Button onClick={() => {}} variant="secondary">
-            Close
-          </Button>
-        </div>
-      </div>
-    ),
+    title: 'Modal with a custom footer',
+    children: <p className="mb-4">The footer can be replaced with workflow-specific actions.</p>,
+    footer: <Button variant="primary">Continue</Button>,
   },
 };
 
@@ -116,7 +101,7 @@ export const InteractiveDemo: Story = {
         <ul className="list-disc ml-6 mb-4 space-y-2">
           <li>Use the Controls panel to toggle isOpen prop</li>
           <li>Click the X button to trigger onClose action</li>
-          <li>Try different modal sizes</li>
+          <li>Try custom body and footer content</li>
           <li>Modify the title in the Controls panel</li>
         </ul>
         <div className="flex gap-2 justify-end">

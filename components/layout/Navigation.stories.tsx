@@ -1,4 +1,3 @@
-
 import type { Meta, StoryObj } from '@storybook/react';
 import { Navigation } from './Navigation';
 
@@ -6,64 +5,35 @@ const meta: Meta<typeof Navigation> = {
   component: Navigation,
   title: 'Components/Layout/Navigation',
   tags: ['autodocs'],
+  args: {
+    isMobile: false,
+    showConnectedActions: false,
+    showArchive: true,
+  },
   argTypes: {
-    className: {
-      control: 'text',
-      description: 'Additional CSS classes',
-    },
-    isMobile: {
-      control: 'boolean',
-      description: 'Whether to render in mobile layout',
-    },
-    onNavClick: {
-      action: 'navigation clicked',
-      description: 'Click handler for navigation items',
-    },
+    onNavClick: { action: 'navigation clicked' },
   },
 };
 
 export default meta;
 type Story = StoryObj<typeof Navigation>;
 
-export const Desktop: Story = {
-  args: {
-    className: 'flex gap-6',
-    isMobile: false,
-  },
-  parameters: {
-    docs: {
-      description: {
-        story: 'Desktop horizontal navigation layout. Links highlight based on current path.',
-      },
-    },
-  },
+export const Public: Story = {};
+
+export const Connected: Story = {
+  args: { showConnectedActions: true },
+};
+
+export const ArchiveDisabled: Story = {
+  args: { showArchive: false },
 };
 
 export const Mobile: Story = {
   args: {
     isMobile: true,
+    showConnectedActions: true,
   },
   parameters: {
-    viewport: {
-      defaultViewport: 'mobile1',
-    },
-    docs: {
-      description: {
-        story: 'Mobile vertical navigation layout. Stack layout for smaller screens.',
-      },
-    },
-  },
-};
-
-export const WithClickHandler: Story = {
-  args: {
-    onNavClick: () => alert('Navigation item clicked!'),
-  },
-  parameters: {
-    docs: {
-      description: {
-        story: 'Interactive story demonstrating onClick handler. Click any nav item to trigger the action.',
-      },
-    },
+    viewport: { defaultViewport: 'mobile1' },
   },
 };

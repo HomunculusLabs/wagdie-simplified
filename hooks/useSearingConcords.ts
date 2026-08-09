@@ -131,7 +131,8 @@ export function buildOwnedSearableConcords(
 
 async function fetchIndexedConcordBalances(
   walletAddress: string,
-  concordIds: number[]
+  concordIds: number[],
+  signal?: AbortSignal
 ): Promise<SearingConcordBalance[]> {
   if (concordIds.length === 0) return [];
 
@@ -141,6 +142,7 @@ async function fetchIndexedConcordBalances(
   });
   const response = await fetch(`/api/concords/owned?${params.toString()}`, {
     cache: 'no-store',
+    signal,
   });
   const payload = await readApiRaw<OwnedConcordBalancesApiResponse>(
     response,
@@ -162,64 +164,135 @@ export function useSearingConcords({
   getConcordBalances,
 }: UseSearingConcordsOptions): UseSearingConcordsResult {
   const getConcordBalancesRef = useRef(getConcordBalances);
+  const normalizedWalletAddress = walletAddress?.trim().toLowerCase() || null;
+  const hasBalanceProvider = Boolean(getConcordBalances);
+  const currentRequestKey = enabled
+    ? normalizedWalletAddress ?? (hasBalanceProvider ? 'provider' : null)
+    : null;
+  const latestRequestKeyRef = useRef(currentRequestKey);
+  const requestGenerationRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const [dataRequestKey, setDataRequestKey] = useState<string | null>(null);
   const [concords, setConcords] = useState<OwnedSearableConcord[]>([]);
   const [allSearableConcords, setAllSearableConcords] = useState<ConcordSearingMap[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [loadingRequestKey, setLoadingRequestKey] = useState<string | null>(null);
   const [error, setError] = useState<Error | null>(null);
+
+  latestRequestKeyRef.current = currentRequestKey;
 
   useEffect(() => {
     getConcordBalancesRef.current = getConcordBalances;
   }, [getConcordBalances]);
 
   const refetch = useCallback(async () => {
-    if (!enabled) {
+    const requestedWalletAddress = walletAddress?.trim().toLowerCase() || null;
+    const requestedKey = enabled
+      ? requestedWalletAddress
+        ?? (hasBalanceProvider && getConcordBalancesRef.current ? 'provider' : null)
+      : null;
+    const requestGeneration = requestGenerationRef.current + 1;
+    requestGenerationRef.current = requestGeneration;
+
+    abortControllerRef.current?.abort();
+
+    if (!enabled || !requestedKey) {
+      abortControllerRef.current = null;
+      setDataRequestKey(null);
       setConcords([]);
       setAllSearableConcords([]);
+      setLoadingRequestKey(null);
       setError(null);
       return;
     }
 
-    setIsLoading(true);
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    setLoadingRequestKey(requestedKey);
     setError(null);
+    setDataRequestKey(requestedKey);
+    setConcords([]);
+    setAllSearableConcords([]);
+
+    const isCurrentRequest = () => (
+      requestGenerationRef.current === requestGeneration
+      && latestRequestKeyRef.current === requestedKey
+      && !abortController.signal.aborted
+    );
 
     try {
       const response = await fetch('/api/concords/searing-map?limit=2000', {
         cache: 'no-store',
+        signal: abortController.signal,
       });
 
       const payload = await readApiRaw<SearingMapApiResponse>(
         response,
         'Failed to fetch Concord searing map'
       );
+      if (!isCurrentRequest()) return;
+
       const searingMap = normalizeSearableMapEntries(getConcordEntries(payload));
       const concordIds = searingMap.map((entry) => entry.concordTokenId);
-      const balances = walletAddress
-        ? await fetchIndexedConcordBalances(walletAddress, concordIds)
+      const balances = requestedWalletAddress
+        ? await fetchIndexedConcordBalances(
+          requestedWalletAddress,
+          concordIds,
+          abortController.signal
+        )
         : getConcordBalancesRef.current
           ? await getConcordBalancesRef.current(concordIds)
           : [];
 
+      if (!isCurrentRequest()) return;
+
+      setDataRequestKey(requestedKey);
       setAllSearableConcords(searingMap);
       setConcords(buildOwnedSearableConcords(searingMap, balances));
     } catch (err) {
+      if (abortController.signal.aborted || !isCurrentRequest()) return;
+
       const nextError = err instanceof Error ? err : new Error('Failed to load searable Concords');
+      setDataRequestKey(requestedKey);
       setError(nextError);
       setConcords([]);
       setAllSearableConcords([]);
     } finally {
-      setIsLoading(false);
+      if (isCurrentRequest()) {
+        setLoadingRequestKey(null);
+        abortControllerRef.current = null;
+      }
     }
-  }, [enabled, walletAddress]);
+  }, [enabled, hasBalanceProvider, walletAddress]);
 
   useEffect(() => {
     void refetch();
+
+    return () => {
+      requestGenerationRef.current += 1;
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    };
   }, [refetch]);
 
+  const isCurrentSnapshot = dataRequestKey === currentRequestKey;
+
   return useMemo(() => ({
-    concords,
-    allSearableConcords,
-    isLoading,
-    error,
+    concords: isCurrentSnapshot ? concords : [],
+    allSearableConcords: isCurrentSnapshot ? allSearableConcords : [],
+    isLoading: Boolean(
+      currentRequestKey
+      && (dataRequestKey !== currentRequestKey || loadingRequestKey === currentRequestKey)
+    ),
+    error: isCurrentSnapshot ? error : null,
     refetch,
-  }), [allSearableConcords, concords, error, isLoading, refetch]);
+  }), [
+    allSearableConcords,
+    concords,
+    currentRequestKey,
+    dataRequestKey,
+    error,
+    isCurrentSnapshot,
+    loadingRequestKey,
+    refetch,
+  ]);
 }

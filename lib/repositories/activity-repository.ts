@@ -6,6 +6,13 @@
 import { supabase } from '../supabase'
 import { CHARACTERS_TABLE } from '@/lib/db/tables'
 
+function requireSupabase() {
+  if (!supabase) {
+    throw new Error('Supabase client is not configured')
+  }
+  return supabase
+}
+
 export interface InfectionEvent {
   id: string
   token_id: number
@@ -78,7 +85,7 @@ export class ActivityRepository {
     limit: number
     eventType?: InfectionEvent['event_type']
   }): Promise<InfectionEvent[]> {
-    let query = supabase
+    let query = requireSupabase()
       .from('infection_events')
       .select('*')
       .eq('token_id', tokenId)
@@ -102,7 +109,7 @@ export class ActivityRepository {
     limit: number
     eventType?: SearingEvent['event_type']
   }): Promise<SearingEvent[]> {
-    let query = supabase
+    let query = requireSupabase()
       .from('searing_events')
       .select('*')
       .eq('token_id', tokenId)
@@ -127,7 +134,7 @@ export class ActivityRepository {
     offset: number
     eventType?: StakingEvent['event_type']
   }): Promise<{ events: StakingEvent[]; total: number }> {
-    let query = supabase
+    let query = requireSupabase()
       .from('staking_events')
       .select('*', { count: 'exact' })
       .eq('token_id', tokenId)
@@ -155,7 +162,7 @@ export class ActivityRepository {
     offset: number
     mintsOnly?: boolean
   }): Promise<{ transfers: ConcordTransfer[]; total: number }> {
-    let query = supabase
+    let query = requireSupabase()
       .from('concord_transfers')
       .select('*', { count: 'exact' })
       .eq('token_id', tokenId)
@@ -179,7 +186,7 @@ export class ActivityRepository {
   }
 
   async findStakingStatusRows(tokenIds: number[]): Promise<StakingStatusRow[]> {
-    const { data, error } = await supabase
+    const { data, error } = await requireSupabase()
       .from(CHARACTERS_TABLE)
       .select('token_id, location_id')
       .in('token_id', tokenIds)

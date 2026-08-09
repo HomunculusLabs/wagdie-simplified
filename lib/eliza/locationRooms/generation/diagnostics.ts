@@ -55,7 +55,7 @@ export function acceptedGenerationDiagnostics<Diagnostics extends GenerationDiag
     repaired: false,
     initialResponseLength: raw.length,
     initialResponseFlags: flags,
-  } as Diagnostics
+  } as unknown as Diagnostics
 }
 
 export function repairAttemptedGenerationDiagnostics<Diagnostics extends GenerationDiagnosticsBase, ErrorCategory extends string>(
@@ -73,7 +73,7 @@ export function repairAttemptedGenerationDiagnostics<Diagnostics extends Generat
     ...(initialErrorMessage ? { initialErrorMessage } : {}),
     initialResponseLength: raw.length,
     initialResponseFlags: flags,
-  } as Diagnostics
+  } as unknown as Diagnostics
 }
 
 export function repairTransportFailureDiagnostics<Diagnostics extends GenerationDiagnosticsBase, ErrorCategory extends string, TransportStage extends string>(

@@ -66,7 +66,7 @@ export function requireChainLocationId(
   
   if (parsed === null) {
     throw new Error(
-      `Location \"${locationId}\" does not have a valid on-chain location ID. ` +
+      `Location "${locationId}" does not have a valid on-chain location ID. ` +
       `Got: ${JSON.stringify(chainLocationId)}`
     )
   }

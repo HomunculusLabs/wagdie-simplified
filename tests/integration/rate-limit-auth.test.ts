@@ -3,44 +3,19 @@
  * Tests T023 [US3] - Rate limiting on auth endpoints
  */
 
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { GET as getNonce } from '@/app/api/auth/nonce/route'
 import { POST as postVerify } from '@/app/api/auth/verify/route'
-import { cookies, headers } from 'next/headers'
+import { cookies } from 'next/headers'
+import { authRateLimiter } from '@/lib/middleware/rate-limit'
 
 // Mock next/headers
 jest.mock('next/headers', () => ({
   cookies: jest.fn(),
-  headers: jest.fn(),
 }))
 
-// Mock the rate limiter to track calls
-const mockRateLimitCheck = jest.fn()
-
-jest.mock('@/lib/middleware/rate-limit', () => ({
-  authRateLimiter: {
-    check: (ip: string) => mockRateLimitCheck(ip),
-  },
-  getRateLimitHeaders: jest.fn().mockReturnValue({
-    'X-RateLimit-Limit': '10',
-    'X-RateLimit-Remaining': '5',
-    'X-RateLimit-Reset': '1704067200',
-  }),
-  withRateLimit: (handler: Function) => {
-    return async (req: NextRequest) => {
-      const ip = '127.0.0.1'
-      const result = mockRateLimitCheck(ip)
-
-      if (!result.allowed) {
-        return NextResponse.json(
-          { error: 'Too many requests. Please try again later.' },
-          { status: 429 }
-        )
-      }
-
-      return handler(req)
-    }
-  },
+jest.mock('@/lib/auth/session', () => ({
+  getSession: jest.fn(),
 }))
 
 describe('Rate Limiting on Auth Endpoints', () => {
@@ -49,120 +24,75 @@ describe('Rate Limiting on Auth Endpoints', () => {
     get: jest.Mock
     delete: jest.Mock
   }
-  let mockHeaders: Headers
+
+  function createRequest(path: string, method: 'GET' | 'POST' = 'GET', ip = '198.51.100.10'): NextRequest {
+    return new NextRequest(`https://example.com${path}`, {
+      method,
+      headers: { 'x-forwarded-for': ip },
+    })
+  }
 
   beforeEach(() => {
+    ;(authRateLimiter as any).store.clear()
     mockCookieStore = {
       set: jest.fn(),
       get: jest.fn(),
       delete: jest.fn(),
     }
-    mockHeaders = new Headers()
-    mockHeaders.set('x-forwarded-for', '127.0.0.1')
     ;(cookies as jest.Mock).mockResolvedValue(mockCookieStore)
-    ;(headers as jest.Mock).mockResolvedValue(mockHeaders)
-
-    // Reset rate limiter mock
-    mockRateLimitCheck.mockReset()
-    mockRateLimitCheck.mockReturnValue({
-      allowed: true,
-      remaining: 9,
-      resetTime: Date.now() + 60000,
-      count: 1,
-      limit: 10,
-    })
   })
 
   afterEach(() => {
+    ;(authRateLimiter as any).store.clear()
     jest.clearAllMocks()
   })
 
   describe('GET /api/auth/nonce', () => {
     it('should allow requests under rate limit', async () => {
-      mockRateLimitCheck.mockReturnValue({
-        allowed: true,
-        remaining: 5,
-        resetTime: Date.now() + 60000,
-        count: 5,
-        limit: 10,
-      })
-
-      const response = await getNonce()
+      const response = await getNonce(createRequest('/api/auth/nonce', 'GET', '198.51.100.11'))
       expect(response.status).toBe(200)
+      expect(response.headers.get('X-RateLimit-Limit')).toBe('10')
     })
 
     it('should return 429 when rate limit exceeded', async () => {
-      mockRateLimitCheck.mockReturnValue({
-        allowed: false,
-        remaining: 0,
-        resetTime: Date.now() + 60000,
-        count: 11,
-        limit: 10,
-      })
+      const ip = '198.51.100.12'
+      for (let i = 0; i < 10; i++) {
+        const response = await getNonce(createRequest('/api/auth/nonce', 'GET', ip))
+        expect(response.status).toBe(200)
+      }
 
-      // This test will pass once rate limiting is applied to the route
-      // For now, we're testing the expected behavior
-      expect(mockRateLimitCheck).toBeDefined()
+      const response = await getNonce(createRequest('/api/auth/nonce', 'GET', ip))
+      const data = await response.json()
+
+      expect(response.status).toBe(429)
+      expect(data.error).toContain('Too many requests')
+      expect(response.headers.get('Retry-After')).toBeTruthy()
     })
   })
 
   describe('POST /api/auth/verify', () => {
-    it('should allow requests under rate limit', async () => {
-      mockRateLimitCheck.mockReturnValue({
-        allowed: true,
-        remaining: 5,
-        resetTime: Date.now() + 60000,
-        count: 5,
-        limit: 10,
-      })
+    it('should return 429 before CSRF/body validation when rate limit exceeded', async () => {
+      const ip = '198.51.100.13'
+      for (let i = 0; i < 10; i++) {
+        const response = await postVerify(createRequest('/api/auth/verify', 'POST', ip))
+        expect(response.status).toBe(403)
+      }
 
-      // Request would need valid body, but rate limit check happens first
-      expect(mockRateLimitCheck).toBeDefined()
+      const response = await postVerify(createRequest('/api/auth/verify', 'POST', ip))
+      const data = await response.json()
+
+      expect(response.status).toBe(429)
+      expect(data.error).toContain('Too many requests')
     })
   })
 
   describe('Rate limit headers', () => {
     it('should include rate limit headers in response', async () => {
-      // This verifies the header function is available
-      const { getRateLimitHeaders } = require('@/lib/middleware/rate-limit')
-      const headers = getRateLimitHeaders({
-        allowed: true,
-        remaining: 5,
-        resetTime: 1704067200000,
-        count: 5,
-        limit: 10,
-      })
+      const response = await getNonce(createRequest('/api/auth/nonce', 'GET', '198.51.100.14'))
 
-      expect(headers['X-RateLimit-Limit']).toBe('10')
-      expect(headers['X-RateLimit-Remaining']).toBe('5')
-      expect(headers['X-RateLimit-Reset']).toBe('1704067200')
-    })
-  })
-
-  describe('Brute force protection', () => {
-    it('should block after 10 rapid requests', async () => {
-      // Simulate 10 requests
-      for (let i = 0; i < 10; i++) {
-        mockRateLimitCheck.mockReturnValueOnce({
-          allowed: true,
-          remaining: 9 - i,
-          resetTime: Date.now() + 60000,
-          count: i + 1,
-          limit: 10,
-        })
-      }
-
-      // 11th request should be blocked
-      mockRateLimitCheck.mockReturnValueOnce({
-        allowed: false,
-        remaining: 0,
-        resetTime: Date.now() + 60000,
-        count: 11,
-        limit: 10,
-      })
-
-      // Verify the mock was set up correctly
-      expect(mockRateLimitCheck({ ip: '127.0.0.1' }).allowed).toBe(true)
+      expect(response.headers.get('X-RateLimit-Limit')).toBe('10')
+      expect(response.headers.get('X-RateLimit-Remaining')).toBeTruthy()
+      expect(response.headers.get('X-RateLimit-Reset')).toBeTruthy()
     })
   })
 })

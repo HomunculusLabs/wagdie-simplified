@@ -1,77 +1,67 @@
-'use client'
+'use client';
 
-import React from 'react';
-import { useState, useEffect } from 'react'
-import Image from 'next/image'
-import Link from 'next/link'
-import { useAccount } from 'wagmi'
-import { Navigation } from './Navigation'
-import { WalletButton } from '@/components/wallet/WalletButton'
-import { isAdmin } from '@/lib/auth/admin'
-import { lockBodyScroll, unlockBodyScroll } from '@/lib/utils/bodyScrollLock'
+import { useCallback, useState } from 'react';
+import Image from 'next/image';
+import Link from 'next/link';
+import { Globe2, Menu, MessageCircle, Twitter, X } from 'lucide-react';
+import { Navigation } from './Navigation';
+import { HeaderDrawer } from './HeaderDrawer';
+import { WalletButton } from '@/components/wallet/WalletButton';
+import { useAuth } from '@/hooks/useAuth';
+import { isAdmin } from '@/lib/auth/admin';
 
-const showLoreNav = process.env.NEXT_PUBLIC_SHOW_LORE_NAV === 'true'
+function formatAddress(address?: string): string {
+  if (!address) return 'Account';
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
 
 /**
- * Header Component
- * Main site header with logo, navigation, and wallet connection.
+ * Main site header with responsive route navigation and one wallet-aware account drawer.
  */
 export function Header() {
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
-  const [isDrawerOpen, setIsDrawerOpen] = useState(false)
-  const [darkMode, setDarkMode] = useState(true)
-  const { address } = useAccount()
-  const isAdminWallet = isAdmin(address)
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const {
+    address,
+    isConnected,
+    isAuthenticated,
+    isHydrating,
+    authenticate,
+    disconnect,
+  } = useAuth();
+  const showConnectedActions = isConnected && Boolean(address);
+  const isAdminWallet = isAdmin(address);
 
-  const toggleMobileMenu = () => {
-    setIsMobileMenuOpen(!isMobileMenuOpen)
-  }
+  const closeMobileMenu = useCallback(() => {
+    setIsMobileMenuOpen(false);
+  }, []);
 
-  const closeMobileMenu = () => {
-    setIsMobileMenuOpen(false)
-  }
+  const closeDrawer = useCallback(() => {
+    setIsDrawerOpen(false);
+  }, []);
 
-  const toggleDrawer = () => {
-    setIsDrawerOpen(!isDrawerOpen)
-  }
-
-  const closeDrawer = () => {
-    setIsDrawerOpen(false)
-  }
-
-  // TODO: Wire up dark mode toggle in UI
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const _toggleDarkMode = () => {
-    setDarkMode(!darkMode)
-    document.documentElement.classList.toggle('dark')
-  }
+  const openDrawer = useCallback(() => {
+    setIsDrawerOpen(true);
+  }, []);
 
   const scrollToTop = () => {
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
-  // Disable body scroll when drawer is open
-  useEffect(() => {
-    if (isDrawerOpen) {
-      lockBodyScroll('header-drawer')
-    } else {
-      unlockBodyScroll('header-drawer')
-    }
-
-    return () => {
-      unlockBodyScroll('header-drawer')
-    }
-  }, [isDrawerOpen])
+  const accountLabel = showConnectedActions
+    ? `${isHydrating ? 'Checking account' : 'Account'} ${formatAddress(address)}`
+    : 'Menu';
 
   return (
-    <header className="sticky top-0 z-50 bg-soul-950/95 backdrop-blur-sm border-b border-neutral-800">
-      <div className="container mx-auto px-4">
-        <div className="flex items-center justify-between h-16">
-          {/* Logo with scroll-to-top */}
+    <>
+      <header className="sticky top-0 z-50 border-b border-parchment/15 bg-soul-950/95 backdrop-blur-sm">
+      <div className="mx-auto w-full px-5 sm:px-8 lg:px-12">
+        <div className="flex h-[5.75rem] items-center justify-between gap-5">
+          <div className="flex shrink-0 items-center gap-7">
           <Link
             href="/"
             onClick={scrollToTop}
-            className="group flex items-center cursor-pointer"
+            className="group flex min-h-[44px] shrink-0 items-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment"
             title="Scroll to top"
             aria-label="WAGDIE home"
           >
@@ -81,190 +71,108 @@ export function Header() {
               width={1910}
               height={588}
               priority
-              className="h-9 w-auto transition-opacity duration-300 group-hover:opacity-80"
+              className="h-8 w-auto transition-opacity duration-300 group-hover:opacity-80"
             />
           </Link>
 
-          {/* Desktop Navigation */}
-          <Navigation className="hidden md:flex" />
+          <nav className="hidden items-center gap-4 lg:flex" aria-label="Social links">
+            <a href={process.env.NEXT_PUBLIC_OPENSEA_URL || 'https://opensea.io/collection/we-are-all-going-to-die'} target="_blank" rel="noreferrer" aria-label="OpenSea" className="text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment">
+              <Globe2 className="h-6 w-6" aria-hidden="true" />
+            </a>
+            <a href={process.env.NEXT_PUBLIC_DISCORD_URL || 'https://discord.gg/wagdie'} target="_blank" rel="noreferrer" aria-label="Discord" className="text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment">
+              <MessageCircle className="h-6 w-6" aria-hidden="true" />
+            </a>
+            <a href={process.env.NEXT_PUBLIC_TWITTER_URL || 'https://twitter.com/WAGDIE_ETH'} target="_blank" rel="noreferrer" aria-label="X / Twitter" className="text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment">
+              <Twitter className="h-6 w-6" aria-hidden="true" />
+            </a>
+          </nav>
+          </div>
 
-          {/* Mobile Menu Button */}
+          <Navigation className="hidden lg:flex" showConnectedActions={showConnectedActions} />
+
           <button
-            className="md:hidden text-neutral-400 p-2 w-11 h-11 flex items-center justify-center hover:text-soul-accent transition-colors"
-            onClick={toggleMobileMenu}
-            aria-label="Toggle menu"
+            type="button"
+            className="flex h-11 w-11 items-center justify-center text-mist transition-colors hover:text-parchment focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment lg:hidden"
+            onClick={() => setIsMobileMenuOpen((isOpen) => !isOpen)}
+            aria-label="Toggle navigation menu"
             aria-expanded={isMobileMenuOpen}
+            aria-controls="mobile-navigation"
           >
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              {isMobileMenuOpen ? (
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
-              ) : (
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 6h16M4 12h16M4 18h16" />
-              )}
-            </svg>
+            {isMobileMenuOpen
+              ? <X className="h-6 w-6" aria-hidden="true" />
+              : <Menu className="h-6 w-6" aria-hidden="true" />}
           </button>
 
-          {/* Desktop Actions */}
-          <div className="hidden md:flex items-center gap-2">
-            {/* MORE button */}
+          <div className="hidden shrink-0 items-center gap-2 lg:flex">
+            {!showConnectedActions && (
+              <WalletButton className="min-w-72 border-parchment bg-parchment px-8 py-3 text-soul-950 hover:border-parchment hover:bg-parchment/90 hover:text-soul-950" />
+            )}
+            {showConnectedActions && (
+              <button
+                type="button"
+                onClick={openDrawer}
+                className="min-h-[44px] border border-parchment/40 px-5 py-2 font-eskapade text-sm text-parchment transition-colors hover:bg-parchment/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment"
+                title={`Open account for ${address}`}
+                aria-label={`Open account drawer for ${address}`}
+                aria-expanded={isDrawerOpen}
+                aria-controls="header-account-drawer"
+              >
+                {accountLabel}
+              </button>
+            )}
             <button
-              onClick={toggleDrawer}
-              className="px-4 py-2 text-neutral-500 hover:text-soul-accent transition-colors font-eskapade text-md"
-              title="More options"
+              type="button"
+              onClick={openDrawer}
+              className="flex h-[3.25rem] w-[3.25rem] items-center justify-center border border-parchment/40 text-parchment transition-colors hover:bg-parchment/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment"
+              title="Open menu"
               aria-label="Open menu drawer"
+              aria-expanded={isDrawerOpen}
+              aria-controls="header-account-drawer"
             >
-              More
+              <Menu className="h-6 w-6" aria-hidden="true" />
             </button>
-
-            <WalletButton />
           </div>
         </div>
 
-        {/* Mobile Menu */}
         {isMobileMenuOpen && (
-          <div className="md:hidden py-4 border-t border-neutral-800">
-            <Navigation isMobile onNavClick={closeMobileMenu} />
-            <div className="mt-4 flex flex-col gap-2 px-2">
+          <div id="mobile-navigation" className="border-t border-neutral-800 py-4 lg:hidden">
+            <Navigation
+              isMobile
+              onNavClick={closeMobileMenu}
+              showConnectedActions={showConnectedActions}
+            />
+            <div className="mt-4 flex flex-col gap-3 border-t border-neutral-800 px-2 pt-4">
               <button
-                onClick={() => {
-                  closeMobileMenu()
-                  toggleDrawer()
-                }}
-                className="text-left px-4 py-3 text-neutral-500 hover:text-soul-accent transition-colors font-eskapade text-xl"
+                type="button"
+                onClick={openDrawer}
+                className="min-h-[44px] px-4 py-3 text-left font-ui text-base text-parchment transition-colors hover:bg-parchment/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-parchment"
+                aria-expanded={isDrawerOpen}
+                aria-controls="header-account-drawer"
               >
-                More Options
+                {showConnectedActions ? `Account ${formatAddress(address)}` : 'More options'}
               </button>
-              <div className="px-4">
-                <WalletButton />
-              </div>
+              {!showConnectedActions && (
+                <div className="px-4">
+                  <WalletButton />
+                </div>
+              )}
             </div>
           </div>
         )}
       </div>
+      </header>
 
-      {/* Menu Drawer (Desktop & Mobile) */}
-      {isDrawerOpen && (
-        <div
-          className="fixed inset-0 top-16 bg-black/80 backdrop-blur-sm z-50"
-          onClick={closeDrawer}
-        >
-          <div
-            className="fixed right-0 top-0.5 h-[calc(100vh-4rem)] w-80 bg-soul-950 border-l border-neutral-800 shadow-2xl overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Drawer Header */}
-            <div className="flex items-center justify-between p-6 border-b border-neutral-800">
-              <h2 className="text-sm font-eskapade text-neutral-200">Menu</h2>
-              <button
-                onClick={closeDrawer}
-                className="p-2 text-neutral-500 hover:text-red-500 transition-colors"
-                aria-label="Close drawer"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Drawer Content */}
-            <nav className="p-4 space-y-1">
-              <Link
-                href="/map"
-                onClick={closeDrawer}
-                className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                World Map
-              </Link>
-              {showLoreNav && (
-                <Link
-                  href="/lore"
-                  onClick={closeDrawer}
-                  className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-                >
-                  Lore & History
-                </Link>
-              )}
-              <Link
-                href="/videos"
-                onClick={closeDrawer}
-                className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                Low Poly Videos
-              </Link>
-              <Link
-                href="/spread"
-                onClick={closeDrawer}
-                className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                Spread Infection
-              </Link>
-              <Link
-                href="/searing"
-                onClick={closeDrawer}
-                className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                Searing
-              </Link>
-
-              {isAdminWallet && (
-                <>
-                  <div className="my-4 h-px bg-neutral-800" />
-                  <Link
-                    href="/map-editor"
-                    onClick={closeDrawer}
-                    className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-                  >
-                    Map Editor
-                  </Link>
-                  <Link
-                    href="/searing-map-editor"
-                    onClick={closeDrawer}
-                    className="block px-4 py-3 text-neutral-400 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-                  >
-                    Searing Map Editor
-                  </Link>
-                </>
-              )}
-
-              <div className="my-4 h-px bg-neutral-800" />
-
-              <a
-                href="https://discord.gg/wagdie"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-between px-4 py-3 text-neutral-500 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                <span>Discord</span>
-                <svg className="w-4 h-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-              </a>
-              <a
-                href="https://twitter.com/WAGDIE_ETH"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-between px-4 py-3 text-neutral-500 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                <span>Twitter</span>
-                <svg className="w-4 h-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-              </a>
-              <a
-                href="https://opensea.io/collection/we-are-all-going-to-die"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-between px-4 py-3 text-neutral-500 hover:text-soul-accent hover:bg-soul-accent/5 transition-all duration-300 font-eskapade text-sm"
-              >
-                <span>OpenSea</span>
-                <svg className="w-4 h-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-              </a>
-            </nav>
-          </div>
-        </div>
-      )}
-    </header>
-  )
+      <HeaderDrawer
+        isOpen={isDrawerOpen}
+        address={address}
+        isConnected={isConnected}
+        isAuthenticated={isAuthenticated}
+        isHydrating={isHydrating}
+        isAdmin={isAdminWallet}
+        onClose={closeDrawer}
+        onAuthenticate={authenticate}
+        onDisconnect={disconnect}
+      />
+    </>
+  );
 }

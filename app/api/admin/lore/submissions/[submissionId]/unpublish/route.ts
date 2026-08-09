@@ -8,4 +8,5 @@ export const POST = createAdminLoreSubmissionActionHandler({
     loreSubmissionService.unpublishSubmission(submissionId, adminAddress, note)
   ),
   failureMessage: 'Failed to unpublish lore submission',
+  revalidateEffectiveLore: true,
 });

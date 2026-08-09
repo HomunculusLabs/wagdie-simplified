@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server'
 import { syncStakingState } from '@/lib/services/sync/staking-state-sync'
 import { parsePositiveIntArrayParam, uniqueNumbers } from '@/lib/api/params'
 import { getErrorMessage, jsonNoStore, parseJsonBodyResult } from '@/lib/api/responses'
+import { verifySyncAuthorization } from '@/lib/api/sync-auth'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,6 +17,13 @@ type SyncResult = {
 }
 
 export async function POST(request: NextRequest) {
+  if (!verifySyncAuthorization(request)) {
+    return jsonNoStore(
+      { results: [], error: 'Unauthorized' },
+      { status: 401 }
+    )
+  }
+
   const bodyResult = await parseJsonBodyResult<unknown>(request)
 
   if (!bodyResult.ok) {

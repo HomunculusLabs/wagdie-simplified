@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { isAdmin } from '@/lib/auth/admin';
 import { getActiveLoreBaseDataset } from '@/lib/lore/base-query';
@@ -192,10 +193,15 @@ export class LoreSubmissionService {
       throw new LoreSubmissionValidationError('Invalid lore references', referenceErrors);
     }
 
-    const detail = await this.repository.createSubmission(enrichedInput, submitterAddress);
-    return this.publishCommunitySubmission(detail, submitterAddress, undefined, {
-      lastAdminAddress: null,
-      reviewedAt: null,
+    // Lifecycle policy: valid token-owner submissions are auto-public community lore.
+    // Admin tools moderate, curate, hide, and canonize after publication.
+    const submissionId = randomUUID();
+    const publishedAt = new Date().toISOString();
+    const publishedSlug = await this.ensurePublicationSlugForTitle(enrichedInput.title, submissionId, dataset);
+    return this.repository.createPublishedSubmission(enrichedInput, submitterAddress, {
+      submissionId,
+      publishedSlug,
+      publishedAt,
     });
   }
 
@@ -245,12 +251,19 @@ export class LoreSubmissionService {
       throw new LoreSubmissionValidationError('Invalid lore references', referenceErrors);
     }
 
-    const detail = await this.repository.reviseSubmission(submissionId, enrichedInput, submitterAddress);
-    if (!detail) throw new LoreSubmissionConflictError('Submission was changed before revision could be saved');
-    return this.publishCommunitySubmission(detail, submitterAddress, undefined, {
-      lastAdminAddress: null,
-      reviewedAt: null,
+    // Revisions requested by moderation re-enter public community lore once valid.
+    const publishedAt = new Date().toISOString();
+    const publishedSlug = await this.ensurePublicationSlugForTitle(
+      existing.curated_title ?? enrichedInput.title,
+      submissionId,
+      dataset,
+    );
+    const detail = await this.repository.revisePublishedSubmission(submissionId, enrichedInput, submitterAddress, {
+      publishedSlug,
+      publishedAt,
     });
+    if (!detail) throw new LoreSubmissionConflictError('Submission was changed before revision could be saved');
+    return detail;
   }
 
   async listAdmin(filters: Partial<LoreSubmissionAdminListFilters>): Promise<LoreSubmissionAdminListResult> {
@@ -329,6 +342,7 @@ export class LoreSubmissionService {
     return this.addAdminNote(submissionId, adminAddress, requireNote(parsed.data, 'admin_note'));
   }
 
+  // Admin publish remains as an exceptional helper for submitted/stale rows and the legacy `approve` alias.
   async publishSubmission(submissionId: string, adminAddress: string, note?: string): Promise<LoreSubmissionDetailDto> {
     const admin = normalizeAddressOrThrow(adminAddress);
     const detail = await this.getAdminDetail(submissionId);
@@ -487,13 +501,21 @@ export class LoreSubmissionService {
     submission: LoreSubmission,
     dataset: LoreBaseDataset,
   ): Promise<string> {
-    const baseSlug = slugifyTitle(publicTitle(submission));
-    if (!dataset.indexes.eventsBySlug.has(baseSlug) && !await this.repository.slugExists(baseSlug, submission.id)) {
+    return this.ensurePublicationSlugForTitle(publicTitle(submission), submission.id, dataset);
+  }
+
+  private async ensurePublicationSlugForTitle(
+    title: string,
+    submissionId: string,
+    dataset: LoreBaseDataset,
+  ): Promise<string> {
+    const baseSlug = slugifyTitle(title);
+    if (!dataset.indexes.eventsBySlug.has(baseSlug) && !await this.repository.slugExists(baseSlug, submissionId)) {
       return baseSlug;
     }
 
-    const suffixed = `${baseSlug}-${idSuffix(submission.id)}`;
-    if (!dataset.indexes.eventsBySlug.has(suffixed) && !await this.repository.slugExists(suffixed, submission.id)) {
+    const suffixed = `${baseSlug}-${idSuffix(submissionId)}`;
+    if (!dataset.indexes.eventsBySlug.has(suffixed) && !await this.repository.slugExists(suffixed, submissionId)) {
       return suffixed;
     }
 

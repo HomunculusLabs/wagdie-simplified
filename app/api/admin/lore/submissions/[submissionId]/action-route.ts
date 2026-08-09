@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { requireAdmin, isAuthError } from '@/lib/api/auth';
 import { jsonOk } from '@/lib/api/responses';
 import { handleLoreSubmissionApiError, readJsonBody } from '@/app/api/lore/submissions/shared';
+import { revalidateEffectiveLoreRoutes } from '@/lib/lore/revalidation';
 
 export type AdminLoreSubmissionRouteContext = {
   params: Promise<{ submissionId: string }>;
@@ -17,6 +18,7 @@ type AdminLoreSubmissionActionHandlerConfig<TPayload, TResult> = {
   parsePayload: (body: unknown) => TPayload;
   execute: AdminLoreSubmissionActionExecutor<TPayload, TResult>;
   failureMessage: string;
+  revalidateEffectiveLore?: boolean;
 };
 
 export function createAdminLoreSubmissionActionHandler<TPayload, TResult>(
@@ -35,6 +37,9 @@ export function createAdminLoreSubmissionActionHandler<TPayload, TResult>(
         adminAddress: auth.address,
         payload,
       });
+      if (config.revalidateEffectiveLore) {
+        revalidateEffectiveLoreRoutes(submission);
+      }
       return jsonOk(submission);
     } catch (error) {
       return handleLoreSubmissionApiError(error, config.failureMessage);

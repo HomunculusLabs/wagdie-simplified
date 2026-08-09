@@ -7,7 +7,7 @@ export default function LoreSubmissionsAdminPage() {
     <AdminGate>
       <AdminShell
         title="Lore Submissions"
-        description="Review token-owner community lore submissions, curate metadata, publish community records, and promote or demote canon status."
+        description="Moderate auto-public token-owner community lore, curate metadata, hide records when needed, and promote or demote canon status."
       >
         <LoreSubmissionsAdminQueue />
       </AdminShell>

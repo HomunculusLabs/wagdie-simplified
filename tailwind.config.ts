@@ -13,6 +13,7 @@ const config: Config = {
         'wagdie': ['Wagdie Fraktur', 'serif'],
         'eskapade': ['Eskapade Fraktur', 'serif'],
         'display': ['Wagdie Fraktur', 'serif'],
+        'ui': ['ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
         'serif': ['Georgia', 'Times New Roman', 'serif'],
       },
       fontSize: {
@@ -54,6 +55,12 @@ const config: Config = {
         gold: '#d4af37',         // Highlights, important
         poison: '#4a7c59',       // Success states (muted green)
         arcane: '#6a4c93',       // Links, info (muted purple)
+
+        // Editorial accents (additive Adobe XD handoff roles)
+        parchment: '#E9C793',    // Editorial highlights and prominent copy
+        'arcane-bright': '#B690EB', // High-contrast arcane accent
+        'arcane-muted': '#7453A3',  // Supporting arcane controls and borders
+        'arcane-deep': '#7549B4',   // Deep arcane emphasis
 
         // Soul colors for new components
         soul: {

@@ -92,4 +92,22 @@ describe('CharacterQueryRepository hasSheet filtering', () => {
     expect(mockOrder).toHaveBeenCalledWith('token_id', { ascending: true })
     expect(mockRange).toHaveBeenCalledWith(0, 19)
   })
+
+  it('queries owned custody as owner address OR current staker address', async () => {
+    const repository = new CharacterQueryRepository()
+
+    await expect(repository.findMany({
+      ...baseFilters,
+      tab: 'owned',
+      wallet: '0xAbC123',
+      page: 2,
+    })).resolves.toEqual({
+      characters: [],
+      hasMore: false,
+      totalCount: 0,
+    })
+
+    expect(mockOr).toHaveBeenCalledWith('owner_address.eq.0xabc123,staker_address.eq.0xabc123')
+    expect(mockRange).toHaveBeenCalledWith(20, 39)
+  })
 })

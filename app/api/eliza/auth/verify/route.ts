@@ -17,7 +17,10 @@ import { getSession } from '@/lib/auth/session'
 import { getElizaClient } from '@/lib/eliza/client'
 import { elizaConfig } from '@/lib/eliza/config'
 import { normalizeExpiresAt } from '@/lib/eliza/sessionAuth'
-import { verifySiweMessage } from '@/lib/auth/siwe'
+import { validateSiweMessageFields, verifySiweMessage } from '@/lib/auth/siwe'
+import { getTrustedSiweConfig } from '@/lib/auth/siwe-config'
+import { withCsrfProtection } from '@/lib/middleware/csrf'
+import { withRateLimit } from '@/lib/middleware/rate-limit'
 import {
   createWagdieElizaAppAccessToken,
   getOfficialElizaAppTokenExpiresAt,
@@ -33,7 +36,7 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
 }
 
-export async function POST(
+async function handlePost(
   request: NextRequest
 ): Promise<NextResponse<TokenResponse | ErrorResponse>> {
   let session: Awaited<ReturnType<typeof getSession>> | null = null
@@ -69,12 +72,20 @@ export async function POST(
       )
     }
 
-    const { message, sessionId } = session.eliza.siwe
+    const { message, sessionId, nonce } = session.eliza.siwe
+    const siweConfig = getTrustedSiweConfig(request)
+    const expectedSiweFields = {
+      nonce,
+      domain: siweConfig.domain,
+      uri: siweConfig.uri,
+      chainId: siweConfig.chainId,
+      address: session.address,
+    }
 
     attemptedVerify = true
 
     if (elizaConfig.mode === 'official') {
-      const verification = await verifySiweMessage(message, signature)
+      const verification = await verifySiweMessage(message, signature, expectedSiweFields)
       const verifiedAddress = verification.address?.toLowerCase()
       const sessionAddress = session.address.toLowerCase()
 
@@ -117,6 +128,17 @@ export async function POST(
         accessToken,
         expiresAt: new Date(expiresAtMs).toISOString(),
       })
+    }
+
+    const fieldValidation = validateSiweMessageFields(message, expectedSiweFields)
+    if (!fieldValidation.ok) {
+      session.eliza = undefined
+      await session.save()
+
+      return NextResponse.json(
+        { error: 'AUTH_FAILED', message: 'Authentication with Eliza failed' },
+        { status: 401 }
+      )
     }
 
     const elizaClient = getElizaClient()
@@ -171,3 +193,5 @@ export async function POST(
     )
   }
 }
+
+export const POST = withRateLimit(withCsrfProtection(handlePost))

@@ -1,16 +1,43 @@
 require('./lib/utils/server-browser-globals')
 
+const contentSecurityPolicy = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  "connect-src 'self' https: wss:",
+  "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com",
+].join('; ')
+
+const globalSecurityHeaders = [
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'X-Frame-Options', value: 'DENY' },
+  { key: 'Content-Security-Policy', value: contentSecurityPolicy },
+  { key: 'X-DNS-Prefetch-Control', value: 'off' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+]
+
+const animatedEmbedSecurityHeaders = globalSecurityHeaders.filter(
+  (header) => header.key !== 'X-Frame-Options' && header.key !== 'Content-Security-Policy'
+)
+
+const corsHeaders = [
+  { key: 'Access-Control-Allow-Origin', value: '*' },
+  { key: 'Access-Control-Allow-Methods', value: 'GET, OPTIONS' },
+]
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // Disable React Strict Mode to prevent double-invocation of effects that can
   // cause Leaflet to initialize twice on the same container in development.
   reactStrictMode: false,
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   images: {
     remotePatterns: [
       {
@@ -87,31 +114,35 @@ const nextConfig = {
   async headers() {
     return [
       {
+        source: '/:path((?!characters/[^/]+/animated/?$).*)',
+        headers: globalSecurityHeaders,
+      },
+      {
         source: '/fonts/:path*',
-        headers: [
-          { key: 'Access-Control-Allow-Origin', value: '*' },
-          { key: 'Access-Control-Allow-Methods', value: 'GET, OPTIONS' },
-        ],
+        headers: corsHeaders,
       },
       {
         source: '/images/characters/:path*',
-        headers: [
-          { key: 'Access-Control-Allow-Origin', value: '*' },
-          { key: 'Access-Control-Allow-Methods', value: 'GET, OPTIONS' },
-        ],
+        headers: corsHeaders,
       },
       {
         source: '/characters/:tokenId/animated',
         headers: [
-          { key: 'Access-Control-Allow-Origin', value: '*' },
-          { key: 'Access-Control-Allow-Methods', value: 'GET, OPTIONS' },
+          ...corsHeaders,
+          ...animatedEmbedSecurityHeaders,
+        ],
+      },
+      {
+        source: '/characters/:tokenId/animated/',
+        headers: [
+          ...corsHeaders,
+          ...animatedEmbedSecurityHeaders,
         ],
       },
       {
         source: '/api/characters/metadata/:tokenId',
         headers: [
-          { key: 'Access-Control-Allow-Origin', value: '*' },
-          { key: 'Access-Control-Allow-Methods', value: 'GET, OPTIONS' },
+          ...corsHeaders,
           { key: 'Access-Control-Allow-Headers', value: 'Content-Type' },
         ],
       },
