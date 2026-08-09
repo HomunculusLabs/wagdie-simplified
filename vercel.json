@@ -7,7 +7,7 @@
     },
     {
       "path": "/api/sync/eliza-location-rooms?secret=${SYNC_SECRET_KEY}",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 2 * * *"
     }
   ]
 }
