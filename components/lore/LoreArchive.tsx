@@ -1,9 +1,11 @@
 import Link from 'next/link';
+import { LoreArchiveCarousel, type LoreArchiveCarouselSlide } from './LoreArchiveCarousel';
 import { LoreArchiveViewNav } from './LoreArchiveViewNav';
 import { LoreArchiveSort, type LoreArchiveSortValue } from './LoreArchiveSort';
 import { LoreCharacterArchiveGrid } from './LoreCharacterArchiveGrid';
 import { LoreFilterBar } from './LoreFilterBar';
 import { LoreTimeline } from './LoreTimeline';
+import { getLoreEventCover } from './lore-event-cover';
 import { canonStatusLabels, getCanonizationStageDefinition } from '@/lib/lore/canonization';
 import { buildLoreArchiveHref, type ArchiveView } from '@/lib/lore/archive-view-params';
 import type { LoreCharacterArchivePage } from '@/lib/lore/archive-character-summary';
@@ -74,20 +76,34 @@ export function LoreArchive({
   const activeFilters = buildActiveFilterLabels(filters, seasons, locations, characters);
   const active = hasActiveLoreArchiveFilters(filters);
   const clearFiltersHref = buildLoreArchiveHref({ view });
+  const carouselSlides = items.reduce<LoreArchiveCarouselSlide[]>((slides, event) => {
+    if (slides.length >= 6) return slides;
+
+    const eventCharacters = characters.filter((character) => event.characterIds.includes(character.id));
+    const cover = getLoreEventCover(event, eventCharacters);
+    if (!cover.src) return slides;
+
+    const season = seasons.find((item) => item.id === event.seasonId);
+    const href = event.kind === 'official'
+      ? `/lore/events/${event.slug}`
+      : `/lore/community/${event.slug}`;
+
+    slides.push({
+      id: event.id,
+      title: event.title,
+      summary: event.summary,
+      imageUrl: cover.src,
+      imageAlt: cover.alt,
+      href,
+      eyebrow: season?.title ?? (event.kind === 'official' ? 'Official record' : 'Community chronicle'),
+    });
+
+    return slides;
+  }, []);
 
   return (
     <main className="mx-auto w-full max-w-[1920px] px-4 pb-28 sm:px-6 lg:px-8">
-      <header className="relative flex min-h-[28rem] items-center justify-center py-16 text-center sm:min-h-[40rem] lg:min-h-[57rem]">
-        <h1 className="font-display text-6xl leading-none text-parchment sm:text-8xl lg:text-[7rem]">
-          Archive
-        </h1>
-        <div className="absolute inset-x-4 bottom-8 sm:bottom-12">
-          <p className="font-display text-3xl tracking-[0.5em] text-parchment" aria-hidden="true">•••</p>
-          <p className="mt-10 font-eskapade text-sm leading-6 text-soul-accent/45 sm:text-base">
-            Browse selected lore events
-          </p>
-        </div>
-      </header>
+      <LoreArchiveCarousel slides={carouselSlides} />
 
       <div className="mt-10">
         <LoreFilterBar

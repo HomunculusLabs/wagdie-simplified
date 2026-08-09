@@ -72,8 +72,12 @@ export function LoreSubmissionForm({
   onSubmitted,
 }: LoreSubmissionFormProps) {
   const auth = useAuth();
-  const ownedCharacters = useOwnedCharacters(auth.address, {
-    enabled: Boolean(auth.address && auth.isAuthenticated),
+  const sessionAddress = auth.isAuthenticated
+    ? (auth.session?.address ?? auth.address)
+    : undefined;
+  const hasAuthenticatedSession = Boolean(sessionAddress);
+  const ownedCharacters = useOwnedCharacters(sessionAddress, {
+    enabled: hasAuthenticatedSession,
     perPage: 200,
     sort: 'asc',
   });
@@ -108,7 +112,7 @@ export function LoreSubmissionForm({
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
 
-    if (!auth.isAuthenticated) {
+    if (!hasAuthenticatedSession) {
       setError('Connect and sign in with your wallet before submitting.');
       return;
     }
@@ -155,7 +159,18 @@ export function LoreSubmissionForm({
     }
   };
 
-  if (!auth.isConnected) {
+  if (!hasAuthenticatedSession && (auth.isConnecting || auth.isHydrating || (auth.isConnected && !auth.hasHydrated))) {
+    return (
+      <section className="rounded-xl border border-soul-accent/20 bg-soul-shadow/70 p-8 text-center">
+        <h2 className="font-display text-2xl text-soul-accent">Checking wallet session</h2>
+        <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-soul-mist/75">
+          Looking for an existing wallet session before asking for a signature.
+        </p>
+      </section>
+    );
+  }
+
+  if (!hasAuthenticatedSession && !auth.isConnected) {
     return (
       <section className="rounded-xl border border-soul-accent/20 bg-soul-shadow/70 p-8 text-center">
         <h2 className="font-display text-2xl text-soul-accent">Wallet required</h2>
@@ -169,18 +184,7 @@ export function LoreSubmissionForm({
     );
   }
 
-  if (auth.isHydrating) {
-    return (
-      <section className="rounded-xl border border-soul-accent/20 bg-soul-shadow/70 p-8 text-center">
-        <h2 className="font-display text-2xl text-soul-accent">Checking wallet session</h2>
-        <p className="mx-auto mt-3 max-w-2xl text-sm leading-6 text-soul-mist/75">
-          Looking for an existing wallet session before asking for a signature.
-        </p>
-      </section>
-    );
-  }
-
-  if (!auth.isAuthenticated) {
+  if (!hasAuthenticatedSession) {
     return (
       <section className="rounded-xl border border-soul-accent/20 bg-soul-shadow/70 p-8 text-center">
         <h2 className="font-display text-2xl text-soul-accent">Sign in to continue</h2>
@@ -203,7 +207,7 @@ export function LoreSubmissionForm({
             {mode === 'revise' ? 'Revise community lore' : 'Submit community lore'}
           </h2>
           <p className="mt-2 text-sm leading-6 text-soul-mist/75">
-            Authenticated as <span className="font-mono text-soul-bone">{auth.address}</span>. Ownership is checked again by the server.
+            Authenticated as <span className="font-mono text-soul-bone">{sessionAddress}</span>. Ownership is checked again by the server.
           </p>
         </div>
         <Link href="/lore/submissions" className="text-sm font-display text-soul-accent hover:text-soul-bone">

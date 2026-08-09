@@ -46,7 +46,7 @@ export interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 type ActiveRequest<T> = {
-  address: string
+  address: string | null
   requestId: number
   promise: Promise<T>
 }
@@ -97,11 +97,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   const refreshSession = useCallback(async (): Promise<AuthSession | null> => {
-    if (!wallet.address) {
-      return null
-    }
-
-    const normalizedAddress = normalizeAddress(wallet.address)!
+    const normalizedAddress = normalizeAddress(wallet.address)
     const activeHydration = activeHydrationRef.current
 
     if (activeHydration?.address === normalizedAddress) {
@@ -126,7 +122,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         setHasHydrated(true)
 
-        if (sessionAddress === normalizedAddress) {
+        if (!normalizedAddress || sessionAddress === normalizedAddress) {
           const hydratedSession: AuthSession = {
             address: nextSession.address,
             expires: nextSession.expires,
@@ -185,13 +181,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearVolatileAuthState, currentNormalizedAddress])
 
   useEffect(() => {
-    if (!wallet.address) {
-      return
-    }
-
-    latestAddressRef.current = normalizeAddress(wallet.address)
+    latestAddressRef.current = currentNormalizedAddress
     refreshSession()
-  }, [refreshSession, wallet.address])
+  }, [currentNormalizedAddress, refreshSession])
 
   const authenticate = useCallback(async (options: AuthenticateOptions = {}) => {
     if (!wallet.address) {
