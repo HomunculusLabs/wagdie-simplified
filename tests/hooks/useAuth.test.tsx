@@ -7,6 +7,7 @@ import { api } from '@/lib/api'
 const mockSignMessageAsync = jest.fn()
 const mockDisconnectAsync = jest.fn()
 const mockOpenConnectModal = jest.fn()
+const mockConnectWallet = jest.fn()
 
 let mockAddress: `0x${string}` | undefined = '0x1234567890123456789012345678901234567890'
 let mockIsConnected = true
@@ -18,6 +19,7 @@ jest.mock('wagmi', () => ({
     isConnecting: false,
   }),
   useDisconnect: () => ({ disconnectAsync: mockDisconnectAsync }),
+  useConnect: () => ({ connect: mockConnectWallet, connectors: [] }),
   useSignMessage: () => ({ signMessageAsync: mockSignMessageAsync }),
 }))
 
@@ -72,6 +74,26 @@ describe('useAuth shared provider', () => {
     await waitFor(() => expect(result.current.isAuthenticated).toBe(true))
 
     expect(authApi.getSession).toHaveBeenCalledTimes(1)
+    expect(authApi.getNonce).not.toHaveBeenCalled()
+    expect(mockSignMessageAsync).not.toHaveBeenCalled()
+  })
+
+  it('restores a valid signed session even before the wallet connector reconnects', async () => {
+    const disconnectedSessionAddress = '0x2222222222222222222222222222222222222222'
+    mockAddress = undefined
+    mockIsConnected = false
+    authApi.getSession.mockResolvedValue({
+      address: disconnectedSessionAddress,
+      expires: Date.now() + 60_000,
+      selectedCharacter: null,
+    } as any)
+
+    const { result } = renderHook(() => useAuth(), { wrapper })
+
+    await waitFor(() => expect(result.current.isAuthenticated).toBe(true))
+
+    expect(result.current.isConnected).toBe(false)
+    expect(result.current.session?.address).toBe(disconnectedSessionAddress)
     expect(authApi.getNonce).not.toHaveBeenCalled()
     expect(mockSignMessageAsync).not.toHaveBeenCalled()
   })

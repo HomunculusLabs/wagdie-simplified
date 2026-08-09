@@ -1,5 +1,33 @@
 # Adobe XD frontend design QA
 
+## 2026-08-09 Archive carousel and signed-session correction
+
+### Comparison target
+
+- Source visual truth: the user-supplied Archive capture at `/var/folders/vk/ynsnb3x92sv16bj7wz5xtnm80000gn/T/codex-clipboard-8155621f-1707-4e88-83c6-da07e808a0ee.png` (`1470 × 834`) plus the explicit requirement that the title-only Archive stage become an image carousel.
+- Rendered implementation: `.audit/archive-carousel/archive-desktop-top.png` (`1440 × 1000`) and `.audit/archive-carousel/archive-mobile-top.png` (`390 × 844`) from the production build at `http://127.0.0.1:3003/lore`.
+- Combined comparison: `.audit/archive-carousel/archive-before-after-comparison.png` (`2752 × 801`). The source and carousel regions were each normalized to `1376 × 801` at 1× density before being joined side by side.
+- State: first available lore record on desktop and an auto-advanced community record on mobile, default Archive filters, dark theme, unauthenticated browser shell.
+
+### Findings
+
+- No actionable P0, P1, or P2 visual differences remain. The previously empty title stage is now filled by real WAGDIE lore artwork and preserves the Archive title, parchment typography, near-black palette, and large-stage proportions shown in the source.
+- Fonts and typography: the existing display and UI faces remain intact. Event titles wrap cleanly at `390 px`, and the Archive title retains its source hierarchy on desktop and mobile.
+- Spacing and layout rhythm: the artwork remains within the existing `1920 px` Archive frame. The caption panel, six selectors, and previous/next controls stay inside a `358 px` mobile carousel with `scrollWidth === innerWidth === 390`.
+- Colors and visual tokens: parchment, arcane-purple accents, black overlays, and restrained borders reuse the existing product tokens without introducing a competing visual system.
+- Image quality and asset fidelity: the carousel uses the six existing full-resolution Archive artworks through `next/image`; no placeholders, generated assets, CSS drawings, or stretched screenshots are present.
+- Copy and content: slide titles, summaries, season labels, alt text, and destinations are sourced from live Archive records.
+- Interaction and accessibility: autoplay pauses for hover/focus, dot and arrow controls expose labels/current state, the next control changes both record copy and image, links navigate to the correct record, and reduced motion does not affect core navigation. Browser console checks returned no warnings or errors for the tested Archive states.
+- Submit-session behavior: the valid SIWE session now hydrates independently of connector restoration, allowing `/lore/submit` to render the form for a signed session while still requiring a signature when no valid session exists. This behavioral state is covered by focused component/provider tests because the QA browser has no wallet identity.
+
+### Comparison history
+
+- Pass 1 — blocked: [P1] the Archive hero showed only a title, ellipsis, and caption; [P0] the submit form could report `Wallet required` while a valid signed server session existed but the wallet connector had not restored.
+- Fixes: added the six-image accessible carousel; changed auth hydration to check the signed session even without a live connector; updated the form to trust the verified session address and keep server-side ownership enforcement.
+- Pass 2 — passed: desktop and mobile browser captures show the requested carousel, controls work, no root overflow is present, the production build passes, and 16 focused Archive/carousel/submission/auth tests pass.
+
+final result: passed
+
 ## Comparison target
 
 - Source visual truth: Adobe XD `Wagdie_UI_UX` eight-artboard spec, captured under `.audit/reference/`.
