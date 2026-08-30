@@ -22,7 +22,7 @@ export default async function LoreSubmitPage({ searchParams }: LoreSubmitPagePro
     <div className="min-h-screen bg-soul-950">
       <BannerHeader
         title="Submit Community Lore"
-        subtitle="Token owners can publish Markdown community chronicles with source and media URLs; admins may canonize them later."
+        subtitle="Token owners can publish chronicles for their characters; admins can publish for any token and canonize submissions later."
       />
       <main className="mx-auto max-w-5xl px-4 py-8 sm:px-6">
         <div className="mb-5 flex justify-end">

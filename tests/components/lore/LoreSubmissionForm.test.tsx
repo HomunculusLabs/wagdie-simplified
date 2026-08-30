@@ -67,6 +67,30 @@ describe('LoreSubmissionForm', () => {
     expect(mockUseOwnedCharacters).toHaveBeenCalledWith(sessionAddress, expect.objectContaining({ enabled: true }));
   });
 
+  it('allows authenticated admins to enter any token ID', () => {
+    const adminAddress = '0x08DF3044b520Fd001c93e97041D3F257D8c0dB7B';
+    mockUseAuth.mockReturnValue(authState({
+      isAuthenticated: true,
+      session: {
+        address: adminAddress,
+        expires: Date.now() + 60_000,
+        selectedCharacter: null,
+      },
+    }));
+    mockUseOwnedCharacters.mockReturnValue({
+      characters: [{ token_id: 7 }],
+      isLoading: false,
+      error: null,
+    });
+
+    render(<LoreSubmissionForm />);
+
+    expect(screen.getByRole('textbox', { name: 'Token ID' })).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Token ID' })).not.toBeInTheDocument();
+    expect(screen.getByText('Admin override: enter any valid WAGDIE token ID.')).toBeInTheDocument();
+    expect(mockUseOwnedCharacters).toHaveBeenCalledWith(adminAddress, expect.objectContaining({ enabled: false }));
+  });
+
   it('requires a signature when the connected wallet has no signed session', () => {
     mockUseAuth.mockReturnValue(authState({
       address: '0x1111111111111111111111111111111111111111',

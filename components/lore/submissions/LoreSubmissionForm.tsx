@@ -7,6 +7,7 @@ import { Spinner } from '@/components/ui/Spinner';
 import { useAuth } from '@/hooks/useAuth';
 import { useOwnedCharacters } from '@/hooks/useOwnedCharacters';
 import { apiClient } from '@/lib/api/client';
+import { isAdmin } from '@/lib/auth/admin';
 import type { LoreLocation } from '@/lib/lore/types';
 import type { LoreSubmissionDetailDto, LoreSubmissionLink } from '@/types/lore-submission';
 import { MarkdownEditor } from './MarkdownEditor';
@@ -76,8 +77,9 @@ export function LoreSubmissionForm({
     ? (auth.session?.address ?? auth.address)
     : undefined;
   const hasAuthenticatedSession = Boolean(sessionAddress);
+  const userIsAdmin = isAdmin(sessionAddress);
   const ownedCharacters = useOwnedCharacters(sessionAddress, {
-    enabled: hasAuthenticatedSession,
+    enabled: hasAuthenticatedSession && !userIsAdmin,
     perPage: 200,
     sort: 'asc',
   });
@@ -94,9 +96,9 @@ export function LoreSubmissionForm({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    if (mode === 'revise' || tokenId || ownedCharacters.characters.length === 0) return;
+    if (userIsAdmin || mode === 'revise' || tokenId || ownedCharacters.characters.length === 0) return;
     setTokenId(String(ownedCharacters.characters[0].token_id));
-  }, [mode, ownedCharacters.characters, tokenId]);
+  }, [mode, ownedCharacters.characters, tokenId, userIsAdmin]);
 
   const ownedTokenIds = useMemo(() => (
     ownedCharacters.characters.map((character) => String(character.token_id))
@@ -207,7 +209,10 @@ export function LoreSubmissionForm({
             {mode === 'revise' ? 'Revise community lore' : 'Submit community lore'}
           </h2>
           <p className="mt-2 text-sm leading-6 text-soul-mist/75">
-            Authenticated as <span className="font-mono text-soul-bone">{sessionAddress}</span>. Ownership is checked again by the server.
+            Authenticated as <span className="font-mono text-soul-bone">{sessionAddress}</span>.{' '}
+            {userIsAdmin
+              ? 'Admin access permits publishing lore for any token.'
+              : 'Ownership is checked again by the server.'}
           </p>
         </div>
         <Link href="/lore/submissions" className="text-sm font-display text-soul-accent hover:text-soul-bone">
@@ -229,8 +234,9 @@ export function LoreSubmissionForm({
       <div className="grid gap-4 md:grid-cols-[240px_minmax(0,1fr)]">
         <label className="space-y-1 text-sm text-soul-mist">
           <span className="font-display uppercase tracking-wide">Token ID</span>
-          {tokenOptions.length > 0 ? (
+          {!userIsAdmin && tokenOptions.length > 0 ? (
             <select
+              aria-label="Token ID"
               value={tokenId}
               onChange={(event) => setTokenId(event.target.value)}
               disabled={isSubmitting || mode === 'revise'}
@@ -242,6 +248,7 @@ export function LoreSubmissionForm({
             </select>
           ) : (
             <input
+              aria-label="Token ID"
               value={tokenId}
               onChange={(event) => setTokenId(event.target.value)}
               disabled={isSubmitting || mode === 'revise'}
@@ -249,8 +256,9 @@ export function LoreSubmissionForm({
               className="w-full rounded border border-soul-accent/20 bg-abyss/60 px-3 py-2 text-soul-bone placeholder:text-soul-mist/40 focus:border-soul-accent focus:outline-none"
             />
           )}
-          {ownedCharacters.isLoading && <span className="flex items-center gap-2 text-xs"><Spinner size="sm" /> Loading owned tokens…</span>}
-          {ownedCharacters.error && <span className="text-xs text-soul-ember">Could not load owned tokens. Manual entry will still be checked by the server.</span>}
+          {!userIsAdmin && ownedCharacters.isLoading && <span className="flex items-center gap-2 text-xs"><Spinner size="sm" /> Loading owned tokens…</span>}
+          {!userIsAdmin && ownedCharacters.error && <span className="text-xs text-soul-ember">Could not load owned tokens. Manual entry will still be checked by the server.</span>}
+          {userIsAdmin && <span className="text-xs text-soul-accent">Admin override: enter any valid WAGDIE token ID.</span>}
         </label>
 
         <label className="space-y-1 text-sm text-soul-mist">

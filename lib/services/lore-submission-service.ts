@@ -478,6 +478,9 @@ export class LoreSubmissionService {
   }
 
   private async ensureTokenOwnership(tokenId: string, walletAddress: string): Promise<void> {
+    // Admins may publish against tokens missing from the local ownership index.
+    if (isAdmin(walletAddress)) return;
+
     const ownership = await this.ownershipVerifier!({ tokenId, walletAddress });
     if (!ownership.owns) {
       throw new LoreSubmissionForbiddenError(`Wallet does not own token ${tokenId} (${ownership.reason})`);
